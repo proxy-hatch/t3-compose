@@ -20,3 +20,5 @@ configuration; T3 does not automatically load or enforce them.
 The next step after the revision is an implementation plan.
 rapid-ship work waits for the pilot, which starts in a manager thread bound to
 the rapid-ship root once t3-compose is built.
+
+t3-compose is released under the [MIT License](LICENSE).

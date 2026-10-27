@@ -434,25 +434,49 @@ the reviewed head. It links each pull request to its T3 thread with
 
 These rules are instructional. Every child inherits full access and the owner's
 local `gh` login, and Codex and agy children run without rapid-ship's hook until
-its Codex and agy wiring merges (F5). A child can still push; the package creates
-no security boundary.
+its Codex and agy wiring merges (F5). A child can still push wherever that login
+can push; the package creates no security boundary. For t3-compose's `main`
+ruleset, see [t3-compose repository workflow](#t3-compose-repository-workflow).
 
 ## t3-compose repository workflow
 
 t3-compose is the public GitHub repository `proxy-hatch/t3-compose`, created on
-2026-10-27 (re-home decision 4). Its build manager publishes from its
-t3-compose-rooted Session, because a rapid-ship-rooted Claude Session cannot push
-to it (F4). Tasks land through pull requests after independent review of the
-final head. Workers commit on their branch only. `AGENTS.md` describes this
-workflow and, once the helper exists, its test command.
+2026-10-27 (re-home decision 4), under the MIT License (publication decision 3).
+Its build manager publishes from its t3-compose-rooted Session, because a
+rapid-ship-rooted Claude Session cannot push to it (F4). Tasks land through pull
+requests after independent review of the final head. Workers commit on their
+branch only. `AGENTS.md` describes this workflow and, once the helper exists, its
+test command.
+
+On t3-compose, only the manager publishes, as the rapid-ship Worker App and never
+under Shawn's account (publication decision 1). On a managed repository, that
+repository's identity rules apply instead, as
+[Checks and publication](#checks-and-publication) describes. To publish to
+t3-compose, the manager mints a short-lived installation token for the Worker
+App, scoped to t3-compose, and runs `git push` and `gh` with the token only in
+their environment. The App's ID, installation account and Keychain item are
+personal configuration in `.local/`. An interim token step in `.local/` serves
+until the implementation plan decides where the helper provides it.
+
+The Worker App lacks the workflows permission, so it cannot push changes under
+`.github/workflows/`; Shawn pushes those changes. This is known from the same
+App's use in rapid-ship and not yet observed on t3-compose.
+
+Shawn merges t3-compose pull requests, squash only, and agents never merge
+(publication decision 2). All three merge methods remain enabled in the
+repository settings, so squash-only is a working rule, not a setting. `main` has
+a GitHub ruleset (publication decision 4): a pull request is required, force
+pushes and deletion are blocked, and there are no bypass actors. A child can
+still push other branches with Shawn's login, and `main` accepts changes only
+through pull requests. Someone holding Shawn's login could still edit the
+ruleset, so it guards against mistakes, not deliberate bypass; it is not a
+security boundary.
 
 The repository is public, so tracked files never hold the owner's email, keys or
 tokens, the Jev key file's path, paths under the owner's configuration
 directories, agy account or provider-instance names, T3 or Session IDs, or
 rapid-ship's task list; write "recorded in `.local/`" instead. Commit metadata
 does carry the owner's email, which F7 found already public.
-The publication identity, merge authority and license are
-[open decisions](#open-decisions).
 
 ## Design refinement
 
@@ -615,6 +639,28 @@ to manager threads bound to each repository's checkout:
 
 Earlier owner decisions stand as recorded above.
 
+## Decisions on t3-compose publication
+
+Shawn made these decisions on 2026-10-27, after the re-home:
+
+1. Agent GitHub identity. Agents publish to t3-compose only as the rapid-ship
+   Worker App, `proxy-hatch-rs-worker`, installed on t3-compose. The manager
+   mints a short-lived installation token scoped to t3-compose, with contents and
+   pull request write access, and pushes and opens pull requests with it. Agents
+   never push or post under Shawn's account. Workers and Reviewers never push or
+   post.
+2. Merge authority. Shawn merges t3-compose pull requests, squash only. Agents
+   never merge.
+3. License. MIT, in [`LICENSE`](../../../LICENSE). Reused Compose or Firstmate
+   code keeps its MIT attribution.
+4. Ruleset. `main` has a GitHub ruleset: a pull request is required, force pushes
+   and deletion are blocked, and there are no bypass actors, because every agent
+   shares Shawn's `gh` login. The ruleset was created and verified on 2026-10-27.
+   All three merge methods remain enabled in the repository settings;
+   squash-only is a working rule, not a setting.
+
+[t3-compose repository workflow](#t3-compose-repository-workflow) applies them.
+
 ## Findings
 
 The T3 manager thread that preceded the re-home gathered F1 to F7 on 2026-10-27.
@@ -666,28 +712,21 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   - Status: verified live on 2026-10-27 through the GitHub API.
   - Changes: supports re-home decision 4 and the note on commit metadata in
     [t3-compose repository workflow](#t3-compose-repository-workflow).
-- **F8, T3 renames children's branches.** Twice on 2026-10-27, T3 renamed a
-  child's branch after provisioning and before any commit: 12 s and 24 s after
-  `git worktree add`, as the two worktrees' reflogs showed.
-  - Status: observed by the build manager on 2026-10-27.
+- **F8, T3 renames children's branches.** Three times on 2026-10-27, T3 renamed
+  a child's branch after provisioning: 12 s, 15 s and 24 s after
+  `git worktree add`, all before the child's first commit.
+  - Status: observed by the build manager in the branch reflogs; recorded in
+    `.local/`.
   - Changes: [Sources of truth and local records](#sources-of-truth-and-local-records)
     and [Checks and publication](#checks-and-publication).
 
 ## Open decisions
 
-Shawn has not decided these. Each answer replaces its item and, for items 1 and
-2, the working rule in `AGENTS.md`.
+On 2026-10-27, Shawn answered items 1 to 3: the GitHub identity, merge authority
+and license. The answers are
+[publication decisions](#decisions-on-t3-compose-publication) 1 to 3. Item 4 is
+still open, and Shawn's answer replaces it.
 
-1. **Agent GitHub identity on t3-compose.** The identity agents use to push and
-   open pull requests. Options: the owner's account, with an explicit agent
-   marker on each pull request; the existing rapid-ship Worker App installed on
-   t3-compose, plus a token step; or a new t3-compose GitHub App, plus a token
-   step. Until Shawn decides, no agent pushes to or posts on GitHub, apart from
-   operations Shawn explicitly requests.
-2. **Merge authority on t3-compose.** Working rule until Shawn confirms: Shawn
-   merges, squash only; agents do not merge.
-3. **License.** None is chosen. Reused Compose or Firstmate code keeps its MIT
-   attribution whichever license Shawn chooses.
 4. **Initial routing values.** Proposals for Shawn to tune; the confirmed values
    become personal configuration.
    - Risk floors: unresolved design, a security or guardrail boundary (including
