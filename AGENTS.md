@@ -27,7 +27,8 @@ Shawn decided how t3-compose is published on 2026-10-27; see the
 [publication decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md#decisions-on-t3-compose-publication).
 Only the Engineering manager publishes to t3-compose. It pushes and opens pull
 requests as the rapid-ship Worker App, with a short-lived installation token
-scoped to t3-compose, never under Shawn's account. The App lacks the workflows
+scoped to t3-compose, never under Shawn's account. It confirms that GitHub
+records the App as each pull request's author. The App lacks the workflows
 permission (known from its use in rapid-ship), so Shawn pushes changes under
 `.github/workflows/`. Shawn merges t3-compose pull requests, squash only; agents
 never merge. On a managed repository, that repository's identity rules apply;

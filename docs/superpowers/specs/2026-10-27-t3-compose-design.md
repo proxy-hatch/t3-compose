@@ -337,13 +337,14 @@ bound to the rapid-ship root (re-home decision 1).
 
 A root-bound manager uses the owner's checkout. It never moves that checkout or
 writes to it: no switch, reset, pull, stash, commit or file edit, apart from its
-records under t3-compose's Git-ignored `.local/state/`, a plain `git fetch` and
-operations that Shawn explicitly requests. A fetch adds objects and updates
-remote-tracking refs; it moves no HEAD, index, working tree, stash or local
-branch. That checkout's local `main` can lag `origin` (F2), so its HEAD need not
-be the intended base, for example an advanced `origin/main` or a stacked parent's
-head. When the intended base is not local, the manager fetches before it writes
-the brief.
+records under t3-compose's Git-ignored `.local/state/`, a plain `git fetch`, a
+push of a reviewed commit for publication and operations that Shawn explicitly
+requests. A fetch adds objects and updates remote-tracking refs; a push changes
+only the remote and its remote-tracking refs. Neither moves HEAD, the index, the
+working tree, a stash or a local branch. That checkout's local `main` can lag
+`origin` (F2), so its HEAD need not be the intended base, for example an advanced
+`origin/main` or a stacked parent's head. When the intended base is not local,
+the manager fetches before it writes the brief.
 
 Each Worker brief therefore names three commits:
 
@@ -456,7 +457,10 @@ t3-compose, the manager mints a short-lived installation token for the Worker
 App, scoped to t3-compose, and runs `git push` and `gh` with the token only in
 their environment. The App's ID, installation account and Keychain item are
 personal configuration in `.local/`. An interim token step in `.local/` serves
-until the implementation plan decides where the helper provides it.
+until the implementation plan decides where the helper provides it. The token
+step clears Git's other credential helpers for the push, so a push cannot fall
+back to Shawn's stored credentials. Before the manager reports a Task PR-ready,
+it also confirms that GitHub records the Worker App as the pull request's author.
 
 The Worker App lacks the workflows permission, so it cannot push changes under
 `.github/workflows/`; Shawn pushes those changes. This is known from the same
@@ -655,9 +659,10 @@ Shawn made these decisions on 2026-10-27, after the re-home:
    code keeps its MIT attribution.
 4. Ruleset. `main` has a GitHub ruleset: a pull request is required, force pushes
    and deletion are blocked, and there are no bypass actors, because every agent
-   shares Shawn's `gh` login. The ruleset was created and verified on 2026-10-27.
-   All three merge methods remain enabled in the repository settings;
-   squash-only is a working rule, not a setting.
+   shares Shawn's `gh` login. The ruleset was created on 2026-10-27 and verified
+   the same day through the GitHub API, which listed the ruleset and the three
+   rules that apply to `main`. All three merge methods remain enabled in the
+   repository settings; squash-only is a working rule, not a setting.
 
 [t3-compose repository workflow](#t3-compose-repository-workflow) applies them.
 
@@ -712,9 +717,11 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   - Status: verified live on 2026-10-27 through the GitHub API.
   - Changes: supports re-home decision 4 and the note on commit metadata in
     [t3-compose repository workflow](#t3-compose-repository-workflow).
-- **F8, T3 renames children's branches.** Three times on 2026-10-27, T3 renamed
-  a child's branch after provisioning: 12 s, 15 s and 24 s after
-  `git worktree add`, all before the child's first commit.
+- **F8, T3 renames children's branches.** Four times on 2026-10-27, T3 renamed
+  a child's branch after provisioning: 12 s, 14 s, 15 s and 24 s after
+  `git worktree add`, all before the child's first commit. In one case T3
+  renamed the branch 2 s after the child had moved it to its start commit, and
+  the branch kept that commit.
   - Status: observed by the build manager in the branch reflogs; recorded in
     `.local/`.
   - Changes: [Sources of truth and local records](#sources-of-truth-and-local-records)
