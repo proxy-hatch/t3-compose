@@ -82,13 +82,16 @@ work cycle uses. Brief templates carry the rules into each Assignment.
 - **Routing.** Each Task names its risk facts from the proposed list
   ([Open decisions][d-open], item 4): unresolved design, a security or
   guardrail boundary, and subtle invariants floor at challenging; a shared
-  interface change floors at medium. The domain is software engineering;
-  documentation Tasks count as software engineering under the proposed
-  documentation criterion. The tier shown is a proposal. The manager confirms it
-  at dispatch and records manual routing as manual until the router is live.
-  The Reviewer tier is the higher of medium and the highest tier at which any
-  Worker on the Task ran, so each Reviewer here runs at least at its Worker's
-  proposed tier.
+  interface change floors at medium. A floor applies to what the Task changes:
+  code that handles a key or token, or enforces a guardrail, is challenging; a
+  document that describes a guardrail is not. The domain is software
+  engineering; documentation Tasks count as software engineering under the
+  proposed documentation criterion. The tier shown is a proposal. The manager
+  confirms it at dispatch; until the router is live, it routes in prose and
+  records the class and reason. The Reviewer tier is the higher of medium and
+  the highest tier at which any Worker on the Task ran, for every review of the
+  Task. As this plan reads the design, a Task's floors also bind its
+  Corrections rounds ([question 5](#questions-for-shawn)).
 - **Records.** Until RC-1 is installed, the manager keeps its manual dispatch
   log in `.local/`. From then on it records through the helper. The manual log
   stays as history and is not migrated.
@@ -955,9 +958,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Depends on.** CF-1, RC-1, EV-1, JV-1, RT-1, PV-1, GA-1, GA-2, GA-3, PB-1,
   HC-1, BT-1, and L7's result.
 - **Parallel with.** RP-1, DOC-1.
-- **Risk facts and tier.** Guardrail boundary (it encodes the manager's rules)
-  and shared interface change (every command) → challenging → Opus 5.5 High.
-  Reviewer: challenging.
+- **Risk facts and tier.** Shared interface change (it names every command).
+  The skill describes guardrails but changes none, and a floor applies to what
+  a Task changes → medium → Sonnet 5.5 High. Reviewer: medium.
 - **Review focus.** Agreement with the design, rule by rule; the restart and
   retry procedures; command usage; nothing private.
 - **Size.** About 800 lines.
@@ -1048,8 +1051,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Offline tests.** `SUITE -p 'test_pilot_docs.py'`, then `SUITE`.
 - **Depends on.** SK-1 and L7.
 - **Parallel with.** DOC-1.
-- **Risk facts and tier.** Subtle invariants (recovery) → challenging →
-  Opus 5.5 High. Reviewer: challenging.
+- **Risk facts and tier.** None: the Task writes procedures and a template, not
+  recovery code; L7 supplies the live evidence → medium → Sonnet 5.5 High.
+  Reviewer: medium.
 - **Review focus.** That the kickoff leaks no state that would make the restart
   test trivial; the order of the hold, the reconciliation and the first
   dispatch; that the in-flight restart keeps the dispatching thread.
@@ -1080,8 +1084,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Offline tests.** `SUITE`, unchanged, and the link check.
 - **Depends on.** Shawn's answer to [question 1](#questions-for-shawn).
 - **Parallel with.** Any Task; it owns only the design.
-- **Risk facts and tier.** No floor fact; it records an owner decision →
-  medium → Sonnet 5.5 High. Reviewer: medium.
+- **Risk facts and tier.** No floor fact. When the brief gives the exact text,
+  which the manager can write from Shawn's answer, the Task is easy → agy
+  Flash High, with the instructions in the brief; otherwise medium →
+  Sonnet 5.5 High. Reviewer: medium, never agy.
 - **Review focus.** A faithful record of Shawn's answer; no other change.
 - **Size.** About 40 lines.
 
@@ -1116,8 +1122,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Offline tests.** `SUITE -p 'test_feature_lead.py'`, then `SUITE`.
 - **Depends on.** The first pilot's completion.
 - **Parallel with.** None planned.
-- **Risk facts and tier.** Subtle invariants (recovery) and unresolved design
-  (the nested lifecycle) → challenging → Opus 5.5 High. Reviewer: challenging.
+- **Risk facts and tier.** None for the files: a template and procedures. The
+  live pilot is the manager's work → medium → Sonnet 5.5 High. Reviewer:
+  medium. A defect that L10 finds in recovery code is fixed by a separate
+  Task, at challenging.
 - **Review focus.** One writer per record across the manager and the lead; no
   duplicate children; escalations that cannot be lost.
 - **Size.** About 500 lines.
@@ -1135,8 +1143,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Offline tests.** `SUITE`.
 - **Depends on.** FL-1 and L10.
 - **Parallel with.** None planned.
-- **Risk facts and tier.** Guardrail boundary (the manager's rules) →
-  challenging → Opus 5.5 High. Reviewer: challenging.
+- **Risk facts and tier.** None; skill text that follows FL-1's evidence →
+  medium → Sonnet 5.5 High. Reviewer: medium.
 - **Review focus.** Agreement with the design's Feature lead options; leads
   stay optional.
 - **Size.** About 150 lines.
@@ -1184,12 +1192,19 @@ Shawn's explicit request. After each merge, Shawn updates his checkout's `main`
 | later | FL-1, then FL-2 | the first pilot |
 | any time | DOC-1 | Shawn's answer to question 1 |
 
+Routing comes first. On 2026-10-27 Shawn asked for the routing feature early
+and for children not to default to Opus 5.5. In stage 1 the manager
+dispatches CF-1, RC-1 and PV-1 before HC-1, BT-1 and GA-1; in stage 2, JV-1
+and RT-1 first. The router goes live once JV-1 and RT-1 are installed and L1
+to L3 have passed, before the publication Tasks and the skill. L1 needs
+Shawn's answer to question 1.
+
 The critical path is HS-1, GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1. RC-1 and
 EV-1 run beside the token Tasks. The stages show what dependencies and file
 ownership allow. The manager decides how many Tasks run at once from capacity
 and Shawn's direction; most stage-1 Tasks are challenging, so Opus capacity is
-the likely limit. No build Task is easy, so the first agy Worker runs in the
-pilot.
+the likely limit. Only DOC-1 can be easy, so the first agy Worker may run
+there or in the pilot.
 
 The handoff to the pilot:
 
@@ -1254,6 +1269,12 @@ step's reviews leave to this plan.
    conversation by hand if no tool can?
 4. **Pilot start.** Should the build manager send the kickoff as soon as the
    handoff conditions hold, or wait for your go-ahead? Proposed: your go-ahead.
+5. **Tiers after the first round.** The design runs every review of a Task at
+   least at its highest Worker tier, and, as this plan reads it, keeps the
+   Task's floors for its Corrections rounds. The manager's temporary prose
+   rules use medium for Corrections with enumerated findings and for
+   re-reviews of a Corrections delta, even on challenging code. This plan
+   follows the design. Should the design change instead?
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
