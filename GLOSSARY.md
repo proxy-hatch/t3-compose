@@ -2,6 +2,8 @@
 
 Terms for coordinating rapid-ship development. Task, Worker, Reviewer, Session,
 Correction and Mode retain their meanings in rapid-ship's GLOSSARY.md.
+t3-compose narrows Worker and Reviewer: they do not push, open pull requests, post
+to GitHub or merge, and the Engineering manager publishes.
 
 ## Language
 
