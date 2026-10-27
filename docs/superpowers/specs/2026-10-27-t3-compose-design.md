@@ -1,6 +1,10 @@
 # t3-compose design
 
-Status: design decisions approved by Shawn on 2026-10-27. Implementation and live validation are pending.
+Status: design decisions approved by Shawn on 2026-10-27. This revision, made the
+same day, records the [re-home decisions](#decisions-accepted-at-the-re-home) and
+[findings](#findings-from-the-re-home) and awaits Shawn's approval. The remaining
+[open decisions](#open-decisions) are listed at the end. Implementation and live
+validation are pending.
 
 Terminology: [project glossary](../../../GLOSSARY.md). A Task is one pull request;
 an Assignment is one delegated piece of work, such as its implementation or review.
@@ -59,6 +63,10 @@ Jev routing adapter, a small local task record, and validation of the evidence
 needed to finish work. An optional feature-lead role is included below.
 It uses T3's existing tools directly from the manager session.
 
+The manager skill installs at user level, as a symlink into the manager Harness's
+user skill directory. The helper runs by absolute path, and personal config comes
+from t3-compose's `.local/`. Nothing is added to a managed repository.
+
 It does not provide another agent runtime, scheduler, daemon, UI, authentication
 store, worktree pool, issue tracker, automatic merge service or general backend
 framework. It does not recreate Compose's Figma, billing, stacked-PR machinery,
@@ -76,6 +84,8 @@ fixes and integration conflicts. Reading diffs and running checks remain allowed
 Workers own one brief and its named paths. They preserve other work, follow the
 project's test-first rules, report evidence and surface decisions outside the
 approved scope. They do not broaden their assignment or claim review authority.
+They commit on their branch only; the manager publishes (see
+[Checks and publication](#checks-and-publication)).
 
 Reviewers are separate Claude or Codex agents. They assess specification
 compliance, repository standards, correctness and test adequacy against an exact
@@ -151,15 +161,28 @@ not obscure why a model was chosen. Personal configuration can change models,
 reasoning, account order and thresholds, but cannot waive repository requirements.
 
 The configurable routing rule includes classification criteria and task-risk
-minimums, not only model names. The current config captures initial model choices
-and the confidence threshold, plus the approved availability fallback chains.
-Implementation must add the remaining classification criteria and task-risk fields. Code validates and applies those values; it must
-not hide changeable routing preferences in prompts or constants. Repository rules,
-including agy never Reviewer, remain separate constraints.
+floors, not only model names. The current config captures initial model choices,
+the confidence threshold and the approved availability fallback chains.
+Implementation must add the classification criteria and task-risk floors below.
+Code validates and applies those values; it must not hide changeable routing
+preferences in prompts or constants. Repository rules, including agy never
+Reviewer, remain separate constraints.
 
-The manager resolves each selection against T3's live catalog. A listed model
-does not prove remaining quota. Persist a dispatch's selection and reason so the
-owner can see why cheap work was escalated.
+The manager declares a Task's risk facts from a configured list. Each fact has a
+configured minimum tier, its floor. The final Worker tier is the higher of the
+difficulty, from Jev or from recorded manager judgment, and every applicable
+floor. Easy work goes to agy only when no floor applies. The Reviewer tier is the
+higher of medium and the Task's final tier, so agy is never a Reviewer. The risk
+facts, their floors and the domain criteria are configuration values, not
+constants. The initial risk facts and floors, and a domain criterion for technical
+documentation, are proposals for Shawn to tune; see
+[Open decisions](#open-decisions), item 4.
+
+The manager resolves each selection against T3's live catalog. A model is
+available only when the catalog lists it and its provider reports
+`canRunChildTask: true`. A failed provider status check counts as unavailable.
+A listed model does not prove remaining quota. Persist a dispatch's selection
+and reason so the owner can see why cheap work was escalated.
 
 Use one agy account until confirmed quota exhaustion before moving to the next.
 Resolve the old attempt before retrying. Preserve its work and supply a continuation
@@ -167,9 +190,12 @@ brief. Tool failures and correctness failures are not quota evidence. Repeated
 correctness failures escalate to a stronger Worker. An unavailable master is
 reported to the owner; the package does not replace the Engineering manager
 without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
-configured availability fallback: Sonnet High to Sol High, or Opus High to Astra
-High. Record and report the reason, preserve all quality requirements, and resolve
-the original attempt before retrying. Availability fallback grants no extra permissions.
+the configured availability fallback in both directions: Sonnet 5.5 High and
+Sol 6.1 High fall back to each other, as do Opus 5.5 High and Astra 6 High
+(re-home decision 3 added the reverse direction). When the fallback target is
+also unavailable, report it to Shawn; never fall back twice. Record and report
+the reason, preserve all quality requirements, and resolve the original attempt
+before retrying. Availability fallback grants no extra permissions.
 
 ## Jev decision routing
 
@@ -177,6 +203,8 @@ Use Jev through OpenRouter, as explicitly authorized by the owner on 2026-10-27.
 This exception is limited to the router. Claude, Codex and agy execution continues
 through the existing subscription Harnesses. Credentials stay in the existing
 private credential configuration; never place them in briefs, source, logs or argv.
+The adapter reads the key from the `OPENROUTER_API_KEY` environment variable
+first, else from a key file that personal config in `.local/` names.
 
 Compose's `fc_routejev.py` asks typed questions about workflow and depth, retries
 once with dependency context when uncertain, and applies policy floors in code.
@@ -191,7 +219,10 @@ scope and task-specific risk facts. Omit repeated global instructions and creden
 or account data; boilerplate safety language must not make every task appear hard.
 Ask closed-choice questions for domain (software engineering, other, mixed/unclear)
 and difficulty (easy, medium, challenging, insufficient context). These are
-classification results, not free-form model identifiers.
+classification results, not free-form model identifiers. The domain criteria must
+say where technical documentation belongs: in the live check, jev-1.14 classified
+a README spelling fix as domain OTHER (F3). [Open decisions](#open-decisions),
+item 4, proposes a criterion.
 
 Code maps accepted classifications to the owner's routes. It independently applies
 role exclusions (especially agy never Reviewer), hard task-risk floors, live model
@@ -210,8 +241,9 @@ Low confidence gets at most one retry with relevant extra context, then
 manager judgment with an explicit reason. API or malformed-response failures also
 fall back to recorded manager judgment, never silent selection of the cheapest model.
 
-Store the task-input digest, routing-rule version, exact Jev model version,
-classification, probabilities, fallback/override reason and final selection.
+Store the task-input digest, routing-rule version, domain criteria, declared risk
+facts, pinned Jev model, the snapshot ID from the response, classification,
+probabilities, confidence, fallback/override reason and final selection.
 Reclassify when task-relevant inputs or policy change. Availability and quota are
 checked at dispatch even when classification is reused.
 
@@ -224,10 +256,24 @@ the manager but cannot replace original requirements in a consequential routing 
 The existing local Jev browser skill uses OpenRouter for decisions and a separate
 Claude/OpenRouter text helper. It does not already implement agy text generation
 or this task router. Leave that browser setup unchanged; no browser is required
-for routing. The implementation should pin an available Jev model and verify the
-typed Decisions API contract. OpenRouter currently documents `typesafe/jev-1.14`
-and `POST https://openrouter.ai/api/alpha/decisions`; no live call has been tested
-for this package.
+for routing.
+
+Pin `typesafe/jev-1.14` in config. A live call with synthetic input verified this
+Decisions API contract on 2026-10-27 (F3):
+
+- Request: `POST https://openrouter.ai/api/alpha/decisions` with body
+  `{model, state, questions: {<name>: {type: "choice", instructions, criteria: {<OPTION>: <text>}}}}`.
+- Response: `answers.<name> = {type: "choice", choice, probabilities: {<OPTION>: p}, confidence}`,
+  plus top-level `id`, `model`, `provider` and `usage`
+  (`input_tokens`, `output_tokens`, `cost`).
+- `model` is the resolved snapshot: `typesafe/jev-1.14` resolved to
+  `typesafe/jev-1.14-20261014`.
+- Probabilities summed to 1. `confidence` is separate from the chosen option's
+  probability: 0.79 against 0.86 in one answer.
+- A two-question call cost about 0.000024 USD.
+
+OpenRouter's public model list omits decision models, so check availability with
+a real call.
 
 Additional sources:
 
@@ -235,7 +281,7 @@ Additional sources:
 - https://github.com/prodoxx/compose/blob/1d82e94709bdeb2289f75c531fad63b9685b0feb/bin/fc_tiers.py
 - https://github.com/kunchenguid/firstmate/blob/7da4c3621370534ff9689843d2b77f34158057fb/docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson
 - https://openrouter.ai/docs/guides/community/jev-tutorial
-- https://openrouter.ai/typesafe/jev-1.14
+- https://openrouter.ai/typesafe/jev-1.14 (returned a 404 page on 2026-10-27; F3)
 
 ## Sources of truth and local records
 
@@ -251,7 +297,7 @@ A local work record stores only coordination and acceptance facts:
 - Dispatch intent ID, T3 task IDs, selected role/model and returned worktree path.
 - Result commits, check commands/outcomes and links or paths to their evidence.
 - Review task ID, reviewed base/head, findings, responses and review verdict.
-- External operation intent and confirmed result, where the repository requires it.
+- External operation intent and confirmed result, including each push and pull request.
 - Owner decisions and next action, with an explicit unknown value where unresolved.
 
 Each record has exactly one coordinator writer. For direct tasks that is the
@@ -272,19 +318,48 @@ evidence covers the current commit. It launches no agents and polls nothing. The
 and command names are builder choices. Preserve historical attempts and reviews.
 Missing or invalid records block the affected acceptance decision, not unrelated work.
 
+## Manager threads and bases
+
+Each managed repository has one manager thread, bound to a checkout of its T3
+project's repository. T3 takes a worktree-isolated child's base from the manager's
+checkout HEAD but creates the worktree in the T3 project's repository, and it
+cannot change a thread's workspace after creation. A thread bound to another
+repository therefore cannot provision such children (F1). The t3-compose build
+manager is bound to the t3-compose root; the pilot runs from a manager thread
+bound to the rapid-ship root (re-home decision 1).
+
+A root-bound manager uses the owner's checkout. It never moves that checkout or
+writes to it: no switch, reset, pull, stash, commit or file edit, apart from its
+records under t3-compose's Git-ignored `.local/state/`. That checkout's local
+`main` can lag `origin` (F2), so its HEAD need not be the intended base.
+
+The brief therefore names the exact base commit. Before any edit, the Worker
+verifies HEAD in its fresh worktree. When HEAD differs from the base, for example
+because the base is an advanced `origin/main` or a stacked parent's head, the
+Worker moves its new branch to the base. A fresh worktree holds no work, so the
+move discards nothing. A dirty tree or a missing base commit stops the Worker,
+who reports it.
+
+Shared isolation starts a child in the manager's checkout (F1). Use it only for
+the takeover exception under
+[Taking over existing Claude work](#taking-over-existing-claude-work).
+
 ## Work cycle
 
 1. Reconcile existing work before assigning anything. Read the applicable guides,
    run the repository's settings doctor, inspect the approved plan and check that
    no other manager or Worker owns the work being assigned.
-2. Write a brief with objective, scope, base, owned paths, acceptance criteria,
-   interfaces, dependencies, test commands and return format. Unknown product
-   decisions go to Shawn; routine implementation choices stay with the assigned agent.
+2. Write a brief with objective, scope, exact base commit, owned paths, acceptance
+   criteria, interfaces, dependencies, the fast checks to run and return format.
+   Unknown product decisions go to Shawn; routine implementation choices stay with
+   the assigned agent.
 3. Record dispatch intent before calling T3. Use a stable `clientRequestId` for
    retries of that same dispatch and retain the returned `taskId`.
 4. Dispatch asynchronously with explicit provider/model selection. Use T3-managed
-   worktree isolation for new writers. Confirm the parent's committed base first:
-   T3 does not copy uncommitted changes or changes on another branch.
+   worktree isolation for new writers. Confirm first that the base commit exists.
+   T3 starts the worktree at the manager checkout's HEAD and copies no uncommitted
+   changes; the Worker moves its fresh branch to the named base before any edit
+   (see [Manager threads and bases](#manager-threads-and-bases)).
 5. On completion, inspect the returned artifacts and commit. A completed T3 turn
    does not prove the brief is complete. Reconcile uncertain dispatches before
    launching another writer; use T3 status/history rather than blind retries.
@@ -297,13 +372,51 @@ Missing or invalid records block the affected acceptance decision, not unrelated
    dispute, obtain one second independent review of the original finding and
    evidence. Unresolved acceptance-blocking disputes and product decisions go to Shawn.
 8. Mark work verified only when all acceptance criteria have evidence, required
-   checks passed and independent review cleared the current head. Keep verified,
-   PR-ready and merged distinct. Integration and publishing follow the repository's
-   existing authority and GitHub App rules; the package grants no new authority.
+   checks passed on the current head and independent review cleared it. Keep
+   verified, PR-ready and merged distinct. Integration and publishing follow the
+   repository's existing authority and identity rules, and the manager publishes
+   (see [Checks and publication](#checks-and-publication)). The package grants no
+   new authority.
 
 T3 notifications wake the manager. There are no parallel watcher processes or
 polling loops. An interrupted manager reconstructs decisions from the local record
 and reconciles actual T3/Git state before continuing.
+
+## Checks and publication
+
+Workers run the fast checks that the brief names. The manager runs a repository's
+heavy required check on the final head, or assigns one session at a time to run
+it. Heavy checks never run concurrently (F6) and never move the owner's checkout.
+A check on another commit does not cover the head. For the heavy check, this
+refines step 1 of the [accepted review policy](#accepted-review-policy); required
+checks still cover the final head.
+
+Workers commit on their branch only. They do not push, open, edit or merge pull
+requests, or post to GitHub. The manager records each publication intent and its
+confirmed result. It publishes under the repository's identity rules (for
+rapid-ship, its Worker App commands), from a session rooted in that repository or
+in t3-compose as those rules require (F4). It links each pull request to its T3
+thread with `link_pull_request`.
+
+These rules are instructional. Every child inherits full access and the owner's
+local `gh` login, and Codex and agy children run without rapid-ship's hook until
+its Codex and agy wiring merges (F5). A child can still push; the package creates
+no security boundary.
+
+## t3-compose repository workflow
+
+t3-compose is the public GitHub repository `proxy-hatch/t3-compose`, created on
+2026-10-27 (re-home decision 4). Its build manager publishes from its
+t3-compose-rooted session, because a rapid-ship-rooted session cannot push to it
+(F4). Tasks land through pull requests after independent review of the final
+head. Workers commit on their branch only. `AGENTS.md` describes this workflow
+and, once the helper exists, its test command.
+
+Tracked files never hold the owner's email, keys or tokens, the Jev key file's
+path, agy account or provider-instance names, or T3 or session IDs; write
+"recorded in `.local/`" instead (F7).
+The publication identity, merge authority and license are
+[open decisions](#open-decisions).
 
 ## Design refinement
 
@@ -319,17 +432,21 @@ not turn every small clarification into a new design or recreate settled plans.
 
 ## Taking over existing Claude work
 
-Owner instruction: wait until Shawn supplies the Claude EM session context dump.
-Until it arrives, do not continue the inventory, select a rapid-ship pilot task,
-take ownership of ongoing work or dispatch recovery Workers. Framework design
-and research may continue. This replaces the earlier proposal to proceed from
-saved artifacts without the dump.
+Shawn supplied the Claude Engineering manager's context dump on 2026-10-27. The
+T3 manager verified it against Git and GitHub the same day: branch heads, dirty
+file counts, upstream branches and open pull requests matched the dump. The dump
+and its task list are recorded in `.local/`; tracked files do not copy them.
 
-After the dump arrives, inventory session `6be39002-f5e3-4e8b-a524-a9c0f363254c`, its workflow journals,
-worktrees, branches, commits, dirty files, PRs, review heads and unanswered decisions.
-Compare the dump with current artifacts. Quota-blocked or quiet does not prove all its
-children have stopped. Establish that old dispatch has ceased and resolve active
-writers before T3 takes ownership.
+rapid-ship work waits for the pilot (re-home decision 2). Until t3-compose is
+built and the pilot starts in the rapid-ship-bound manager thread, do not resume,
+review, check or publish any rapid-ship task, and do not choose the pilot task.
+t3-compose design, planning and implementation continue.
+
+At pilot start, reconcile the recorded state with live Git and T3 state before
+taking over any work: the old Claude manager's workflow journals, worktrees,
+branches, commits, dirty files, PRs, review heads and unanswered decisions.
+Quota-blocked or quiet does not prove all its children have stopped. Establish
+that old dispatch has ceased and resolve active writers before T3 takes ownership.
 
 Preserve every worktree and uncommitted change. Failed or null workflow results
 are incomplete evidence, not proof that nothing was written. Existing dirty trees
@@ -338,18 +455,19 @@ cannot be transferred by starting a new isolated child at this thread's HEAD.
 For an existing worktree, verify its base, branch, dirty state and absence of a
 live writer before assigning a recovery brief. A recovery child may use shared
 isolation from the manager and an explicitly owned existing worktree path, working
-only there; it must not edit the manager's checkout. This exception is for takeover,
-not the default for new work. No automatic reset, stash, cleanup or replay occurs.
-
-The first read-only inventory observed 19 changed paths in pro-156 and 20 in
-pro-164. Recheck at takeover; those counts are not a durable status assertion.
+only there; it must not edit the manager's checkout. This exception is for takeover
+only; new work uses worktree isolation. No automatic reset, stash, cleanup or replay occurs.
 
 ## Pilot and validation
 
-Wait for the owner's Claude EM context dump. Then inventory existing work and
-choose one bounded unfinished task
-whose requirements are approved and whose files have no active writer. Choose
-the Worker tier from its risk; do not force a sensitive merge-guard change onto agy.
+The pilot runs from the rapid-ship-bound manager thread once t3-compose is built
+(re-home decisions 1 and 2). Starting it there is the deliberate manager context
+restart that the pilot must demonstrate: that thread reconstructs state from the
+records. It then reconciles existing work, as described under
+[Taking over existing Claude work](#taking-over-existing-claude-work), and chooses
+one bounded unfinished task whose requirements are approved and whose files have
+no active writer. Choose the Worker tier from its risk; do not force a sensitive
+merge-guard change onto agy.
 
 The first live pilot must demonstrate:
 
@@ -369,8 +487,10 @@ dispatch reconciliation. Label them offline. During the pilot, inspect
 Jev decisions on examples covering engineering/non-engineering,
 mixed scope and easy-but-sensitive tasks. Record mistaken cheap routes separately
 from unnecessary expensive routes. Use Shawn's qualitative feedback to tune the
-configured threshold; no pre-pilot accuracy study is required. Pilot the router with public or synthetic
-examples until the takeover hold is lifted; label synthetic evaluation explicitly.
+configured threshold; no pre-pilot accuracy study is required. Until the pilot
+starts, pilot the router with public or synthetic examples. Once the pilot starts
+and lifts the rapid-ship hold, router pilots may also use real task inputs,
+recorded with each decision. Label synthetic evaluation explicitly.
 Use injected quota responses to test rotation without deliberately exhausting an
 account; label that test simulated. Live quota failover remains unverified until
 an actual exhaustion event is observed. Test failure and refusal paths as well as
@@ -426,5 +546,97 @@ Shawn accepted all four recommendations on 2026-10-27:
    clearance, and product decisions, return to Shawn.
 
 Storage format and helper command names remain builder choices. Runtime capability
-and recovery behavior require implementation tests. Takeover still waits for
-Shawn's Claude EM context dump.
+and recovery behavior require implementation tests. Takeover of rapid-ship work
+now waits for the pilot (re-home decision 2).
+
+## Decisions accepted at the re-home
+
+Shawn made these decisions on 2026-10-27, in the session that re-homed this work
+to manager threads bound to each repository's checkout:
+
+1. Re-home. Build t3-compose from a manager thread bound to the t3-compose root.
+   Run the pilot from a manager thread bound to the rapid-ship root.
+2. rapid-ship work waits for the pilot. Do not resume, review, check or publish
+   any rapid-ship task, and do not choose the pilot task, until t3-compose is
+   built and the pilot starts in the rapid-ship-bound manager thread.
+3. Add reverse availability fallbacks for Workers, Reviewers and Feature leads:
+   Sol 6.1 High to Sonnet 5.5 High, and Astra 6 High to Opus 5.5 High, in
+   addition to the existing Sonnet 5.5 High to Sol 6.1 High and Opus 5.5 High to
+   Astra 6 High. They are already applied to the personal config in `.local/`.
+4. t3-compose integrates through a public GitHub repository with pull requests.
+
+Earlier owner decisions stand as recorded above.
+
+## Findings from the re-home
+
+The T3 manager thread that preceded the re-home gathered these on 2026-10-27.
+The evidence is recorded in `.local/`.
+
+- **F1, T3 isolation semantics.** `delegate_task` with `isolation: "worktree"`
+  takes the base from the parent thread's checkout HEAD (its worktree path, else
+  the project root), with `startFromOrigin: false`, then runs
+  `git worktree add -b <branch> <path> <base>` in the T3 project's workspace root;
+  `shared` isolation starts a child in the manager's checkout. A thread's
+  workspace cannot change after creation, and a probe from a thread bound to
+  another repository failed in provisioning.
+  - Status: read from T3's source on 2026-10-27; the failed probe matches it.
+  - Changes: [Manager threads and bases](#manager-threads-and-bases), work cycle
+    step 4 and the takeover exception; prompted re-home decision 1.
+- **F2, the manager's checkout lags.** A root-bound manager uses the owner's
+  checkout, which it must not move or write, and that checkout's local `main` can
+  lag `origin`.
+  - Status: follows from F1, read from T3's source; not probed separately.
+  - Changes: [Manager threads and bases](#manager-threads-and-bases) and work
+    cycle step 2.
+- **F3, the Jev contract.** A two-question call returned the contract recorded
+  under [Jev decision routing](#jev-decision-routing), with `typesafe/jev-1.14`
+  resolving to snapshot `typesafe/jev-1.14-20261014` at about 0.000024 USD.
+  jev-1.14 classified a README spelling fix as domain OTHER (0.86), and
+  OpenRouter's public model list omits decision models.
+  - Status: verified live on 2026-10-27 with synthetic input.
+  - Changes: [Jev decision routing](#jev-decision-routing) and open decision 4.
+- **F4, rapid-ship's hook and the session's repository.** rapid-ship's guardrail
+  hook judges every command by the session's working repository, so a session
+  rooted in a rapid-ship checkout is denied `gh` writes and plain `git push` even
+  when they target another repository. A t3-compose-rooted session is not affected.
+  - Status: read from rapid-ship's hook source on 2026-10-27.
+  - Changes: [Checks and publication](#checks-and-publication) and
+    [t3-compose repository workflow](#t3-compose-repository-workflow).
+- **F5, unguarded Harnesses.** Codex and agy children run without rapid-ship's
+  hook until its Codex and agy wiring merges. Every child inherits full access
+  and the owner's local `gh` login, which is the owner's personal GitHub account.
+  - Status: a claim from the dump and the previous T3 manager's handoff, not
+    re-run.
+  - Changes: [Checks and publication](#checks-and-publication).
+- **F6, machine load.** Two rapid-ship full checks run at the same time both
+  failed, with a setup timeout followed by a process-group kill error.
+  - Status: a claim from the previous manager's dump, not re-run.
+  - Changes: [Checks and publication](#checks-and-publication).
+- **F7, the owner's email.** The owner's commit email is already public in
+  rapid-ship's history, so publishing t3-compose's history exposes nothing new.
+  - Status: verified live on 2026-10-27 through the GitHub API.
+  - Changes: supports re-home decision 4; adds the tracked-file rule in
+    [t3-compose repository workflow](#t3-compose-repository-workflow).
+
+## Open decisions
+
+Shawn has not decided these. Each answer replaces its item.
+
+1. **Agent GitHub identity on t3-compose.** The identity agents use to push and
+   open pull requests. Options: the owner's account, with an explicit agent
+   marker on each pull request; the existing rapid-ship Worker App installed on
+   t3-compose, plus a token step; or a new t3-compose GitHub App, plus a token
+   step. Until Shawn decides, nothing agent-authored is pushed.
+2. **Merge authority on t3-compose.** Working rule until Shawn confirms: Shawn
+   merges, squash only; agents do not merge.
+3. **License.** None is chosen. Reused Compose or Firstmate code keeps its MIT
+   attribution whichever license Shawn chooses.
+4. **Initial routing values.** Proposals for Shawn to tune; the confirmed values
+   become personal configuration.
+   - Risk floors: unresolved design, a security or guardrail boundary (including
+     a repository's Protected set) and subtle invariants (concurrency, recovery,
+     data loss) go to challenging; a shared interface change goes to medium.
+   - Domain criterion: technical documentation of a software project, such as a
+     README, agent instructions, a design or an API reference, counts as software
+     engineering. Reason: its correctness depends on the code, interfaces and
+     repository rules it describes.
