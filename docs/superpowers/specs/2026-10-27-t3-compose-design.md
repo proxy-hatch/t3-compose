@@ -1,8 +1,9 @@
 # t3-compose design
 
 Status: design decisions approved by Shawn on 2026-10-27. This revision, made the
-same day, records the [re-home decisions](#decisions-accepted-at-the-re-home) and
-[findings](#findings) and takes effect when Shawn approves and merges its pull
+same day, records Shawn's [re-home](#decisions-accepted-at-the-re-home) and
+[publication](#decisions-on-t3-compose-publication) decisions and the
+[findings](#findings), and takes effect when Shawn approves and merges its pull
 request. The remaining [open decisions](#open-decisions) are listed at the end.
 Implementation and live validation are pending.
 
@@ -336,20 +337,31 @@ manager is bound to the t3-compose root; the pilot runs from a manager thread
 bound to the rapid-ship root (re-home decision 1).
 
 A root-bound manager uses the owner's checkout. It never moves that checkout or
-writes to it: no switch, reset, pull, stash, commit or file edit, apart from its
-records under t3-compose's Git-ignored `.local/state/`, a plain `git fetch`, a
-push of a reviewed commit for publication and operations that Shawn explicitly
-requests. A fetch adds objects and updates remote-tracking refs; a push changes
-only the remote and its remote-tracking refs. Neither moves HEAD, the index, the
-working tree, a stash or a local branch. That checkout's local `main` can lag
-`origin` (F2), so its HEAD need not be the intended base, for example an advanced
-`origin/main` or a stacked parent's head. When the intended base is not local,
-the manager fetches before it writes the brief.
+writes to it: no switch, reset, pull, stash, commit or file edit. The exceptions
+are:
+
+- The manager's records under t3-compose's Git-ignored `.local/state/`.
+- The quota state that the personal routing policy in `.local/` assigns to the
+  manager.
+- Notes in the personal routing policy that record a decision Shawn made and its
+  date. The manager does not change routing values or account order without
+  Shawn's instruction.
+- A plain `git fetch`, which adds objects and updates remote-tracking refs.
+- A push of a reviewed commit for publication, which changes only the remote and
+  its remote-tracking refs.
+- Operations that Shawn explicitly requests.
+
+Neither a fetch nor a push moves HEAD, the index, the working tree, a stash or a
+local branch. That checkout's local `main` can lag `origin` (F2), so its HEAD need
+not be the intended base, for example an advanced `origin/main` or a stacked
+parent's head. When the intended base is not local, the manager fetches before it
+writes the brief.
 
 Each Worker brief therefore names three commits:
 
-- The provisioned commit: the manager checkout's HEAD, where T3 starts the
-  Worker's worktree.
+- The provisioned commit: the checkout HEAD of the thread that dispatches the
+  Worker, where T3 starts the Worker's worktree. That thread is the manager's, or
+  a feature lead's for the lead's own children.
 - The start commit: a new Task's base, or the previous head for a Corrections or
   continuation round.
 - The Task's review base. It does not change between rounds.
@@ -380,10 +392,10 @@ the takeover exception under
    retries of that same dispatch and retain the returned `taskId`.
 4. Dispatch asynchronously with explicit provider/model selection. Use T3-managed
    worktree isolation for new writers. Confirm first that the start commit exists
-   and that the manager checkout's HEAD is still the provisioned commit. T3 starts
-   the worktree at that HEAD and copies no uncommitted changes. Before any edit,
-   the Worker checks HEAD as [Manager threads and bases](#manager-threads-and-bases)
-   describes.
+   and that the dispatching thread's checkout HEAD is still the provisioned
+   commit. T3 starts the worktree at that HEAD and copies no uncommitted changes.
+   Before any edit, the Worker checks HEAD as
+   [Manager threads and bases](#manager-threads-and-bases) describes.
 5. On completion, inspect the returned artifacts and commit. A completed T3 turn
    does not prove the brief is complete. Reconcile uncertain dispatches before
    launching another writer; use T3 status/history rather than blind retries.
@@ -458,9 +470,14 @@ App, scoped to t3-compose, and runs `git push` and `gh` with the token only in
 their environment. The App's ID, installation account and Keychain item are
 personal configuration in `.local/`. An interim token step in `.local/` serves
 until the implementation plan decides where the helper provides it. The token
-step clears Git's other credential helpers for the push, so a push cannot fall
-back to Shawn's stored credentials. Before the manager reports a Task PR-ready,
-it also confirms that GitHub records the Worker App as the pull request's author.
+step clears Git's other credential helpers and refuses SSH transport for the
+push, so a push cannot fall back to Shawn's stored credentials or SSH key.
+
+When the manager opens a pull request, it names the repository, head branch and
+base branch explicitly. Before it reports a Task PR-ready, it also confirms that
+GitHub records the Worker App as the pull request's author. If this check fails,
+or the pull request's head commit differs from the reviewed head, the manager
+reports the failure to Shawn and does not report the Task PR-ready.
 
 The Worker App lacks the workflows permission, so it cannot push changes under
 `.github/workflows/`; Shawn pushes those changes. This is known from the same
@@ -476,11 +493,14 @@ through pull requests. Someone holding Shawn's login could still edit the
 ruleset, so it guards against mistakes, not deliberate bypass; it is not a
 security boundary.
 
-The repository is public, so tracked files never hold the owner's email, keys or
-tokens, the Jev key file's path, paths under the owner's configuration
+The repository is public, so tracked files, commit messages and GitHub posts,
+such as pull request titles, bodies and comments, never hold the owner's email,
+keys or tokens, the Jev key file's path, paths under the owner's configuration
 directories, agy account or provider-instance names, T3 or Session IDs, or
-rapid-ship's task list; write "recorded in `.local/`" instead. Commit metadata
-does carry the owner's email, which F7 found already public.
+rapid-ship's task list; write "recorded in `.local/`" instead. Before it
+publishes, the manager checks the commit messages and the pull request's title
+and body against the private identifier list in `.local/`. Commit author and
+committer fields do carry the owner's email, which F7 found already public.
 
 ## Design refinement
 
@@ -548,7 +568,9 @@ The first live pilot must demonstrate:
 
 That first restart comes before any pilot Task is dispatched. The pilot must also
 restart the manager once while a dispatched pilot Task is in flight, and show that
-the records plus live T3 and Git state give the same work state.
+the records plus live T3 and Git state give the same work state. The in-flight
+restart keeps the thread that dispatched the Task, because only that thread
+manages the Task's child; the implementation plan defines how the restart is done.
 
 Then exercise one bounded agy task and a design-refinement task through the same
 quality standard. Confirm receipt and validation of the required evidence rather
@@ -717,11 +739,11 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   - Status: verified live on 2026-10-27 through the GitHub API.
   - Changes: supports re-home decision 4 and the note on commit metadata in
     [t3-compose repository workflow](#t3-compose-repository-workflow).
-- **F8, T3 renames children's branches.** Four times on 2026-10-27, T3 renamed
-  a child's branch after provisioning: 12 s, 14 s, 15 s and 24 s after
-  `git worktree add`, all before the child's first commit. In one case T3
-  renamed the branch 2 s after the child had moved it to its start commit, and
-  the branch kept that commit.
+- **F8, T3 renames children's branches.** On 2026-10-27, T3 renamed the branch
+  of every worktree-isolated child that the build manager checked, 12 s to 24 s
+  after `git worktree add` and before the child's first commit. A rename can come
+  after the child has moved its branch to its start commit; the branch keeps that
+  commit.
   - Status: observed by the build manager in the branch reflogs; recorded in
     `.local/`.
   - Changes: [Sources of truth and local records](#sources-of-truth-and-local-records)
