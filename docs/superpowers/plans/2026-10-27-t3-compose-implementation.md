@@ -164,7 +164,7 @@ example `github.com/proxy-hatch/t3-compose`. HTTPS and SSH forms give the same
 identity. Labeled synthetic runs use `synthetic/<name>`.
 
     records/<identity>/work/<WORK-ID>/work.json
-    records/<identity>/work/<WORK-ID>/events/<seq>-<kind>.json
+    records/<identity>/work/<WORK-ID>/events/<seq>.json
 
 - `work.json` is written once. It holds `workId`, `linearIssue` (`null` where
   the repository has no Linear backlog), `repository`, `targetBranch`,
@@ -174,7 +174,10 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
   latest one applies.
 - Events are append-only, one file each, never edited or deleted. Each holds
   `schemaVersion`, `seq`, `kind`, `at` (UTC), `writer`, `helperCommit` and
-  `data`. Commits are full 40-character SHAs.
+  `data`. The filename contains only the sequence; the kind is inside the file.
+  Each `<seq>.json` is created exclusively, so only one writer can own a
+  sequence number, even when writers append different kinds. Commits are full
+  40-character SHAs.
 - A writer is `manager@<identity>` for the manager thread bound to that
   repository, or `lead:<WORK-ID>@<identity>` for a Feature lead.
 - An unresolved value is `{"unknown": "<what is unresolved>"}`, never an
@@ -356,8 +359,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Interfaces.** None; design text only.
 - **Changes.**
   - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, in the design.
-    Decision 1 replaces open decision 4. Retire the open-decisions section and
-    fix the status line and all links to it (plan input 3).
+    Decision 1 replaces open decision 4. Keep a heading named "Open decisions"
+    with one line saying no decisions remain open and linking to the sections
+    recording them, so links to `#open-decisions` keep working. Update the
+    status line and superseded references to open items (plan input 3).
   - Replace the design's Reviewer-tier rule with decision 5: document reviews,
     enumerated Corrections and scoped re-reviews use the medium tier; first
     reviews of challenging code follow the Task's tier; agy is never a Reviewer.
@@ -373,8 +378,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     resolves it. A mismatched pull request head, or author where identity
     rules name one, means "report to Shawn; not PR-ready" (items 1 and 2).
   - Record Shawn's choice on GitHub-generated squash trailers (item 14) when
-    he supplies it. Until then, retain that one explicit open item; do not
-    infer an exception to commit-message privacy from public commit metadata.
+    he supplies it. Until then, retain that one explicit owner item separately
+    from the "Open decisions" heading; do not infer an exception to
+    commit-message privacy from public commit metadata.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -387,7 +393,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   contradictions. Tier names replace fixed Worker, Reviewer and Feature lead
   model names. Items 1 to 4, 13 and 14 have the dispositions above. No other
   design decision changes. Tree and message privacy checks are clean; all
-  links and anchors resolve.
+  links and anchors resolve, including `#open-decisions` with its heading and
+  one-line pointer to the recorded decisions.
 - **Offline tests.** Link and privacy checks; after HS-1 merges, `SUITE`,
   unchanged. DOC-1 has no runtime prerequisite.
 - **Depends on.** This plan, merged. Item 14's final wording waits for Shawn;
@@ -467,8 +474,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     changes an event.
 - **Rules.**
   - An event goes to a temporary file, is synced, then is linked to
-    `<seq>-<kind>.json` by exclusive create. A failed link means a second
-    writer, and the command exits 2.
+    `<seq>.json` by exclusive create; its kind is inside the file. An existing
+    destination means another writer owns that sequence, and the command exits
+    2 without replacing the event or retrying at a later sequence.
   - The writer must equal the record's current writer. A `writer-transfer`
     needs a reconciliation showing the old writer stopped, its children were
     reconciled and its artifacts preserved. It also needs a checkpoint of the
@@ -494,10 +502,16 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Acceptance.**
   1. Each event kind's required fields have a passing and a failing test.
   2. A failure injected at each atomic-write step leaves the old or new file,
-     never a partial one; written data has mode 0600. A crash before and after
-     an event link leaves a readable store; `reconcile` reports the interrupted
-     write and `repair` removes orphaned temporary files only.
-  3. Of two writers racing on one record, one wins and one exits 2.
+     never a partial one; written data has mode 0600. Test an interrupted write
+     immediately before and after an event link, followed by recovery:
+     `reconcile` reports orphaned temporary files, `repair` removes only those
+     files, and a restarted append uses the next available sequence. The store
+     stays readable, any linked event remains unchanged, and recovery leaves
+     no partial events, duplicate sequences or sequence gaps.
+  3. Race two writers using the current writer identity to append different
+     kinds at the same sequence on one record. Exactly one `<seq>.json` is
+     created with the winning kind inside; one writer wins and the other exits
+     2 without overwriting it or appending at a later sequence.
   4. An intent without confirmation appears in `reconcile`. A second writer
      is refused for both unconfirmed and confirmed-but-running dispatches,
      and for reconciliations with unknown liveness or unpreserved work. Only a
@@ -1337,8 +1351,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 | ID | When | Who | What | Label |
 |---|---|---|---|---|
 | L1 | after CF-1 | Shawn, or the manager at his instruction | Add the version-2 sections to the routing config with Shawn's values; `t3c config check` passes | owner step |
-| L2 | after JV-1 | manager | `live/jev_contract.py`: one call to the pinned model | live, synthetic |
-| L3 | after RT-1 | manager | Save a real catalog; run `live/catalog_shape.py` and one `t3c route select` on a synthetic work | live |
+| L2 | after JV-1 and L1 | manager | `live/jev_contract.py`: one call to the pinned model | live, synthetic |
+| L3 | after RT-1 and L1 | manager | Save a real catalog; run `live/catalog_shape.py` and one `t3c route select` on a synthetic work | live |
 | L4 | after GA-1 | manager | `t3c publish check` | live |
 | L5 | after PB-1 | manager | Publish the next pull request with `t3c publish push` and `t3c publish pr` | live |
 | L6 | after SK-1 | Shawn, or the manager at his request | `t3c skill install`; a new manager Session lists the skill | live |
@@ -1369,7 +1383,7 @@ Shawn authorized the scratch thread and manual clear for L7 ([decision 3](#decis
 |---|---|---|
 | 0 | HS-1, DOC-1; L7 independently | this plan's merge; L7 has owner authorization |
 | 1 | CF-1, RC-1, PV-1a | HS-1; DOC-1 may finish alongside them |
-| 2 | RT-1, JV-1; L1 to L3 as ready | RT-1: CF-1, RC-1. JV-1: CF-1, RC-1, PV-1a. L1: CF-1. L2: JV-1. L3: RT-1 |
+| 2 | RT-1, JV-1; L1 to L3 as ready | RT-1: CF-1, RC-1. JV-1: CF-1, RC-1, PV-1a. L1: CF-1. L2: JV-1, L1. L3: RT-1, L1 |
 | 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1. EV-1: RC-1. PV-1b: PV-1a. BT-1, HC-1: HS-1, RC-1. GA-1: HS-1 |
 | 3a | GA-2, then GA-3; other stage-3 Tasks may continue | GA-2: GA-1. GA-3: GA-2 |
 | 4 | PB-1; RP-1 may still run | RC-1, EV-1, PV-1b, GA-3 |
@@ -1380,10 +1394,10 @@ Shawn authorized the scratch thread and manual clear for L7 ([decision 3](#decis
 
 Routing comes first, as Shawn requested on 2026-10-27. Dispatch CF-1, RC-1
 and PV-1a first, then RT-1 as soon as CF-1 and RC-1 finish; JV-1 also needs
-PV-1a. L1 to L3 run as their prerequisites finish. The router goes live once
-JV-1, RT-1 and L1 to L3 pass, before publication and the skill. DOC-1's
-remaining squash-trailer choice does not block routing. L7 is independent of
-the helper and can run while the routing path is built.
+PV-1a. L1 follows CF-1; L2 follows JV-1 and L1; L3 follows RT-1 and L1.
+The router goes live once JV-1, RT-1 and L1 to L3 pass, before publication
+and the skill. DOC-1's remaining squash-trailer choice does not block routing.
+L7 is independent of the helper and can run while the routing path is built.
 
 The stages give dispatch priority, not extra dependencies. EV-1, PV-1b,
 BT-1, HC-1 and GA-1 may start earlier once their listed dependencies finish
@@ -1414,7 +1428,7 @@ step's reviews leave to this plan.
 |---|---|---|---|
 | 1 | A privacy match before publication | Decided. A match blocks publication. A match in a commit's message or tree returns to the Worker in a Corrections round whose brief carries the privacy-rewrite exception, which covers only unpublished commits. The manager fixes its own text: branch name, title and body. Shawn decides when an identifier seems necessary. | PV-1b, PB-1, BT-1, SK-1; DOC-1 records it |
 | 2 | The failure action for the head-commit check | Decided. It applies to every repository: report to Shawn; not PR-ready. | PV-1b; DOC-1 records it |
-| 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4, retires that section, fixes its links, and keeps only the pending squash-trailer choice. | DOC-1 |
+| 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4 and keeps an "Open decisions" heading with one line saying no decisions remain open and pointing to their recorded answers, preserving `#open-decisions`. The pending squash-trailer choice stays a separate owner item. | DOC-1 |
 | 4 | Risk floors and the documentation criterion | Decided by Shawn on 2026-10-27 ([decision 1](#decisions)). Floors count changed behavior; documents are medium and technical project documentation is software engineering. CF-1 defines the fields; the confirmed values enter `.local/` at L1. | CF-1, L1, DOC-1 |
 | 5 | The interim token step | Decided. The helper absorbs it. GA-1 (minting, scope, revocation), GA-2 (running a command) and GA-3 (refusals before minting) port its reviewed behavior: the key only in an anonymous pipe, the token only in the child's environment, the helper reset, SSH refusal and redirect refusal. PB-1 builds the flow. After L4 and L5, the manager stops using the interim step, and Shawn may delete it. | GA-1, GA-2, GA-3, PB-1 |
 | 6 | The interim step's two questions | Decided. Keep `protocol.ssh.allow=never` and remove an inherited `GIT_ALLOW_PROTOCOL`. Revoke every token: `check` fails when revocation fails; `run` warns and keeps the child's status. | GA-1, GA-2 |
