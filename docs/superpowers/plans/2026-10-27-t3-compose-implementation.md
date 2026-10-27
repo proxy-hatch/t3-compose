@@ -49,9 +49,10 @@ work cycle uses. Brief templates carry the rules into each Assignment.
 - rapid-ship stays on hold until the pilot starts
   ([re-home decision 2][d-rehome]). No Task reads or runs anything in rapid-ship.
 - The manager never moves or writes the owner's checkout beyond the design's
-  list ([Manager threads and bases][d-bases]). A merged Task reaches the
-  installed helper and skill only when that checkout's `main` is updated
-  ([question 2](#questions-for-shawn)).
+  list ([Manager threads and bases][d-bases]). After a merge, the manager reads
+  the actual checkout HEAD. It may run `git pull --ff-only` on the owner's
+  clean `main` only when T3 has not already fast-forwarded it
+  ([decision 2](#decisions)).
 
 ## Conventions for every Task
 
@@ -79,19 +80,20 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   and run only when the manager runs them after review. Synthetic inputs are
   labeled synthetic. No offline or simulated test counts as a live pass. Live
   quota failover stays unverified until a real exhaustion event.
-- **Routing.** Each Task names its risk facts from the proposed list
-  ([Open decisions][d-open], item 4): unresolved design, a security or
-  guardrail boundary, and subtle invariants floor at challenging; a shared
-  interface change floors at medium. A floor applies to what the Task changes:
-  code that handles a key or token, or enforces a guardrail, is challenging; a
-  document that describes a guardrail is not. The domain is software
-  engineering; documentation Tasks count as software engineering under the
-  proposed documentation criterion. The tier shown is a proposal. The manager
-  confirms it at dispatch; until the router is live, it routes in prose and
-  records the class and reason. The Reviewer tier is the higher of medium and
-  the highest tier at which any Worker on the Task ran, for every review of the
-  Task. As this plan reads the design, a Task's floors also bind its
-  Corrections rounds ([question 5](#questions-for-shawn)).
+- **Routing.** Each Task names its risk facts. A floor applies to what the
+  Task changes, not what it mentions. First implementations of code that
+  handles credentials or enforces a guardrail, and recovery or concurrency
+  invariants, go to the challenging tier. Shared interface changes go to the
+  medium tier. Documents go to the medium tier; exact-text, mechanical edits
+  can be carved out for the easy tier. Technical documentation of a software
+  project counts as software engineering. The config decides the model for
+  each tier. The manager confirms the route at dispatch and records its class
+  and reason; until the router is live, it routes in prose. Corrections rounds
+  with enumerated findings and scoped re-reviews follow the prose rules at the
+  medium tier. Document reviews are medium. First reviews of challenging code
+  follow the Task's tier; other first reviews are at least medium. agy is never
+  a Reviewer. DOC-1 aligns the design with these owner decisions
+  ([decisions 1 and 5](#decisions)).
 - **Records.** Until RC-1 is installed, the manager keeps its manual dispatch
   log in `.local/`. From then on it records through the helper. The manual log
   stays as history and is not migrated.
@@ -131,10 +133,10 @@ reports it; the manager decides.
 | `t3c event add` | append one validated event | RC-1 |
 | `t3c evidence check` | `verified`, or the gaps, for one head | EV-1 |
 | `t3c route classify` | one bounded Jev request | JV-1 |
-| `t3c route judge`, `select` | manager judgment; final tier and selection | RT-1 |
+| `t3c route input`, `judge`, `select` | routing input; manager judgment; final tier and selection | RT-1 |
 | `t3c quota show`, `record`, `activate` | agy quota state | RT-1 |
-| `t3c privacy check` | the identifier list against messages, trees, branch name and pull request text | PV-1 |
-| `t3c pr verify` | head, base, state and author of a pull request | PV-1 |
+| `t3c privacy check` | the identifier list against messages, trees, branch name and pull request text | PV-1b |
+| `t3c pr verify` | head, base, state and author of a pull request | PV-1b |
 | `t3c publish check` | mint a token, verify its scope, revoke it | GA-1 |
 | `t3c publish run -- CMD` | run one command with the App token | GA-2, GA-3 |
 | `t3c publish push`, `pr` | the t3-compose publication flow | PB-1 |
@@ -147,9 +149,11 @@ Nothing secret goes to either. Exit codes: 0 success; 1 check failed (blocked
 or not verified); 2 invalid input or records; 3 invalid config, which blocks
 routing; 4 manager judgment needed; 5 report to Shawn; 75 busy.
 
-Every file the helper writes is written atomically (a temporary file in the same
+Every data file the helper writes is written atomically (a temporary file in the same
 directory, fsync, then rename or exclusive link, then a directory fsync), with
-mode 0600. The helper finds its root from its own real path, and `.local/`
+mode 0600. HC-1's lock inode is the exception: it is created once with mode
+0600 and never replaced or unlinked; its status is a separate data file. The
+helper finds its root from its own real path, and `.local/`
 beside it. A `--local-dir` option exists for tests.
 
 ### Record format
@@ -180,23 +184,42 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
 
 | Kind | Required data |
 |---|---|
-| `routing-classification` | input digest, rule version, criteria text and digest, declared risk facts, pinned model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
-| `routing-judgment` | domain, difficulty, reason, basis (Jev failure, low confidence, mixed or unclear, manual) |
-| `routing-selection` | role, tier, floors applied, escalation, selection, availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
+| `routing-input` | task (original intent, acceptance, interfaces, scope, risk facts and dependencies), context (retry context or null), canonical input digest, routing-policy digest |
+| `routing-classification` | routing-input reference and digest, routing-policy digest, rule version, criteria text and digest, declared risk facts, pinned model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
+| `routing-judgment` | routing-input reference and digest, routing-policy digest, domain, difficulty, reason, basis (Jev failure, low confidence, mixed or unclear, manual) |
+| `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
 | `dispatch-intent` | role, round, `clientRequestId`, brief path and digest, selection, provisioned, start and review-base commits, dispatching checkout, isolation |
 | `dispatch-confirmed` | `clientRequestId`, `taskId`, child thread reference, worktree path or unknown |
-| `result` | `taskId`, worktree path, result commit, parent commit, branch observed, Worker claims, facts the manager verified, questions |
+| `result` | `taskId`, completed T3 status evidence, worktree path, result commit, parent commit, branch observed, Worker claims, facts the manager verified, questions |
 | `check` | check ID, command, commit, outcome, source (manager, Reviewer, assigned Session or Worker), evidence path |
 | `criterion-evidence` | criterion ID, commit, source, evidence |
 | `review` | review `taskId`, base, head, verdict, findings (ID, severity, summary) |
-| `finding-disposition` | finding ID, the Worker's response, disposition, by, evidence |
-| `op-intent`, `op-result` | operation (push, pull request or other), target, commit; then the result and how it was confirmed |
+| `finding-disposition` | review task reference, finding ID, the Worker's response, disposition, by, evidence |
+| `op-intent`, `op-result` | operation (push, pull request or other), target, commit, expected prior head or absence for a push; then the result and how it was confirmed |
 | `decision` | question, answer or unknown, decided by, date |
 | `scope` | the replaced fields and the decision that changed them |
 | `next-action` | action or unknown |
 | `reconciliation` | the uncertain item, live T3 and Git facts, outcome |
-| `restart` | phase (before or after), snapshot digest |
-| `writer-transfer` | from, to, reconciliation reference |
+| `restart` | phase (before or after), checkpoint (last sequence and prefix digest), before-event reference for the after phase |
+| `handoff` | pointers, hold end condition, pilot criteria, next action, checkpoint |
+| `writer-transfer` | from, to, reconciliation reference, checkpoint |
+
+A finding's key is `(review task reference, finding ID)`. A disposition must
+name an existing finding in that review; the same ID in a later round is a
+different finding. A checkpoint holds the last sequence and the digest of
+`work.json` plus the ordered event prefix through that sequence, before the
+checkpoint-bearing event. A verification recomputes that prefix, not the current
+snapshot. Handoff, restart and writer-transfer events never hash themselves.
+
+The common routing input is `{task, context}` and is capped at 16 KiB. `task`
+has only the six fields above; `context` is null or the supplied retry context.
+Its digest covers that whole canonical JSON object.
+The routing-policy digest covers classification instructions, criteria and rule
+version, risk facts and floors, the pinned Jev model, confidence threshold,
+retry limit and uncertainty rule. CF-1 computes it from validated config. JV-1
+and RT-1 use RC-1's common input recorder; judgments have the same freshness
+contract as classifications. Selection names the current input and policy
+explicitly and also records the whole config digest for model preferences.
 
 Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
 (with evidence), `declined` (minor findings only, with a reason), `withdrawn`
@@ -235,7 +258,8 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
       "availabilityFallback": {
         "roles": ["worker", "reviewer", "feature-lead"],
         "manager": "owner-choice",
-        "chains": [{"from": Selection, "to": [Selection]}],
+        "chains": [{"tier": "medium" | "challenging",
+                    "from": Selection, "to": [Selection]}],
         "recordReason": true, "reportReason": true}
     }
     Selection     = {"providerInstanceId": "<instance>", "model": "<model>",
@@ -255,10 +279,14 @@ Validation rules:
   `uncertainResult` is `manager-judgment`.
 - No pool member appears in `modelPreferences` or in a fallback chain, so agy is
   never a Reviewer and never a fallback.
-- Each chain has exactly one target, so nothing falls back twice. Each `from`
-  appears once. `from` and `to` are configured preferences at the same tier. A
-  chain without its reverse is printed as a notice, not an error, because
-  directions are owner values.
+- Each chain has an explicit tier and exactly one target. Each `(tier, from)`
+  appears once, and its target differs from its source. Both endpoints are
+  validated selections associated with that tier; neither must be a primary
+  preference. This allows a configured primary to fall back to a non-primary
+  selection and permits its reverse chain. A chain without its reverse is a
+  notice, not an error, because directions are owner values. RT-1 enforces role
+  eligibility, tier association and live availability at selection and uses no
+  second chain after a fallback.
 - `easyWorker` and `textHelper` name a configured pool.
 - The digest is `sha256:` and the hex SHA-256 of the file's bytes. Every routing
   record and dispatch intent stores it.
@@ -275,8 +303,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 
 ### HS-1 Helper skeleton and offline harness
 
-- **Objective.** Create the package, the entry point, the shared JSON and
-  atomic-write utilities, the offline guard and the test command, so that later
+- **Objective.** Create the package, the entry point, the shared JSON
+  read utilities, the offline guard and the test command, so that later
   Tasks only add modules.
 - **Design.** [Sources of truth and local records][d-records] (the helper);
   [t3-compose repository workflow][d-workflow] (`AGENTS.md` and its test
@@ -294,14 +322,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   It loads each module that exists and calls its `register`, which may add
   commands to a group that other modules share. A module that exists but fails
   to import is an error, not a skip. `t3c version` prints the root, commit,
-  dirty flag and Python version. `jsonio` provides canonical JSON, file digests,
-  size-capped reads, atomic replace and exclusive create.
+  dirty flag and Python version. `jsonio` provides canonical JSON, file digests
+  and size-capped reads. Atomic persistence and crash recovery belong to RC-1.
 - **Acceptance.**
   1. `python3 -I -S bin/t3c version` works under both interpreters. Without
      `-I` or `-S` it exits 2 and prints the correct command.
   2. A missing module is skipped; a broken module fails loudly.
-  3. A failure injected at each step of an atomic write leaves the old file or
-     the new file, never a partial one. Written files have mode 0600.
+  3. Canonical JSON and file digests are stable, and oversized reads fail.
   4. The offline guard blocks network sockets, `urllib`, and `security`, `gh`,
      `ssh` and `curl` subprocesses. A test proves each block.
   5. `tests/test_labels.py` fails when a test class lacks the guard or the
@@ -309,12 +336,69 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   6. `AGENTS.md` names `SUITE` and says that only the manager runs `live/`.
 - **Offline tests.** `SUITE`.
 - **Depends on.** This plan, merged.
-- **Parallel with.** None; every other Task depends on it.
+- **Parallel with.** DOC-1; later code Tasks depend on HS-1.
 - **Risk facts and tier.** Shared interface change (layout, registry, exit
-  codes) → medium → Sonnet 5.5 High. Reviewer: medium.
-- **Review focus.** The registry's skip rule; the guard's completeness; write
-  and fsync order; flag handling under Python 3.9.
-- **Size.** About 450 lines.
+  codes) → the medium tier. Reviewer: medium.
+- **Review focus.** The registry's skip rule; the guard's completeness; JSON
+  read limits; flag handling under Python 3.9.
+- **Size.** About 350 lines.
+
+### DOC-1 Design alignment with owner decisions
+
+- **Objective.** Reconcile the design with Shawn's decisions of 2026-10-27,
+  replace stale routing text, and record publication failure actions.
+- **Design.** [Open decisions][d-open]; [Routing and personal configuration][d-routing];
+  [Manager threads and bases][d-bases]; [Accepted review policy][d-review];
+  [Feature lead options][d-leads]; [Design refinement][d-refine];
+  [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow].
+- **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`
+  only.
+- **Interfaces.** None; design text only.
+- **Changes.**
+  - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, in the design.
+    Decision 1 replaces open decision 4. Retire the open-decisions section and
+    fix the status line and all links to it (plan input 3).
+  - Replace the design's Reviewer-tier rule with decision 5: document reviews,
+    enumerated Corrections and scoped re-reviews use the medium tier; first
+    reviews of challenging code follow the Task's tier; agy is never a Reviewer.
+  - Replace fixed model names in routing, Feature lead, design-refinement and
+    fallback text, including earlier decision summaries, with tier names and
+    configured selections. The config decides models, options and availability
+    fallbacks. Preserve the Engineering manager's owner-chosen identity rule.
+  - Update the checkout rule and F2: after a merge, read the actual HEAD; the
+    manager may pull a clean `main` with `--ff-only` only if T3 has not already
+    fast-forwarded it. Read the provisioned commit again at dispatch (item 13).
+  - Checks and publication gains two rules for every repository. A
+    private-identifier match blocks publication until Corrections or Shawn
+    resolves it. A mismatched pull request head, or author where identity
+    rules name one, means "report to Shawn; not PR-ready" (items 1 and 2).
+  - Record Shawn's choice on GitHub-generated squash trailers (item 14) when
+    he supplies it. Until then, retain that one explicit open item; do not
+    infer an exception to commit-message privacy from public commit metadata.
+- **Easy carve-outs.** Reserve the following exact text for a sequential
+  Assignment at the easy tier after the reconciling edits finish, with the
+  decision date and exclusive ownership of the design for that Assignment:
+  "Documents are medium. Technical documentation of a software project counts
+  as software engineering. A floor applies to what a Task changes, not what it
+  mentions." For item 14, copying Shawn's eventual wording is also an easy-tier
+  follow-up when the brief supplies that text. Any follow-up edits get current
+  checks and a medium-tier re-review; they do not run beside DOC-1's writer.
+- **Acceptance.** Decisions 1, 2 and 5 replace the superseded text without
+  contradictions. Tier names replace fixed Worker, Reviewer and Feature lead
+  model names. Items 1 to 4, 13 and 14 have the dispositions above. No other
+  design decision changes. Tree and message privacy checks are clean; all
+  links and anchors resolve.
+- **Offline tests.** Link and privacy checks; after HS-1 merges, `SUITE`,
+  unchanged. DOC-1 has no runtime prerequisite.
+- **Depends on.** This plan, merged. Item 14's final wording waits for Shawn;
+  the other changes can proceed now.
+- **Parallel with.** HS-1 and later code Tasks; it owns only the design.
+- **Risk facts and tier.** Reconciliation across one document → the medium
+  tier. The exact-text carve-outs above use the easy tier. Reviewer: medium,
+  never agy.
+- **Review focus.** Faithful decisions; no contradictory tier or checkout rule;
+  no inferred squash-trailer exception; resolved links.
+- **Size.** About 150 lines, including replaced text.
 
 ### CF-1 Config schema and validation
 
@@ -323,29 +407,34 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   that invalid config blocks routing.
 - **Design.** [Routing and personal configuration][d-routing];
   [Jev decision routing][d-jev] (`jev.minConfidence`, the pinned model, the key
-  source); [Open decisions][d-open], item 4.
+  source); [Open decisions][d-open], item 4, as answered by
+  [decision 1](#decisions) and reconciled by DOC-1.
 - **Files.** Create `t3compose/config.py`, `docs/configuration.md`,
   `docs/examples/agent-routing.example.json`,
   `docs/examples/agent-routing-state.example.json` and `tests/test_config.py`.
 - **Interfaces.** `t3c config check [--config PATH] [--state PATH]` prints the
   digest, the rule version, the risk facts with their floors and any notices;
   it exits 0 or 3. `load_config()` returns a validated, read-only view and its
-  digest. Nothing is cached between commands, so a valid edit applies to the
+  digest, plus the routing-policy digest defined in [Record format](#record-format).
+  Nothing is cached between commands, so a valid edit applies to the
   next dispatch and running children keep their recorded selection.
 - **Acceptance.**
   1. Each validation rule has a passing and a failing test.
   2. The current version-1 shape fails with a message that names the missing
      sections.
-  3. Both examples pass and use synthetic instance names.
+  3. Both examples pass and use synthetic instance names. A primary with a
+     non-primary fallback and its reverse pass; missing tier associations,
+     duplicate sources in one tier and pool endpoints fail.
   4. An error names the path and the rule, and never prints a value read from a
      key file.
   5. `docs/configuration.md` says that Shawn changes values, or the manager at
      his instruction, and that a change applies to the next dispatch only.
 - **Offline tests.** `SUITE -p 'test_config.py'`, then `SUITE`.
 - **Depends on.** HS-1.
-- **Parallel with.** RC-1, HC-1, BT-1, PV-1, GA-1.
+- **Parallel with.** RC-1, PV-1a; DOC-1 may still run.
 - **Risk facts and tier.** Shared interface change (JV-1 and RT-1 read this
-  contract) → medium → Sonnet 5.5 High. Reviewer: medium.
+  contract) → the medium tier. Schema validation is bounded and fully
+  testable; RT-1 enforces role exclusions. Reviewer: medium.
 - **Review focus.** Strictness; the agy and fallback rules; that no routing
   preference hides in a constant.
 - **Size.** About 700 lines.
@@ -361,15 +450,19 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Taking over existing Claude work][d-takeover] (reconcile before acting).
 - **Files.** Create `t3compose/records.py`, `t3compose/schema.py` (event kinds
   as data), `docs/records.md`, `tests/test_records.py` and
-  `tests/test_reconcile.py`.
+  `tests/test_reconcile.py`. Modify `t3compose/jsonio.py` and
+  `tests/test_jsonio.py` to add atomic replace and exclusive create.
 - **Interfaces.**
   - `t3c work new --repo REPO --work ID --file WORK.json --writer W`
   - `t3c event add --repo REPO --work ID --kind KIND --file DATA.json --writer W [--checkout PATH]`
-  - `t3c work show|list|snapshot|reconcile|repair --repo REPO [--work ID]`
-  - `REPO` is an identity or a checkout path. `snapshot` prints a canonical
-    digest of the record state. `reconcile` lists uncertain items: intents
-    without confirmation, confirmed dispatches without a result or a
-    reconciliation, operation intents without results, and orphaned temporary
+  - `t3c work show|list|snapshot|reconcile|repair --repo REPO [--work ID] [--through-seq N]`
+    (`--through-seq` is for `snapshot` only).
+  - `REPO` is an identity or a checkout path. `snapshot` prints a checkpoint:
+    the last sequence and the canonical digest of `work.json` and its event
+    prefix. `--through-seq` recomputes an earlier checkpoint. `reconcile` lists
+    uncertain items: intents without confirmation, confirmed dispatches without
+    a completed result or a stopped-and-preserved reconciliation, operation
+    intents without results, and orphaned temporary
     files. `repair` prints and then removes orphaned temporary files; it never
     changes an event.
 - **Rules.**
@@ -377,77 +470,173 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     `<seq>-<kind>.json` by exclusive create. A failed link means a second
     writer, and the command exits 2.
   - The writer must equal the record's current writer. A `writer-transfer`
-    needs a reconciliation reference.
-  - In a Worker's `dispatch-intent`, the three commits are full SHAs and the
-    review base equals the record's. Round 1 starts at the review base. A later
+    needs a reconciliation showing the old writer stopped, its children were
+    reconciled and its artifacts preserved. It also needs a checkpoint of the
+    prefix before the transfer; uncertain liveness blocks transfer.
+  - In a Worker's `dispatch-intent`, read the dispatching checkout's actual
+    HEAD at dispatch for the provisioned commit; never assume it lags origin.
+    The three commits are full SHAs and the review base equals the record's. Round 1 starts at the review base. A later
     round starts at the latest recorded result commit, or at the previous start
     when no result commit exists. With `--checkout`, the helper confirms that
     the dispatching checkout's HEAD is the provisioned commit and that the
     start commit exists. A Reviewer's intent records the review base and the
     head under review instead.
-  - A `dispatch-intent` for a writer is refused while an earlier dispatch on
-    the same work is unresolved, so no duplicate writer starts. A retry reuses
-    the intent: the same `clientRequestId` and the same brief digest.
-  - A `result` needs a worktree path and a result commit. A branch name is
-    informational only ([finding F8][d-findings]).
+  - A `dispatch-intent` for a writer is refused until the prior writer has a
+    completed result with T3 evidence, or a reconciliation proves it stopped
+    and its commits and uncommitted work were preserved. A
+    `dispatch-confirmed` only identifies a dispatch; it never clears this
+    block. Unknown liveness blocks a new writer. A retry reuses the same
+    intent, `clientRequestId` and brief digest; it is not a new writer.
+  - A `result` needs completed T3 status evidence, a worktree path and a result
+    commit. A branch name is informational only ([finding F8][d-findings]).
   - An invalid record makes commands on that work exit 2. Other work stays
     usable.
 - **Acceptance.**
   1. Each event kind's required fields have a passing and a failing test.
-  2. A crash injected before and after the link leaves a readable store;
-     `reconcile` reports the interrupted write and `repair` removes it.
+  2. A failure injected at each atomic-write step leaves the old or new file,
+     never a partial one; written data has mode 0600. A crash before and after
+     an event link leaves a readable store; `reconcile` reports the interrupted
+     write and `repair` removes orphaned temporary files only.
   3. Of two writers racing on one record, one wins and one exits 2.
-  4. An intent without confirmation appears in `reconcile`, and a second
-     writer intent on that work is refused until a `dispatch-confirmed` or a
-     `reconciliation` event exists.
-  5. `snapshot` is stable across reads and changes whenever an event is added.
+  4. An intent without confirmation appears in `reconcile`. A second writer
+     is refused for both unconfirmed and confirmed-but-running dispatches,
+     and for reconciliations with unknown liveness or unpreserved work. Only a
+     completed result or a stopped-and-preserved reconciliation clears it.
+  5. `snapshot` is stable across reads. Its current digest changes on append,
+     but a saved prefix checkpoint verifies after restart, handoff and writer
+     transfer events are added. A changed prefix fails verification.
   6. No command edits or deletes an event.
   7. `docs/records.md` maps each record item in the design to a field.
-- **Offline tests.** `SUITE -p 'test_records.py'`,
+  8. Repeated finding IDs in separate review rounds remain distinct; a
+     disposition with a missing or wrong review reference is refused.
+  9. Classifications and judgments must reference an existing routing input
+     with matching input and policy digests.
+- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_records.py'`,
   `SUITE -p 'test_reconcile.py'`, then `SUITE`. Fixtures use synthetic task
   IDs and paths.
 - **Depends on.** HS-1.
-- **Parallel with.** CF-1, HC-1, BT-1, PV-1, GA-1.
+- **Parallel with.** CF-1, PV-1a; DOC-1 may still run.
 - **Risk facts and tier.** Subtle invariants (recovery, data loss,
-  concurrency) → challenging → Opus 5.5 High. Reviewer: challenging.
+  concurrency) → the challenging tier. Reviewer: challenging.
 - **Review focus.** Crash windows and fsync order; the exclusive-create race;
   the duplicate-dispatch block; writer checks.
-- **Size.** About 1,100 lines. If it grows past 1,200, `snapshot`,
-  `reconcile` and `repair` move to a follow-up Task.
+- **Size.** About 1,200 lines, including the persistence tests moved from
+  HS-1. If it grows past 1,200, checkpoint and reconciliation commands move to
+  a challenging follow-up Task, which JV-1, RT-1, SK-1 and PH-1 then depend on.
 
-### EV-1 Evidence check
+### PV-1a Identifier-list loader and matcher
 
-- **Objective.** Decide whether a work's evidence covers its current head, and
-  list the gaps.
-- **Design.** [Work cycle][d-cycle], steps 5 to 8;
-  [Accepted review policy][d-review]; [Checks and publication][d-publication]
-  (a check on another commit does not cover the head).
-- **Files.** Create `t3compose/evidence.py` and `tests/test_evidence.py`.
-- **Interfaces.** `t3c evidence check --repo REPO --work ID --head SHA [--pr-ready]`
-  prints `verified` or the gaps. It exits 0 or 1, and 2 for invalid records.
-- **Rules.** Verified needs all of the following. The head is the latest result
-  commit. Every required check has a pass at the head from the manager, a
-  Reviewer or an assigned Session; a Worker's claim alone does not count. The
-  latest review covers exactly the review base and the head, and its verdict is
-  not "changes required". Every finding of
-  every round has a disposition, and no blocking or important finding is open,
-  disputed or declined. Every acceptance criterion has evidence at the head.
-  `--pr-ready` also needs a confirmed push of the head and a passing
-  `pr verify` result.
-- **Acceptance.** Offline tests cover: a stale review after the head moved; a
-  missing check; a check on another commit; Worker-only evidence; open and
-  disputed findings; a declined important finding; a finding resolved outside
-  the tree; a second-review rejection; an owner decision; missing criterion
-  evidence; a new commit after verification; and a fully verified case.
-- **Offline tests.** `SUITE -p 'test_evidence.py'`, then `SUITE`.
-- **Depends on.** RC-1.
-- **Parallel with.** JV-1, RT-1, GA-2.
-- **Risk facts and tier.** None of the floor facts: bounded logic over RC-1's
-  schema, which exhaustive tests can check → medium → Sonnet 5.5 High.
+- **Objective.** Load the private identifier list and match bounded text with
+  the manual check's semantics, so JV-1 can screen input before publication
+  checks exist.
+- **Design.** [t3-compose repository workflow][d-workflow] (the identifier
+  list); [Jev decision routing][d-jev] (private data stays out of requests).
+- **Files.** Create `t3compose/identifier_list.py` and
+  `tests/test_identifier_list.py`.
+- **Interfaces.** `load_identifiers(local_dir)` returns a validated list;
+  `match_identifiers(identifier_list, text)` returns matching list line numbers,
+  never the matched text. No new command.
+- **Rules.** Load `.local/state/private-identifiers.txt` on every check. A
+  missing, unreadable or empty list, or a pattern that `grep -E` rejects, blocks
+  with exit 2. Matching uses `grep -E`, so results equal the manual check.
+  Diagnostics name the list line number, never the pattern or matched text.
+- **Acceptance.** Offline tests with synthetic lists cover clean text,
+  matches, missing, unreadable, empty and invalid lists, equivalence with
+  `grep -E`, a list edited between calls, and output that reveals no match.
+- **Offline tests.** `SUITE -p 'test_identifier_list.py'`, then `SUITE`.
+- **Depends on.** HS-1.
+- **Parallel with.** CF-1, RC-1.
+- **Risk facts and tier.** Bounded loading and matching → the medium tier.
+  PV-1b and JV-1 enforce their publication and external-request gates.
   Reviewer: medium.
-- **Review focus.** Every path to `verified`; that Worker claims never count;
-  exact base and head matching.
-- **Size.** About 600 lines.
+- **Review focus.** Equivalence with the manual matcher; reload on every call;
+  no matched text in diagnostics.
+- **Size.** About 250 lines.
+
+### RT-1 Routing selection and agy quota
+
+- **Objective.** Turn a classification or a judgment, the declared risk facts,
+  the live catalog and the quota state into one recorded selection, or a stop.
+- **Design.** [Routing and personal configuration][d-routing];
+  [Jev decision routing][d-jev] (code applies floors and exclusions);
+  [Accepted review policy][d-review] (agy is never a Reviewer).
+- **Files.** Create `t3compose/routing.py`, `t3compose/quota.py`,
+  `live/catalog_shape.py`, `tests/test_routing.py` and `tests/test_quota.py`.
+- **Interfaces.**
+  - `t3c route input --repo REPO --work ID --input TASK.json` records the
+    common input with RC-1 and prints its reference, input digest and policy digest.
+  - `t3c route judge --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST --domain D --difficulty X --reason TEXT`
+  - `t3c route select --repo REPO --work ID --role worker|reviewer|feature-lead|text-helper --input-ref SEQ --policy-digest DIGEST --round first|corrections --review-scope code|document|corrections-delta --catalog FILE --catalog-read-at TIME [--escalate]`
+    prints the provider instance, model and options for `delegate_task`.
+  - `t3c quota show`;
+    `t3c quota record --instance I --status exhausted|available --observed-at T [--reset-at T] --evidence TEXT`;
+    `t3c quota activate --instance I --reason TEXT`.
+- **Rules.**
+  - Config is loaded and validated on every call; invalid config exits 3.
+  - Selection names the current `routing-input` reference and policy digest.
+    It loads that record, verifies it is the latest input for the work, and
+    recomputes the policy digest from current config. The classification or
+    judgment must reference exactly that input, input digest and policy digest;
+    otherwise it exits 4. Risk facts come from that input, not a separate flag.
+    Changed requirements, criteria, floors or confidence threshold require a
+    new classification or judgment. The fixed text-helper route needs no
+    classification; its input reference still records the bounded request.
+  - First-round Worker tier: the higher of the difficulty and every declared
+    fact's floor. The Corrections rule below replaces that first-round floor
+    calculation for enumerated Corrections.
+    `--escalate` sets it one step above the highest Worker tier already recorded
+    on the Task; escalation from challenging exits 4. Easy work goes to the agy
+    pool only when no floor applies.
+  - Corrections with enumerated findings use the medium tier under the prose
+    rules; a brief that adds unresolved work is split or classified afresh.
+    Reviewer tier: medium for documents and scoped Corrections re-reviews;
+    first reviews of challenging code follow the Task's tier, including any
+    escalation. Other first reviews are at least medium. The round and scope
+    are recorded; a Reviewer selection is never a pool member.
+  - Feature lead: the preference at the Task's tier, at least medium. Text
+    helper: the fixed `textHelper` route, with no classification.
+  - A selection is available only when the catalog lists the instance and the
+    model, the provider reports `canRunChildTask: true`, and the catalog
+    advertises its options. A failed status check counts as unavailable. A
+    catalog read more than 15 minutes earlier is refused.
+  - An unavailable selection uses the role's one configured fallback at the
+    selected tier, once. The target need not be a primary preference, but its
+    tier association, role eligibility and live availability are checked. If
+    the target is unavailable too, or no chain applies, the command exits 5
+    (report to Shawn). The master selection never falls back.
+  - agy: use the active account until confirmed exhaustion, then the next
+    non-exhausted account in pool order. An exhausted account returns only after
+    its reset time passes or an `available` observation. Unknown quota is usable.
+    An unavailable active account stops with exit 4; it is not rotated. When
+    every account is exhausted, the command exits 5.
+  - `route select` writes only its `routing-selection` event. `quota record`
+    and `quota activate` write the quota file atomically and keep every
+    observation. Tool and correctness failures are not quota evidence;
+    `quota record` needs a status and the evidence text.
+- **Acceptance.** Offline tests cover each rule, including a changed input,
+  criteria or threshold after both classification and judgment; an explicitly
+  named stale input or policy; a non-primary fallback; a fallback at the wrong
+  tier or ineligible for the role; and the first-review, document, Corrections
+  and scoped re-review tiers. `Simulated…` tests inject
+  quota observations to show rotation in order, wrap-around, reset evidence and
+  all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
+  (L3).
+- **Prework.** Before dispatch, the manager saves a redacted sample of a real
+  `orchestrator_capabilities` result in `.local/state/` and names it in the
+  brief. The parser reads only the fields it needs and treats an unknown shape
+  as unavailable.
+- **Offline tests.** `SUITE -p 'test_routing.py'`, `SUITE -p 'test_quota.py'`,
+  then `SUITE`.
+- **Depends on.** CF-1, RC-1.
+- **Parallel with.** JV-1; L1 and L2 as their prerequisites finish.
+- **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
+  Reviewer) and subtle invariants (one fallback, exhaustion order) →
+  the challenging tier. Reviewer: challenging.
+- **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
+  Task; one fallback at most; the rotation rules; the config digest in every
+  record.
+- **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
+  follow-up Task.
 
 ### JV-1 Jev adapter
 
@@ -468,7 +657,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     256 KiB response cap, no redirects and TLS verification.
   - The key comes from `OPENROUTER_API_KEY`, else from `jev.keyFile`. It never
     reaches argv, output, records or exception text.
-  - The input is checked against the private identifier list, with PV-1's
+  - The input is checked against the private identifier list, with PV-1a's
     loader and matcher, before it leaves the machine. A match, or a missing
     list, blocks the call.
   - Questions and criteria come from `classification` in config. The response
@@ -482,9 +671,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     most `maxContextRetries`), then manager judgment. Mixed or unclear work goes
     to the manager directly. API errors and malformed answers go to manager
     judgment. No path selects a model.
-  - The `routing-classification` event stores the fields that
-    [Record format](#record-format) lists, including the snapshot `model` from
-    each response.
+  - Before the request, RC-1's input recorder appends the canonical
+    `routing-input`, with the current routing-policy digest. A retry's context
+    is part of a new input and digest. The `routing-classification` event
+    references that input and policy, and stores every field in
+    [Record format](#record-format), including the response's snapshot `model`.
+    A config change during the request makes its classification stale for
+    selection; RT-1 requires reclassification or a fresh judgment.
 - **Acceptance.** Offline tests, with an injected HTTP layer, cover every rule,
   including NaN, infinity, a wrong sum, a missing answer, an unknown choice, a
   redirect, a timeout, HTTP 4xx and 5xx, an oversized body, a refused second
@@ -492,125 +685,242 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `live/jev_contract.py` makes one synthetic call and checks the contract that
   the design records; the manager runs it after review (L2).
 - **Offline tests.** `SUITE -p 'test_jev.py'`, then `SUITE`.
-- **Depends on.** CF-1, RC-1, PV-1.
-- **Parallel with.** EV-1, RT-1, GA-2.
+- **Depends on.** CF-1, RC-1, PV-1a.
+- **Parallel with.** RT-1; L1 and L3 as their prerequisites finish.
 - **Risk facts and tier.** Security boundary (a credential and an external
-  service) → challenging → Opus 5.5 High. Reviewer: challenging.
+  service) → the challenging tier. Reviewer: challenging.
 - **Review focus.** The key on every error path; strict validation; confidence
   compared, not probability; bounded retries; the identifier screen.
 - **Size.** About 900 lines.
 
-### RT-1 Routing selection and agy quota
+### RP-1 Router pilot with synthetic inputs
 
-- **Objective.** Turn a classification or a judgment, the declared risk facts,
-  the live catalog and the quota state into one recorded selection, or a stop.
-- **Design.** [Routing and personal configuration][d-routing];
-  [Jev decision routing][d-jev] (code applies floors and exclusions);
-  [Accepted review policy][d-review] (agy is never a Reviewer).
-- **Files.** Create `t3compose/routing.py`, `t3compose/quota.py`,
-  `live/catalog_shape.py`, `tests/test_routing.py` and `tests/test_quota.py`.
+- **Objective.** Exercise Jev routing on labeled synthetic examples while the
+  rapid-ship hold lasts, and give Shawn results for tuning the threshold, the
+  criteria and the floors.
+- **Design.** [Pilot and validation][d-pilot] (router pilots; mistaken cheap
+  routes recorded apart from unnecessary expensive ones);
+  [Jev decision routing][d-jev].
+- **Files.** Create `pilot/router-examples.json`, `live/router_pilot.py`,
+  `docs/router-pilot.md` and `tests/test_router_pilot.py`.
+- **Content.** At least twelve synthetic examples: software engineering, other
+  work, mixed scope, easy but sensitive (at least one for each confirmed floor),
+  and technical documentation. Each holds the author's expected domain, tier
+  and floors, and is labeled synthetic. The runner classifies and selects each
+  example under the `synthetic/router-pilot` identity, so synthetic decisions
+  never mix with Task records. Its summary lists mistaken cheap routes apart
+  from unnecessary expensive ones.
 - **Interfaces.**
-  - `t3c route judge --repo REPO --work ID --domain D --difficulty X --reason TEXT`
-  - `t3c route select --repo REPO --work ID --role worker|reviewer|feature-lead|text-helper --risk FACT ... --catalog FILE --catalog-read-at TIME [--escalate]`
-    prints the provider instance, model and options for `delegate_task`.
-  - `t3c quota show`;
-    `t3c quota record --instance I --status exhausted|available --observed-at T [--reset-at T] --evidence TEXT`;
-    `t3c quota activate --instance I --reason TEXT`.
-- **Rules.**
-  - Config is loaded and validated on every call; invalid config exits 3.
-  - The latest classification or judgment must match the current input digest
-    and criteria digest; otherwise the command exits 4.
-  - Worker tier: the higher of the difficulty and every declared fact's floor.
-    `--escalate` sets it one step above the highest Worker tier already recorded
-    on the Task; escalation from challenging exits 4. Easy work goes to the agy
-    pool only when no floor applies.
-  - Reviewer tier: the higher of medium and the highest tier at which any Worker
-    on the Task ran, including escalations. A Reviewer selection is never a pool
-    member.
-  - Feature lead: the preference at the Task's tier, at least medium. Text
-    helper: the fixed `textHelper` route, with no classification.
-  - A selection is available only when the catalog lists the instance and the
-    model, the provider reports `canRunChildTask: true`, and the catalog
-    advertises its options. A failed status check counts as unavailable. A
-    catalog read more than 15 minutes earlier is refused.
-  - An unavailable selection uses the role's one configured fallback, once. If
-    the target is unavailable too, or no chain applies, the command exits 5
-    (report to Shawn). The master selection never falls back.
-  - agy: use the active account until confirmed exhaustion, then the next
-    non-exhausted account in pool order. An exhausted account returns only after
-    its reset time passes or an `available` observation. Unknown quota is usable.
-    An unavailable active account stops with exit 4; it is not rotated. When
-    every account is exhausted, the command exits 5.
-  - `route select` writes only its `routing-selection` event. `quota record`
-    and `quota activate` write the quota file atomically and keep every
-    observation. Tool and correctness failures are not quota evidence;
-    `quota record` needs a status and the evidence text.
-- **Acceptance.** Offline tests cover each rule. `Simulated…` tests inject
-  quota observations to show rotation in order, wrap-around, reset evidence and
-  all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
-  (L3).
-- **Prework.** Before dispatch, the manager saves a redacted sample of a real
-  `orchestrator_capabilities` result in `.local/state/` and names it in the
-  brief. The parser reads only the fields it needs and treats an unknown shape
-  as unavailable.
-- **Offline tests.** `SUITE -p 'test_routing.py'`, `SUITE -p 'test_quota.py'`,
-  then `SUITE`.
-- **Depends on.** CF-1, RC-1.
-- **Parallel with.** EV-1, JV-1, GA-2.
-- **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
-  Reviewer) and subtle invariants (one fallback, exhaustion order) →
-  challenging → Opus 5.5 High. Reviewer: challenging.
-- **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
-  Task; one fallback at most; the rotation rules; the config digest in every
-  record.
-- **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
-  follow-up Task.
+  `python3 -I -S live/router_pilot.py --examples pilot/router-examples.json --catalog FILE --catalog-read-at TIME`.
+- **Acceptance.** Offline tests validate the examples file and run the runner
+  against an injected Jev. After review and L1, the manager runs it live (L8)
+  and reports the summary to Shawn. `docs/router-pilot.md` says that real task
+  inputs join only after the pilot lifts the hold, and are recorded with each
+  decision.
+- **Offline tests.** `SUITE -p 'test_router_pilot.py'`, then `SUITE`.
+- **Depends on.** JV-1, RT-1.
+- **Parallel with.** EV-1, PV-1b, BT-1, HC-1, GA-1 to GA-3, PB-1, SK-1.
+- **Risk facts and tier.** None of the floor facts → the medium tier. Reviewer: medium.
+- **Review focus.** Coverage of every floor and of documentation; labels; no
+  private data in the examples.
+- **Size.** About 450 lines.
 
-### PV-1 Privacy and pull request checks
+### EV-1 Evidence check
 
-- **Objective.** Check publishable text against the private identifier list,
-  and check a pull request's head, base, state and author, for every
-  repository.
-- **Design.** [t3-compose repository workflow][d-workflow] (the identifier
-  list, the author check and its failure action);
-  [Checks and publication][d-publication] (the head check).
+- **Objective.** Decide whether a work's evidence covers its current head, and
+  list the gaps.
+- **Design.** [Work cycle][d-cycle], steps 5 to 8;
+  [Accepted review policy][d-review]; [Checks and publication][d-publication]
+  (a check on another commit does not cover the head).
+- **Files.** Create `t3compose/evidence.py` and `tests/test_evidence.py`.
+- **Interfaces.** `t3c evidence check --repo REPO --work ID --head SHA [--pr-ready]`
+  prints `verified` or the gaps. It exits 0 or 1, and 2 for invalid records.
+- **Rules.** Verified needs all of the following. The head is the latest result
+  commit. Every required check has a pass at the head from the manager, a
+  Reviewer or an assigned Session; a Worker's claim alone does not count. The
+  latest review covers exactly the review base and the head, and its verdict is
+  not "changes required". Every finding of
+  every round has a disposition, and no blocking or important finding is open,
+  disputed or declined. Findings and dispositions join on `(review task
+  reference, finding ID)`, so a prior round cannot clear a later finding with
+  the same ID. Every acceptance criterion has evidence at the head.
+  `--pr-ready` also needs a confirmed push of the head and a passing
+  `pr verify` result.
+- **Acceptance.** Offline tests cover: a stale review after the head moved; a
+  missing check; a check on another commit; Worker-only evidence; open and
+  disputed findings; a declined important finding; a finding resolved outside
+  the tree; a second-review rejection; an owner decision; missing criterion
+  evidence; repeated finding IDs in different rounds with only one resolved;
+  a new commit after verification; and a fully verified case.
+- **Offline tests.** `SUITE -p 'test_evidence.py'`, then `SUITE`.
+- **Depends on.** RC-1.
+- **Parallel with.** RP-1, PV-1b, BT-1, HC-1, GA-1 to GA-3.
+- **Risk facts and tier.** None of the floor facts: bounded logic over RC-1's
+  schema → the medium tier. It compares records and is fully testable;
+  PB-1 enforces the publication gate. Reviewer: medium.
+- **Review focus.** Every path to `verified`; that Worker claims never count;
+  exact base and head matching.
+- **Size.** About 600 lines.
+
+### PV-1b Publication privacy and pull request checks
+
+- **Objective.** Check publishable text against the identifier list, and check
+  a pull request's head, base, state and author, for every repository.
+- **Design.** [t3-compose repository workflow][d-workflow] (privacy, the author
+  check and failure action); [Checks and publication][d-publication] (head check).
 - **Files.** Create `t3compose/privacy.py`, `t3compose/pullrequest.py`,
   `tests/test_privacy.py` and `tests/test_pullrequest.py`.
 - **Interfaces.**
   - `t3c privacy check --repo-path P --range BASE..HEAD [--branch NAME] [--text LABEL=FILE ...]`
   - `t3c pr verify --repo OWNER/NAME --number N --head SHA [--base BRANCH] [--author LOGIN]`
 - **Rules.**
-  - Every check loads `.local/state/private-identifiers.txt`. A missing,
-    unreadable or empty list, or a pattern that `grep -E` rejects, blocks with
-    exit 2.
-  - The check covers every commit message in the range, the whole tree at every
-    commit in the range, the branch name and each text file. A match that a
-    later commit removed still blocks, because a push publishes every commit.
-    `*.lock` files are skipped, as in the manual check. Author and committer
-    fields are not checked ([finding F7][d-findings]).
-  - Matching uses `grep -E`, so results equal the manual check. Output names
-    the field, commit, file and list line number, never the matched text.
+  - Every check loads the list through PV-1a and blocks on a loader failure.
+  - Privacy covers every commit message and the whole tree at every commit in
+    the range, the branch name and each text file. A match that a later commit
+    removed still blocks, because a push publishes every commit. `*.lock`
+    files are skipped, as in the manual check. Author and committer fields are
+    not checked ([finding F7][d-findings]); item 14 remains an owner choice.
+  - Output names the field, commit, file and list line number, never matched
+    text. A match blocks publication until Corrections or Shawn resolves it.
   - `pr verify` reads the pull request through the GitHub API, read-only. It
     fails when the head differs from `--head`, the base differs, the pull
     request is not open, or the author differs from `--author`. A failure
     prints "report to Shawn; not PR-ready" and exits 1. The head check applies
     to every repository; the author check applies where the repository's
-    identity rules name an author. PB-1 passes the Worker App's bot login for
-    t3-compose.
-- **Acceptance.** Offline tests, with a synthetic list and temporary
-  repositories, cover a match in a message, in an intermediate commit's tree,
-  in the branch name, in the title and in the body; a clean range; a missing,
-  empty and invalid list; output that never contains the matched text; and
-  `pr verify` with an injected API reader for each mismatch.
+    identity rules name an author. PB-1 passes the Worker App's bot login.
+- **Acceptance.** Offline tests with temporary repositories cover matches in
+  a message, an intermediate commit's tree, the branch name, the title and the
+  body; a clean range; each list failure; output that never reveals a match;
+  and `pr verify` with an injected API reader for every mismatch.
 - **Offline tests.** `SUITE -p 'test_privacy.py'`,
   `SUITE -p 'test_pullrequest.py'`, then `SUITE`.
-- **Depends on.** HS-1.
-- **Parallel with.** CF-1, RC-1, HC-1, BT-1, GA-1.
-- **Risk facts and tier.** Guardrail boundary (privacy of a public repository)
-  → challenging → Opus 5.5 High. Reviewer: challenging.
-- **Review focus.** Fail-closed paths; equivalence with `grep -E`; output that
-  cannot reveal a match; intermediate commits.
-- **Size.** About 650 lines.
+- **Depends on.** PV-1a.
+- **Parallel with.** RP-1, EV-1, BT-1, HC-1, GA-1 to GA-3.
+- **Risk facts and tier.** Guardrail boundary (publication privacy and pull
+  request checks) → the challenging tier. Reviewer: challenging.
+- **Review focus.** Fail-closed paths; intermediate commits; nothing private
+  in output; failure action for every repository.
+- **Size.** About 450 lines.
+
+### BT-1 Brief templates
+
+- **Objective.** Worker and Reviewer brief templates that carry the design's
+  rules, and a command that fills and checks them.
+- **Design.** [Work cycle][d-cycle], steps 2, 6 and 7;
+  [Manager threads and bases][d-bases]; [Roles][d-roles];
+  [t3-compose repository workflow][d-workflow] (privacy);
+  [Accepted review policy][d-review].
+- **Files.** Create `skill/templates/worker.md`, `skill/templates/reviewer.md`,
+  `t3compose/briefs.py` and `tests/test_briefs.py`.
+- **Worker template.** Sections, in order:
+  - Role and routing: the tier, the model and the reason; stay on this
+    Assignment and this model; start no agents or T3 tasks. A slot carries the
+    routing policy's text directly when the Worker is agy.
+  - Not alone, and where to work: preserve all edits that are not yours. Work
+    only in your own worktree; never touch the owner's checkout or another
+    worktree. A slot names any owner hold that applies, such as rapid-ship's.
+  - Repository, commits and publication: the provisioned commit read from
+    the dispatching checkout at dispatch, the start commit and the review base,
+    and the HEAD check with its three outcomes. Never assume the checkout lags
+    origin or reuse a provisioned commit recorded before a merge. A
+    Worker that finds a commit missing does not fetch. Commit on the branch
+    only; do not push, open, edit or merge pull requests, post to GitHub or run
+    `gh`.
+  - Read first: the repository's guides, the design, the routing policy's path,
+    and the repository's settings check where one exists.
+  - Owned paths, objective, interfaces, acceptance criteria and the
+    repository's test-first rule.
+  - Validation: the fast checks; the tree and commit-message privacy checks
+    where the repository is public; heavy checks only when assigned, through
+    `t3c heavy run`.
+  - Commits: a conventional subject, a body that says why, and the attribution
+    trailer.
+  - Privacy-rewrite exception, present only in a Corrections brief issued after
+    a privacy match: amend or rebase only the unpublished commits in the review
+    range, to remove the match.
+  - Return format: branch, worktree path, head, log, evidence for each
+    criterion, each command with its result, questions, deviations with
+    reasons, and a statement of what was not done.
+- **Reviewer template.** Sections: independence (did not implement; a separate
+  Session; edits, commits, pushes and posts nothing); role and the tier's
+  reason; the exact base and head, read in the Reviewer's own worktree; what to
+  read (the brief, prior findings, responses and unresolved objections); review
+  questions; checks to run; findings format (ID; severity blocking, important or
+  minor; `file:line`; problem; evidence; suggested fix; verified facts kept
+  apart from judgments); verdict (approve, approve after fixes, or changes
+  required); return format.
+- **Interfaces.**
+  `t3c brief render --template worker|reviewer|PATH --values VALUES.json --out FILE`
+  fills `{{NAME}}` placeholders; a `PATH` lets later Tasks render their own
+  templates without changing this module. It refuses a missing value or a
+  leftover placeholder, requires the agy slot when a Worker's selection is agy,
+  refuses a Reviewer brief whose selection is agy, and prints the brief's
+  digest for `dispatch-intent`. `t3c brief check FILE` checks the required
+  sections and that the commits are full SHAs.
+- **Acceptance.** The templates hold no private identifier and pass the tree
+  privacy check. Offline tests cover rendering, missing values, leftover
+  placeholders, the agy rules and digests. Every rule listed above appears in
+  its template.
+- **Offline tests.** `SUITE -p 'test_briefs.py'`, then `SUITE`.
+- **Depends on.** HS-1, RC-1 (atomic data writes).
+- **Parallel with.** RP-1, EV-1, PV-1b, HC-1, GA-1 to GA-3.
+- **Risk facts and tier.** Shared interface change (every Assignment uses these
+  briefs) → the medium tier. Reviewer: medium.
+- **Review focus.** Completeness against the design; the HEAD-check wording;
+  the limits of the privacy-rewrite exception; nothing private.
+- **Size.** About 700 lines.
+
+### HC-1 Heavy-check lock
+
+- **Objective.** Run heavy checks one at a time on the machine, across manager
+  threads and assigned Sessions.
+- **Design.** [Checks and publication][d-publication]
+  ([finding F6][d-findings]).
+- **Decision.** An exclusive `fcntl.flock` lock on
+  `.local/state/locks/heavy-check.lock` in the t3-compose checkout. Every
+  manager thread runs the same helper with the same `.local/`, so the lock
+  covers the machine. A dedicated runner holds the lock until the foreground
+  check exits, even if the calling wrapper exits. The lock inode is created
+  once and never renamed, replaced or unlinked. Holder metadata (label,
+  commit, runner and check process IDs, start time) is atomically written to
+  `heavy-check-status.json` beside it; it is never written into the lock file.
+- **Files.** Create `t3compose/heavy.py` and `tests/test_heavy.py`.
+- **Interfaces.**
+  `t3c heavy run --repo-path WORKTREE --commit SHA --label TEXT --log FILE [--wait] -- CMD [ARGS...]`
+  and `t3c heavy status`.
+- **Rules.**
+  - The command refuses unless the worktree's HEAD is the commit, its tree is
+    clean, and it is a linked worktree rather than a repository's main
+    checkout, so the owner's checkout is never used. The caller first confirms
+    with `task_status` that the worktree's writer has finished.
+  - Without `--wait`, a held lock exits 75 with the holder's details. With
+    `--wait`, the call blocks in the kernel until the lock frees. The manager
+    runs it as a Harness background command that notifies on exit, so nothing
+    polls.
+  - The wrapper starts a dedicated runner that acquires the lock and starts
+    the foreground check. The runner waits for the check even if the wrapper
+    is killed; wrapper signals are forwarded and never release the lock
+    before the check exits. The check also inherits the locked open file
+    description across exec. No process unlocks it while the check is live;
+    the runner closes its descriptor only after waiting for the check.
+  - `status` tests the stable lock inode; metadata alone never authorizes a
+    new run. A stale status file is labeled stale once the lock is free.
+    Status writes cannot create another lock inode.
+  - Afterwards the helper reports whether HEAD and the tree are unchanged,
+    prints a summary for a `check` event and exits with the command's status.
+- **Acceptance.** Offline tests with subprocesses show that two concurrent
+  runs serialize. Kill the calling wrapper while its check keeps running: a
+  second run stays busy until that check exits, then can acquire the lock.
+  Repeated status rewrites preserve the lock inode and cannot admit a second
+  check. Tests also cover signal forwarding, release after the check exits,
+  stale metadata, each refusal and the summary's fields.
+- **Offline tests.** `SUITE -p 'test_heavy.py'`, then `SUITE`.
+- **Depends on.** HS-1, RC-1 (atomic data writes).
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, GA-1 to GA-3.
+- **Risk facts and tier.** Subtle invariants (concurrency) → the challenging tier, although the Task is small. Reviewer: challenging.
+- **Review focus.** Lock lifetime; descriptor inheritance; the main-checkout
+  refusal; the background-run pattern.
+- **Size.** About 450 lines.
 
 ### GA-1 Worker App token: minting, scope and revocation
 
@@ -655,9 +965,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   first live check.
 - **Offline tests.** `SUITE -p 'test_github_app.py'`, then `SUITE`.
 - **Depends on.** HS-1.
-- **Parallel with.** CF-1, RC-1, HC-1, BT-1, PV-1.
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, HC-1.
 - **Risk facts and tier.** Security boundary (a private key and repository
-  credentials) → challenging → Opus 5.5 High. Reviewer: challenging.
+  credentials) → the challenging tier. Reviewer: challenging.
 - **Review focus.** Every path of the key, the JWT and the token; pipe and
   file-descriptor handling; the scope checks; revocation on every path; a
   comparison with the reviewed source.
@@ -692,8 +1002,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Added from the second review (plan input 12).**
   - V1: `run` forwards SIGTERM and SIGHUP to the child, waits for it, then
     revokes the token.
-  - V3: the child's environment also loses `GIT_CONFIG`, so GA-3's checks and
-    the child's Git read the same files.
+  - V3: build the sanitized environment before any preflight Git read. It
+    removes `GIT_CONFIG` as well as the inherited `GIT_CONFIG_*` and other
+    overrides above. GA-3 inspects Git with that environment; only after the
+    checks pass is the token and controlled helper config added for execution.
+    Inspection and execution therefore read the same underlying config files.
 - **Interfaces.** `t3c publish run -- CMD [ARGS...]`, started from the
   repository directory.
 - **Acceptance.** Ported and new offline tests pass. They include a real
@@ -704,8 +1017,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   interrupted one and a forwarded SIGTERM.
 - **Offline tests.** `SUITE -p 'test_token_run.py'`, then `SUITE`.
 - **Depends on.** GA-1.
-- **Parallel with.** EV-1, JV-1, RT-1.
-- **Risk facts and tier.** Security boundary → challenging → Opus 5.5 High.
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, HC-1.
+- **Risk facts and tier.** Security boundary → the challenging tier.
   Reviewer: challenging.
 - **Review focus.** Environment scrubbing; the completeness of the helper
   reset; signal handling and revocation timing.
@@ -722,8 +1035,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Files.** Create `t3compose/token_preconditions.py` and
   `tests/test_token_preconditions.py`. Modify `t3compose/token_run.py` to call
   the checks before minting.
-- **Kept behavior.** From the first review's findings: `run` refuses when Git's
-  effective config, read from the directory `run` starts in, has an
+- **Kept behavior.** From the first review's findings: `run` builds GA-2's
+  sanitized environment first and passes it to every preflight Git invocation.
+  It refuses when Git's effective config, read from the directory `run` starts
+  in with that environment, has an
   `extraheader`, a `url.*.insteadOf` or a `url.*.pushInsteadOf`, or when
   `~/.netrc` names `github.com`. It names the kind of setting, never its value.
 - **Added from the second review (plan input 12).**
@@ -736,12 +1051,15 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   setting or command form it refused, and mints nothing.
 - **Acceptance.** Offline tests under an isolated `HOME`, with decoy configs,
   cover each refusal and each refused command form, and show that a refusal
-  happens before any token request.
+  happens before any token request. A decoy `GIT_CONFIG` points to a clean
+  file while the repository config holds a forbidden setting: preflight must
+  still find the setting and refuse. The test asserts that inspection and
+  execution receive the same sanitized base environment.
 - **Offline tests.** `SUITE -p 'test_token_preconditions.py'`,
   `SUITE -p 'test_token_run.py'`, then `SUITE`.
 - **Depends on.** GA-2.
-- **Parallel with.** RP-1.
-- **Risk facts and tier.** Security boundary → challenging → Opus 5.5 High.
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, HC-1.
+- **Risk facts and tier.** Security boundary → the challenging tier.
   Reviewer: challenging.
 - **Review focus.** That every refusal precedes minting; false-like boolean
   spellings; command forms that could slip past the checks.
@@ -764,17 +1082,31 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     (reachable from the head and from no ref that `git ls-remote` reports), and
     for the branch name; a change under `.github/workflows/` in those commits
     stops with exit 5, because Shawn pushes such changes; an `op-intent` is
-    recorded; `git ls-remote` must show the branch absent, or already at the
-    head, in which case the result is recorded without a push, and any other
-    value stops without force;
-    then `publish run -- git push <https URL> <sha>:refs/heads/<name>`;
-    `git ls-remote` confirms; an `op-result` is recorded. A push to an explicit
+    recorded; `git ls-remote` must show the branch absent, already at the
+    head, or at the prior head from the latest confirmed push result for that
+    branch. Already at the head records the result without a push. An update
+    requires that exact confirmed prior head and a proof that it is an
+    ancestor of the new reviewed head; unexpected movement and
+    non-fast-forward updates stop before any push. The helper records the
+    expected prior head (or absence), rechecks it immediately before pushing,
+    then `publish run -- git push --force-with-lease=<ref>:<expected> <https URL> <sha>:<ref>`.
+    The explicit lease compares the remote to the recorded prior head (empty
+    for an absent branch) during the push. It is used only after the ancestry
+    proof, so it cannot authorize a history rewrite; bare `--force` and leases
+    without an explicit expected value are forbidden. Any intervening movement
+    fails the lease. `git ls-remote` confirms; an `op-result` is recorded. A push to an explicit
     URL adds no remote-tracking ref to the owner's checkout.
   - `pr`, in order: `privacy check` of the title, the body and the branch name;
     an `op-intent`; an existing pull request for the branch is reused, never
     duplicated; `publish run -- gh pr create` with explicit `--repo`, `--head`
     and `--base`; `pr verify` with the App's bot login, read through GA-1's
-    config loader; an `op-result`.
+    config loader; an `op-result`. After Corrections on an existing pull
+    request, rerun evidence and privacy checks for the new head, its full
+    review range, and the branch, title and body, even for commits already
+    published. A privacy match in published history goes to Shawn; the
+    unpublished-only rewrite exception cannot remove it. Reuse the pull
+    request, then verify its new head, base, state and App author before
+    recording PR-ready.
   - Both commands start `publish run` from the repository directory and pass no
     `-C`, `-c` or `cd`.
   - A failed check stops the flow and names the next step: a Corrections round,
@@ -783,121 +1115,18 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     it.
 - **Acceptance.** Offline tests, with injected runners, cover each stop
   condition, the order of records, and an interrupted flow that resumes
-  without a second push or a second pull request. The first pull request after
+  without a second push or a second pull request; a Corrections update from
+  the confirmed prior head; stale evidence or privacy on that update;
+  unexpected remote movement; a non-fast-forward head; and a refused push
+  when the branch changes after preflight. The first pull request after
   PB-1 is installed is published through it (L5).
 - **Offline tests.** `SUITE -p 'test_publish.py'`, then `SUITE`.
-- **Depends on.** RC-1, EV-1, PV-1, GA-3.
+- **Depends on.** RC-1, EV-1, PV-1b, GA-3.
 - **Parallel with.** RP-1.
 - **Risk facts and tier.** Security and guardrail boundaries (the publication
-  identity and privacy) → challenging → Opus 5.5 High. Reviewer: challenging.
+  identity and privacy) → the challenging tier. Reviewer: challenging.
 - **Review focus.** The order of checks; idempotent resumption; push by commit
-  to an explicit URL; no force and no merge.
-- **Size.** About 700 lines.
-
-### HC-1 Heavy-check lock
-
-- **Objective.** Run heavy checks one at a time on the machine, across manager
-  threads and assigned Sessions.
-- **Design.** [Checks and publication][d-publication]
-  ([finding F6][d-findings]).
-- **Decision.** An exclusive `fcntl.flock` lock on
-  `.local/state/locks/heavy-check.lock` in the t3-compose checkout. Every
-  manager thread runs the same helper with the same `.local/`, so the lock
-  covers the machine. The kernel releases the lock when its holder exits, so a
-  crash leaves no stale lock. The holder writes its label, commit, process ID
-  and start time into the file for `status`.
-- **Files.** Create `t3compose/heavy.py` and `tests/test_heavy.py`.
-- **Interfaces.**
-  `t3c heavy run --repo-path WORKTREE --commit SHA --label TEXT --log FILE [--wait] -- CMD [ARGS...]`
-  and `t3c heavy status`.
-- **Rules.**
-  - The command refuses unless the worktree's HEAD is the commit, its tree is
-    clean, and it is a linked worktree rather than a repository's main
-    checkout, so the owner's checkout is never used. The caller first confirms
-    with `task_status` that the worktree's writer has finished.
-  - Without `--wait`, a held lock exits 75 with the holder's details. With
-    `--wait`, the call blocks in the kernel until the lock frees. The manager
-    runs it as a Harness background command that notifies on exit, so nothing
-    polls.
-  - The check command does not inherit the lock's file descriptor.
-  - Afterwards the helper reports whether HEAD and the tree are unchanged,
-    prints a summary for a `check` event and exits with the command's status.
-- **Acceptance.** Offline tests with subprocesses show that two concurrent runs
-  serialize, that a killed holder releases the lock, that `status` shows the
-  holder, each refusal, and the summary's fields.
-- **Offline tests.** `SUITE -p 'test_heavy.py'`, then `SUITE`.
-- **Depends on.** HS-1.
-- **Parallel with.** CF-1, RC-1, BT-1, PV-1, GA-1.
-- **Risk facts and tier.** Subtle invariants (concurrency) → challenging →
-  Opus 5.5 High, although the Task is small. Reviewer: challenging.
-- **Review focus.** Lock lifetime; descriptor inheritance; the main-checkout
-  refusal; the background-run pattern.
-- **Size.** About 450 lines.
-
-### BT-1 Brief templates
-
-- **Objective.** Worker and Reviewer brief templates that carry the design's
-  rules, and a command that fills and checks them.
-- **Design.** [Work cycle][d-cycle], steps 2, 6 and 7;
-  [Manager threads and bases][d-bases]; [Roles][d-roles];
-  [t3-compose repository workflow][d-workflow] (privacy);
-  [Accepted review policy][d-review].
-- **Files.** Create `skill/templates/worker.md`, `skill/templates/reviewer.md`,
-  `t3compose/briefs.py` and `tests/test_briefs.py`.
-- **Worker template.** Sections, in order:
-  - Role and routing: the tier, the model and the reason; stay on this
-    Assignment and this model; start no agents or T3 tasks. A slot carries the
-    routing policy's text directly when the Worker is agy.
-  - Not alone, and where to work: preserve all edits that are not yours. Work
-    only in your own worktree; never touch the owner's checkout or another
-    worktree. A slot names any owner hold that applies, such as rapid-ship's.
-  - Repository, commits and publication: the provisioned commit, the start
-    commit and the review base, and the HEAD check with its three outcomes. A
-    Worker that finds a commit missing does not fetch. Commit on the branch
-    only; do not push, open, edit or merge pull requests, post to GitHub or run
-    `gh`.
-  - Read first: the repository's guides, the design, the routing policy's path,
-    and the repository's settings check where one exists.
-  - Owned paths, objective, interfaces, acceptance criteria and the
-    repository's test-first rule.
-  - Validation: the fast checks; the tree and commit-message privacy checks
-    where the repository is public; heavy checks only when assigned, through
-    `t3c heavy run`.
-  - Commits: a conventional subject, a body that says why, and the attribution
-    trailer.
-  - Privacy-rewrite exception, present only in a Corrections brief issued after
-    a privacy match: amend or rebase only the unpublished commits in the review
-    range, to remove the match.
-  - Return format: branch, worktree path, head, log, evidence for each
-    criterion, each command with its result, questions, deviations with
-    reasons, and a statement of what was not done.
-- **Reviewer template.** Sections: independence (did not implement; a separate
-  Session; edits, commits, pushes and posts nothing); role and the tier's
-  reason; the exact base and head, read in the Reviewer's own worktree; what to
-  read (the brief, prior findings, responses and unresolved objections); review
-  questions; checks to run; findings format (ID; severity blocking, important or
-  minor; `file:line`; problem; evidence; suggested fix; verified facts kept
-  apart from judgments); verdict (approve, approve after fixes, or changes
-  required); return format.
-- **Interfaces.**
-  `t3c brief render --template worker|reviewer|PATH --values VALUES.json --out FILE`
-  fills `{{NAME}}` placeholders; a `PATH` lets later Tasks render their own
-  templates without changing this module. It refuses a missing value or a
-  leftover placeholder, requires the agy slot when a Worker's selection is agy,
-  refuses a Reviewer brief whose selection is agy, and prints the brief's
-  digest for `dispatch-intent`. `t3c brief check FILE` checks the required
-  sections and that the commits are full SHAs.
-- **Acceptance.** The templates hold no private identifier and pass the tree
-  privacy check. Offline tests cover rendering, missing values, leftover
-  placeholders, the agy rules and digests. Every rule listed above appears in
-  its template.
-- **Offline tests.** `SUITE -p 'test_briefs.py'`, then `SUITE`.
-- **Depends on.** HS-1.
-- **Parallel with.** CF-1, RC-1, HC-1, PV-1, GA-1.
-- **Risk facts and tier.** Shared interface change (every Assignment uses these
-  briefs) → medium → Sonnet 5.5 High. Reviewer: medium.
-- **Review focus.** Completeness against the design; the HEAD-check wording;
-  the limits of the privacy-rewrite exception; nothing private.
+  to an explicit URL; ancestry proof plus exact lease; no history rewrite or merge.
 - **Size.** About 700 lines.
 
 ### SK-1 Manager skill and installation
@@ -919,8 +1148,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     `t3c work reconcile`; then `task_status` and Git for each open item,
     recorded as `reconciliation` events, before anything new.
   - The work cycle, with the command for each step. A base that is not local is
-    fetched with a plain `git fetch` before the brief is written.
-  - Dispatch: the preflight of the three commits; `dispatch-intent` before
+    fetched with a plain `git fetch` before the brief is written. Routing uses
+    the current input and policy references; Corrections and review scopes
+    follow the tier rules in this plan.
+  - Dispatch: read the actual checkout HEAD at every dispatch, even after T3
+    fast-forwards it; preflight the three commits; `dispatch-intent` before
     `delegate_task`; async mode, worktree isolation, an explicit provider and
     model, and a stable `clientRequestId` of the form
     `t3c-<work>-<role>-r<round>`, which the task title repeats; then
@@ -945,7 +1177,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     an owner decision goes to Shawn first.
   - Feature leads stay off until FL-2.
   - Updates: the installed version is the owner's checkout; `t3c version` shows
-    which commit runs.
+    which commit runs. After a merge, read HEAD first. Only when T3 has not
+    already fast-forwarded clean `main` may the manager run `git pull --ff-only`
+    under decision 2. Dirty, divergent or non-`main` checkouts go to Shawn.
 - **Interfaces.** `t3c skill install --skills-dir DIR [--name t3-compose-manager]`
   creates `DIR/NAME` as a symlink to `skill/`. It refuses an existing file, or a
   link that points elsewhere. `t3c skill status --skills-dir DIR`.
@@ -955,48 +1189,15 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   names an explicit interpreter and the helper's absolute path. Installation is
   L6.
 - **Offline tests.** `SUITE -p 'test_skill.py'`, then `SUITE`.
-- **Depends on.** CF-1, RC-1, EV-1, JV-1, RT-1, PV-1, GA-1, GA-2, GA-3, PB-1,
+- **Depends on.** CF-1, RC-1, EV-1, JV-1, RT-1, PV-1b, GA-1, GA-2, GA-3, PB-1,
   HC-1, BT-1, and L7's result.
-- **Parallel with.** RP-1, DOC-1.
+- **Parallel with.** RP-1.
 - **Risk facts and tier.** Shared interface change (it names every command).
   The skill describes guardrails but changes none, and a floor applies to what
-  a Task changes → medium → Sonnet 5.5 High. Reviewer: medium.
+  a Task changes → the medium tier. Reviewer: medium.
 - **Review focus.** Agreement with the design, rule by rule; the restart and
   retry procedures; command usage; nothing private.
 - **Size.** About 800 lines.
-
-### RP-1 Router pilot with synthetic inputs
-
-- **Objective.** Exercise Jev routing on labeled synthetic examples while the
-  rapid-ship hold lasts, and give Shawn results for tuning the threshold, the
-  criteria and the floors.
-- **Design.** [Pilot and validation][d-pilot] (router pilots; mistaken cheap
-  routes recorded apart from unnecessary expensive ones);
-  [Jev decision routing][d-jev].
-- **Files.** Create `pilot/router-examples.json`, `live/router_pilot.py`,
-  `docs/router-pilot.md` and `tests/test_router_pilot.py`.
-- **Content.** At least twelve synthetic examples: software engineering, other
-  work, mixed scope, easy but sensitive (at least one for each proposed floor),
-  and technical documentation. Each holds the author's expected domain, tier
-  and floors, and is labeled synthetic. The runner classifies and selects each
-  example under the `synthetic/router-pilot` identity, so synthetic decisions
-  never mix with Task records. Its summary lists mistaken cheap routes apart
-  from unnecessary expensive ones.
-- **Interfaces.**
-  `python3 -I -S live/router_pilot.py --examples pilot/router-examples.json --catalog FILE --catalog-read-at TIME`.
-- **Acceptance.** Offline tests validate the examples file and run the runner
-  against an injected Jev. After review and L1, the manager runs it live (L8)
-  and reports the summary to Shawn. `docs/router-pilot.md` says that real task
-  inputs join only after the pilot lifts the hold, and are recorded with each
-  decision.
-- **Offline tests.** `SUITE -p 'test_router_pilot.py'`, then `SUITE`.
-- **Depends on.** JV-1, RT-1.
-- **Parallel with.** GA-3, PB-1, SK-1, DOC-1.
-- **Risk facts and tier.** None of the floor facts → medium →
-  Sonnet 5.5 High. Reviewer: medium.
-- **Review focus.** Coverage of every floor and of documentation; labels; no
-  private data in the examples.
-- **Size.** About 450 lines.
 
 ### PH-1 Pilot handoff
 
@@ -1013,24 +1214,30 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `t3c work snapshot`, `t3c work reconcile`, `t3c event add` and T3's
   `task_status`.
 - **`docs/restart.md`.** Before a restart, the manager writes every pending
-  event, then a `restart` event with the `t3c work snapshot` digest. The restart
-  uses the way that L7 verified to clear the conversation while keeping the
-  thread. Afterwards the manager loads the skill, confirms that the snapshot
-  digest equals the recorded one, reconciles each open item with `task_status`
-  and Git, and records what live state changed. The same thread keeps managing
-  its children.
+  event, takes a checkpoint (last sequence and prefix digest) with
+  `t3c work snapshot`, then appends a before-phase `restart` event referring
+  to that checkpoint. The restart uses the way L7 verified to clear the
+  conversation while keeping the thread. Afterwards the manager loads the
+  skill and recomputes the saved prefix with `snapshot --through-seq`,
+  excluding the restart event and later events. It verifies the digest,
+  reconciles open items with `task_status` and Git, then appends the after-phase
+  event referencing the same checkpoint and before event, and records live
+  changes. The same thread keeps managing its children.
 - **Kickoff template.** Pointers only: the skill's name, the repository
   identity, where the records and the routing policy are, where the takeover
-  dump is, and the expected snapshot digest. It names no task and repeats no
+  dump is, and the checkpoint sequence and prefix digest. It names no task and repeats no
   state, so the thread must reconstruct its work state from the records.
 - **`docs/pilot.md`.**
   - Before the kickoff, the build manager writes one handoff record under
     rapid-ship's identity: pointers, the hold's end condition, the pilot
     criteria, and the next action, which is to reconcile the takeover. It
-    records the snapshot digest and transfers the record's writer to the
-    rapid-ship manager. Writing this record resumes, reviews, checks and
+    takes a checkpoint before the `handoff` event and stores it in that event.
+    After reconciliation, the `writer-transfer` event carries its own
+    pre-transfer checkpoint. The recipient verifies both saved prefixes and
+    current writer ownership before acting. Writing this record resumes, reviews, checks and
     publishes no rapid-ship task, and chooses no pilot task.
-  - First restart: the thread's start. Its snapshot must match.
+  - First restart: the thread's start. The handoff and transfer prefixes must
+    match their checkpoints; the whole current record has since grown.
   - Takeover: the design's reconciliation of the old manager's state. The
     shared-isolation exception is tested before any recovery brief relies on
     it. The manager confirms that rapid-ship's publication commands can publish
@@ -1044,52 +1251,21 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     as well, recorded with each decision.
 - **Acceptance.** The files hold no private identifier. Every pilot criterion
   in the design maps to a checklist step. The restart procedure cites L7's
-  result. `tests/test_pilot_docs.py` renders the kickoff template with
-  `t3c brief render` and checks that every `t3c` command the documents name
+  result and uses RC-1's tested checkpoint contract for both restart phases,
+  handoff and writer transfer. `tests/test_pilot_docs.py` renders the kickoff
+  template with `t3c brief render` and checks that every `t3c` command the documents name
   exists. If L7 found no way to clear the conversation while keeping the
   thread, PH-1 records the gap and the manager asks Shawn before the handoff.
 - **Offline tests.** `SUITE -p 'test_pilot_docs.py'`, then `SUITE`.
 - **Depends on.** SK-1 and L7.
-- **Parallel with.** DOC-1.
+- **Parallel with.** RP-1 if it is still running.
 - **Risk facts and tier.** None: the Task writes procedures and a template, not
-  recovery code; L7 supplies the live evidence → medium → Sonnet 5.5 High.
+  recovery code; L7 supplies the live evidence → the medium tier.
   Reviewer: medium.
 - **Review focus.** That the kickoff leaks no state that would make the restart
   test trivial; the order of the hold, the reconciliation and the first
   dispatch; that the in-flight restart keeps the dispatching thread.
 - **Size.** About 500 lines.
-
-### DOC-1 Design alignment after decision 4
-
-- **Objective.** Record Shawn's answer to open decision 4, retire the
-  open-decisions section, and state the publication failure actions for every
-  repository.
-- **Design.** [Open decisions][d-open]; [Checks and publication][d-publication];
-  [t3-compose repository workflow][d-workflow].
-- **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`
-  only.
-- **Interfaces.** None; design text only.
-- **Changes.**
-  - The open-decisions section gives way to Shawn's decision and its date, or
-    is removed, and the status line's link is fixed (plan input 3). The values
-    stay in `.local/`.
-  - Checks and publication gains two rules for every repository. A
-    private-identifier match blocks publication until a Corrections round or
-    Shawn resolves it. When a pull request's head differs from the reviewed
-    head, or its author differs where the repository's identity rules name
-    one, the manager reports to Shawn and does not report the Task PR-ready
-    (plan inputs 1 and 2).
-- **Acceptance.** Only these changes. The tree and commit-message privacy
-  checks are clean. Every link and anchor resolves.
-- **Offline tests.** `SUITE`, unchanged, and the link check.
-- **Depends on.** Shawn's answer to [question 1](#questions-for-shawn).
-- **Parallel with.** Any Task; it owns only the design.
-- **Risk facts and tier.** No floor fact. When the brief gives the exact text,
-  which the manager can write from Shawn's answer, the Task is easy → agy
-  Flash High, with the instructions in the brief; otherwise medium →
-  Sonnet 5.5 High. Reviewer: medium, never agy.
-- **Review focus.** A faithful record of Shawn's answer; no other change.
-- **Size.** About 40 lines.
 
 ### FL-1 Nested-lifecycle pilot
 
@@ -1108,8 +1284,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   their single writer, and reports of outcomes, blockers, changed interfaces
   and evidence to the manager. A lead makes no project edits, does not approve
   its own work and creates no leads. `docs/feature-leads.md` gives the judgment
-  criteria for creating a lead, its route (Sonnet 5.5 High; Opus 5.5 High for
-  challenging decisions) and the scratch pilot's procedure.
+  criteria for creating a lead, its route (the medium tier; the challenging
+  tier for challenging decisions) and the scratch pilot's procedure.
 - **Live (L10, scratch).** A scratch lead records an intent in its own record,
   then dispatches its own Worker. An owner question reaches the manager through
   T3's pending-question mechanism or a verified upward report. The lead stops
@@ -1123,9 +1299,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Depends on.** The first pilot's completion.
 - **Parallel with.** None planned.
 - **Risk facts and tier.** None for the files: a template and procedures. The
-  live pilot is the manager's work → medium → Sonnet 5.5 High. Reviewer:
+  live pilot is the manager's work → the medium tier. Reviewer:
   medium. A defect that L10 finds in recovery code is fixed by a separate
-  Task, at challenging.
+  Task at the challenging tier; enumerated Corrections follow the medium tier.
 - **Review focus.** One writer per record across the manager and the lead; no
   duplicate children; escalations that cannot be lost.
 - **Size.** About 500 lines.
@@ -1137,17 +1313,24 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Files.** Modify `skill/SKILL.md`.
 - **Interfaces.** None new; the skill uses FL-1's template and RT-1's
   `feature-lead` role.
-- **Acceptance.** The skill gives the design's criteria for creating a lead,
-  one lead level, the lead's route, and the rule that only a child's parent
-  manages its lifecycle. The `SKILL.md` command test passes.
+- **Exact text.** Replace "Feature leads stay off until FL-2." with:
+  "Feature leads are optional after L10 passes. Create one for several
+  dependent Tasks, repeated local integration and review, or enough parallel
+  work to need a local coordinator. Use one lead level. Route coordination to
+  the medium tier and challenging decisions to the challenging tier. Only the
+  parent that created a child manages its lifecycle. Use the Feature lead
+  template."
+- **Acceptance.** Only that replacement. It gives the design's criteria, one
+  lead level, the lead's route and the parent lifecycle rule. The `SKILL.md`
+  command test passes.
 - **Offline tests.** `SUITE`.
 - **Depends on.** FL-1 and L10.
 - **Parallel with.** None planned.
-- **Risk facts and tier.** None; skill text that follows FL-1's evidence →
-  medium → Sonnet 5.5 High. Reviewer: medium.
+- **Risk facts and tier.** None; the brief supplies the exact replacement
+  after FL-1's evidence → the easy tier. Reviewer: medium, never agy.
 - **Review focus.** Agreement with the design's Feature lead options; leads
   stay optional.
-- **Size.** About 150 lines.
+- **Size.** About 10 lines; the exact replacement needs no separate module.
 
 ## Live checks and owner steps
 
@@ -1174,69 +1357,75 @@ child with `task_status` and receives its completion. Second, whether a repeated
 starts no second child. The results are recorded in `.local/`.
 
 L1 and L6 write outside `.local/state/`, so the manager runs them only at
-Shawn's explicit request. After each merge, Shawn updates his checkout's `main`
-([question 2](#questions-for-shawn)).
+Shawn's explicit request. After each merge, the manager reads the checkout's
+actual HEAD. If T3 has not already fast-forwarded it, the manager may run
+`git pull --ff-only` on the owner's clean `main` ([decision 2](#decisions)).
+At every dispatch it reads HEAD again to record the actual provisioned commit.
+Shawn authorized the scratch thread and manual clear for L7 ([decision 3](#decisions)).
 
 ## Sequence and parallelism
 
 | Stage | Tasks that may run in parallel | Waits for |
 |---|---|---|
-| 0 | HS-1 | this plan's merge |
-| 1 | CF-1, RC-1, HC-1, BT-1, PV-1, GA-1; L7 | HS-1; L7 waits only for question 3 |
-| 2 | EV-1, JV-1, RT-1, GA-2 | EV-1: RC-1. JV-1: CF-1, RC-1, PV-1. RT-1: CF-1, RC-1. GA-2: GA-1 |
-| 3 | GA-3, RP-1 | GA-3: GA-2. RP-1: JV-1, RT-1 |
-| 4 | PB-1 (RP-1 may still run) | RC-1, EV-1, PV-1, GA-3 |
-| 5 | SK-1 (RP-1 may still run) | stages 1 to 4 except RP-1, and L7 |
+| 0 | HS-1, DOC-1; L7 independently | this plan's merge; L7 has owner authorization |
+| 1 | CF-1, RC-1, PV-1a | HS-1; DOC-1 may finish alongside them |
+| 2 | RT-1, JV-1; L1 to L3 as ready | RT-1: CF-1, RC-1. JV-1: CF-1, RC-1, PV-1a. L1: CF-1. L2: JV-1. L3: RT-1 |
+| 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1. EV-1: RC-1. PV-1b: PV-1a. BT-1, HC-1: HS-1, RC-1. GA-1: HS-1 |
+| 3a | GA-2, then GA-3; other stage-3 Tasks may continue | GA-2: GA-1. GA-3: GA-2 |
+| 4 | PB-1; RP-1 may still run | RC-1, EV-1, PV-1b, GA-3 |
+| 5 | SK-1; RP-1 may still run | all helper and template Tasks, and L7; RP-1 need not finish |
 | 6 | PH-1 | SK-1, L7 |
-| 7 | handoff, then the pilot (L9) | PH-1, L1 to L7, question 4 |
-| later | FL-1, then FL-2 | the first pilot |
-| any time | DOC-1 | Shawn's answer to question 1 |
+| 7 | gated handoff, then pilot (L9) | Tasks through PH-1; L1 to L7; Shawn's go-ahead |
+| later | FL-1, then FL-2 | the first pilot; FL-2 also waits for L10 |
 
-Routing comes first. On 2026-10-27 Shawn asked for the routing feature early
-and for children not to default to Opus 5.5. In stage 1 the manager
-dispatches CF-1, RC-1 and PV-1 before HC-1, BT-1 and GA-1; in stage 2, JV-1
-and RT-1 first. The router goes live once JV-1 and RT-1 are installed and L1
-to L3 have passed, before the publication Tasks and the skill. L1 needs
-Shawn's answer to question 1.
+Routing comes first, as Shawn requested on 2026-10-27. Dispatch CF-1, RC-1
+and PV-1a first, then RT-1 as soon as CF-1 and RC-1 finish; JV-1 also needs
+PV-1a. L1 to L3 run as their prerequisites finish. The router goes live once
+JV-1, RT-1 and L1 to L3 pass, before publication and the skill. DOC-1's
+remaining squash-trailer choice does not block routing. L7 is independent of
+the helper and can run while the routing path is built.
 
-The critical path is HS-1, GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1. RC-1 and
-EV-1 run beside the token Tasks. The stages show what dependencies and file
-ownership allow. The manager decides how many Tasks run at once from capacity
-and Shawn's direction; most stage-1 Tasks are challenging, so Opus capacity is
-the likely limit. Only DOC-1 can be easy, so the first agy Worker may run
-there or in the pilot.
+The stages give dispatch priority, not extra dependencies. EV-1, PV-1b,
+BT-1, HC-1 and GA-1 may start earlier once their listed dependencies finish
+if that does not delay routing. Each parallel group has exclusive file
+ownership. The post-routing chain is GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1;
+EV-1, the privacy checks, templates and lock run beside the token Tasks.
+The manager chooses concurrency from capacity and Shawn's direction. DOC-1's
+exact-text carve-outs and FL-2 name easy-tier work.
 
 The handoff to the pilot:
 
 1. Every Task through PH-1 has merged, and Shawn's checkout includes them.
 2. L1 to L7 have passed. L5 has published at least one pull request through the
    helper.
-3. Shawn gives the go-ahead (question 4).
-4. The build manager writes the handoff record, records the snapshot digest and
-   renders the kickoff into `.local/state/briefs/`. It sends the kickoff to the
-   rapid-ship-bound thread, or Shawn does.
+3. Shawn gives the go-ahead ([decision 4](#decisions)).
+4. The build manager writes the handoff and writer-transfer events with their
+   prefix checkpoints and renders the kickoff into `.local/state/briefs/`.
+   It sends the kickoff to the rapid-ship-bound thread, or Shawn does.
 5. The rapid-ship manager follows `docs/pilot.md`. After the writer transfer, the
    build manager writes no rapid-ship record.
 
 ## Plan inputs
 
-The build manager collected twelve items that the design and the interim token
+The build manager collected fourteen items that the design and the interim token
 step's reviews leave to this plan.
 
 | # | Item | Disposition | Tasks |
 |---|---|---|---|
-| 1 | A privacy match before publication | Decided. A match blocks publication. A match in a commit's message or tree returns to the Worker in a Corrections round whose brief carries the privacy-rewrite exception, which covers only unpublished commits. The manager fixes its own text: branch name, title and body. Shawn decides when an identifier seems necessary. | PV-1, PB-1, BT-1, SK-1; DOC-1 records it |
-| 2 | The failure action for the head-commit check | Decided. It applies to every repository: report to Shawn; not PR-ready. | PV-1; DOC-1 records it |
-| 3 | The open-decisions section's lifecycle | Decided. The Task that records Shawn's answer to item 4 retires the section and fixes the status line's link. | DOC-1 |
-| 4 | Risk floors and the documentation criterion | Open for Shawn ([question 1](#questions-for-shawn)). CF-1 defines the fields; his values enter `.local/` at L1. | CF-1, L1, DOC-1 |
+| 1 | A privacy match before publication | Decided. A match blocks publication. A match in a commit's message or tree returns to the Worker in a Corrections round whose brief carries the privacy-rewrite exception, which covers only unpublished commits. The manager fixes its own text: branch name, title and body. Shawn decides when an identifier seems necessary. | PV-1b, PB-1, BT-1, SK-1; DOC-1 records it |
+| 2 | The failure action for the head-commit check | Decided. It applies to every repository: report to Shawn; not PR-ready. | PV-1b; DOC-1 records it |
+| 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4, retires that section, fixes its links, and keeps only the pending squash-trailer choice. | DOC-1 |
+| 4 | Risk floors and the documentation criterion | Decided by Shawn on 2026-10-27 ([decision 1](#decisions)). Floors count changed behavior; documents are medium and technical project documentation is software engineering. CF-1 defines the fields; the confirmed values enter `.local/` at L1. | CF-1, L1, DOC-1 |
 | 5 | The interim token step | Decided. The helper absorbs it. GA-1 (minting, scope, revocation), GA-2 (running a command) and GA-3 (refusals before minting) port its reviewed behavior: the key only in an anonymous pipe, the token only in the child's environment, the helper reset, SSH refusal and redirect refusal. PB-1 builds the flow. After L4 and L5, the manager stops using the interim step, and Shawn may delete it. | GA-1, GA-2, GA-3, PB-1 |
 | 6 | The interim step's two questions | Decided. Keep `protocol.ssh.allow=never` and remove an inherited `GIT_ALLOW_PROTOCOL`. Revoke every token: `check` fails when revocation fails; `run` warns and keeps the child's status. | GA-1, GA-2 |
-| 7 | Heavy-check coordination across manager threads | Decided. One `flock` lock file in `.local/state/locks/`. | HC-1 |
-| 8 | The identifier list | Decided. The helper loads it for every publication check and blocks when it is missing, empty or invalid. JV-1 also screens Jev input with it. | PV-1, JV-1 |
+| 7 | Heavy-check coordination across manager threads | Decided. One stable `flock` inode in `.local/state/locks/`, separate status metadata, and a runner that retains the lock until the check exits, even if the wrapper dies. | HC-1 |
+| 8 | The identifier list | Decided. The helper loads it for every publication check and blocks when it is missing, empty or invalid. JV-1 also screens Jev input with it. | PV-1a, PV-1b, JV-1 |
 | 9 | Who installs and updates the interim step | Decided. It changes only through a Worker Assignment with owned `.local/` paths and a review by file hash, as when it was written. The manager runs it only after confirming that the file's hash equals the reviewed hash. It is frozen once GA-3 is reviewed, and retired after L5. | Conventions; GA-3 |
 | 10 | The in-flight restart | Procedure decided; mechanism open until L7. L7 tests the ways to clear the conversation while keeping the thread; PH-1 writes the procedure. If no way exists, the manager asks Shawn before the handoff. | L7, PH-1 |
 | 11 | A message-only rewrite after a privacy match | Decided. A rewritten commit is a new commit, so the design's rule applies ([Work cycle][d-cycle], step 7). The manager confirms that the trees are identical, the required checks rerun on the new head, and a scoped re-review covers it. Keeping the earlier review would relax the design; only Shawn can make that change. | BT-1, SK-1 |
-| 12 | The token step's second-review findings and usage rules | Decided. GA-2 adds V1 (forward SIGTERM and SIGHUP to the child, then revoke) and V3 (remove `GIT_CONFIG` from the child's environment). GA-3 adds V2 (refuse `trace2.envVars` and a false-like `http.sslVerify`), and the usage rules become checks: `publish run` refuses `git -C`, `git -c` and a shell as the command, and PB-1 runs it from the repository directory with explicit `--head` and `--base`. SK-1 carries the Keychain rule: Allow, not Always Allow. If the interim step stays in use for long, a Worker Assignment may add V1 to V3 to it first. | GA-2, GA-3, PB-1, SK-1 |
+| 12 | The token step's second-review findings and usage rules | Decided. GA-2 adds V1 (forward SIGTERM and SIGHUP to the child, then revoke) and V3 (build the sanitized environment, removing `GIT_CONFIG`, before both preflight and execution). GA-3 adds V2 (refuse `trace2.envVars` and a false-like `http.sslVerify`), and the usage rules become checks: `publish run` refuses `git -C`, `git -c` and a shell as the command, and PB-1 runs it from the repository directory with explicit `--head` and `--base`. SK-1 carries the Keychain rule: Allow, not Always Allow. If the interim step stays in use for long, a Worker Assignment may add V1 to V3 to it first. | GA-2, GA-3, PB-1, SK-1 |
+| 13 | T3 may fast-forward the owner's checkout after merge | Decided. Read the provisioned HEAD at each dispatch; never assume the checkout lags origin. After a merge, the manager may run `git pull --ff-only` on clean `main` only when T3 has not already fast-forwarded it ([decision 2](#decisions)). | RC-1, BT-1, SK-1; DOC-1 records it |
+| 14 | GitHub-generated squash trailers | Open for Shawn: permit the generated owner-email trailer or remove it at merge. DOC-1 records his choice once supplied; until then commit-message privacy has no new exception. | DOC-1 |
 
 ## Coverage
 
@@ -1246,7 +1435,7 @@ step's reviews leave to this plan.
 | Validated config schema and its digest | [Routing and personal configuration][d-routing] | CF-1 |
 | Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, one fallback, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1, EV-1 |
-| Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1, GA-1, GA-2, GA-3, PB-1 |
+| Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
 | Worker and Reviewer brief templates | [Work cycle][d-cycle]; [Manager threads and bases][d-bases] | BT-1 |
 | Manager skill and user-level installation | [Scope][d-scope] | SK-1 |
@@ -1255,26 +1444,30 @@ step's reviews leave to this plan.
 | Feature leads after the first pilot | [Feature lead options][d-leads] | FL-1, FL-2 |
 | Pilot handoff, both restarts, synthetic router pilots | [Pilot and validation][d-pilot]; [Taking over existing Claude work][d-takeover] | PH-1, RP-1, L7 |
 
-## Questions for Shawn
+## Decisions
 
-1. **Decision 4.** Do you confirm the proposed risk floors and documentation
-   criterion, or give other values? The helper routes live only after your
-   values are in the config (L1).
-2. **Checkout updates.** The manager never pulls your checkout, so a merged
-   Task reaches the installed helper and skill only when you update `main`.
-   Will you pull after each merge, or allow the manager a fast-forward-only
-   pull of a clean `main`?
-3. **Scratch thread for L7.** May the build manager create a scratch thread
-   bound to the t3-compose root to test the restart, and will you clear its
-   conversation by hand if no tool can?
-4. **Pilot start.** Should the build manager send the kickoff as soon as the
-   handoff conditions hold, or wait for your go-ahead? Proposed: your go-ahead.
-5. **Tiers after the first round.** The design runs every review of a Task at
-   least at its highest Worker tier, and, as this plan reads it, keeps the
-   Task's floors for its Corrections rounds. The manager's temporary prose
-   rules use medium for Corrections with enumerated findings and for
-   re-reviews of a Corrections delta, even on challenging code. This plan
-   follows the design. Should the design change instead?
+Shawn answered the plan's five questions on 2026-10-27:
+
+1. **Floors and documentation.** A floor counts what a Task changes, not what
+   it mentions. The first implementation of code that handles credentials or
+   enforces a guardrail, and recovery or concurrency invariants, is
+   challenging. Documents are medium; technical documentation of a software
+   project counts as software engineering. Exact-text mechanical edits can use
+   the easy tier. Values remain configurable.
+2. **Checkout updates.** After a merge, the manager may run `git pull --ff-only`
+   on the owner's clean `main` only when T3 has not already fast-forwarded it.
+3. **Scratch thread.** The build manager may create the scratch thread for L7.
+   If no tool clears its conversation, Shawn clears it by hand.
+4. **Pilot start.** The rapid-ship pilot starts only on Shawn's go-ahead.
+5. **Corrections and review tiers.** The prose rules govern: Corrections with
+   enumerated findings, document reviews and scoped re-reviews use the medium
+   tier. First reviews of challenging code follow the Task's tier. DOC-1
+   aligns the design's Reviewer-tier text and fixed model names with the
+   decisions; the config supplies the models.
+
+**Open owner item (plan input 14).** GitHub-generated squash trailers may
+include the owner's email. Shawn chooses whether to permit that generated
+trailer or remove it at merge. DOC-1 records the choice once supplied.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
