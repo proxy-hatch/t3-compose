@@ -211,6 +211,7 @@ class OfflineGuard(OfflineTestCase):
 
     def test_allowance_refuses_blocked_names_env_and_python(self):
         for name in ("security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish",
+                     "claude", "codex", "agy", "pi",
                      "env", "python", "python3", "python3.14"):
             path = self.temp / name
             path.write_text("#!/bin/sh\nexit 0\n")
@@ -308,6 +309,12 @@ class OfflineGuard(OfflineTestCase):
     def test_credential_and_network_commands_are_blocked(self):
         for command in ("security", "gh", "ssh", "curl"):
             for args in ([command], ["/synthetic/bin/" + command], ["env", command]):
+                with self.subTest(args=args), self.assertRaisesRegex(AssertionError, "offline guard"):
+                    subprocess.run(args)
+        # Synthetic paths only: if the guard broke, a bare harness name would
+        # start a real agent.
+        for harness in ("claude", "codex", "agy", "pi"):
+            for args in (["/synthetic/bin/" + harness], ["env", "/synthetic/bin/" + harness]):
                 with self.subTest(args=args), self.assertRaisesRegex(AssertionError, "offline guard"):
                     subprocess.run(args)
         with self.assertRaises(AssertionError):

@@ -1,7 +1,9 @@
 """An allowlist for offline test hygiene, not a security boundary.
 
 Tests that start another program must allow it explicitly. Python children
-run only through the absolute path of this guard's bootstrap.
+run only through the absolute path of this guard's bootstrap. The guard does
+not see what an allowed program starts, and a bootstrap child takes its
+default git from its own PATH.
 """
 import os
 from pathlib import Path
@@ -20,8 +22,11 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_PATH = Path(__file__).resolve()
 
+# Credential, network and shell programs, and the agent harnesses that T3
+# runs. The helper never starts an agent, so tests can never allow these.
 FORBIDDEN = {
-    "security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish"
+    "security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish",
+    "claude", "codex", "agy", "pi",
 }
 ALLOWED_PYTHON_OPTIONS = {"-I", "-S", "-B", "-E", "-s", "-u"}
 
@@ -189,7 +194,7 @@ class OfflineTestCase(unittest.TestCase):
         self._allow_program = install_guard(self.enterContextCompat)
 
     def allow_program(self, program):
-        """Allow a real program for this test's duration, except launchers and Python."""
+        """Allow a program for this test; never a blocked name, env or Python."""
         self._allow_program(program)
 
     def enterContextCompat(self, context):
