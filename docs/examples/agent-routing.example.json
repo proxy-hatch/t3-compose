@@ -1,0 +1,62 @@
+{
+  "version": 2,
+  "master": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"reasoningEffort": "high", "fastMode": false}},
+  "modelPreferences": {
+    "software-engineering": {
+      "medium": {"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}, "roles": ["worker"]},
+      "challenging": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"reasoningEffort": "high"}}
+    },
+    "non-engineering": {
+      "medium": {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-0", "options": {"reasoningEffort": "medium"}},
+      "challenging": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-codex", "options": {"reasoningEffort": "high"}}
+    }
+  },
+  "easyWorker": {"providerPool": "agy-synth-pool", "model": "gemini-4-flash", "options": {}},
+  "textHelper": {"providerPool": "agy-synth-pool", "model": "gemini-4-flash", "options": {}},
+  "providerPools": {"agy-synth-pool": {"selection": "exhaust-in-order", "providerInstanceIds": ["agy-synth-alpha", "agy-synth-beta", "agy-synth-gamma"]}},
+  "classification": {
+    "ruleVersion": "2026-10-28-v2",
+    "domain": {
+      "instructions": "Classify the task domain.",
+      "criteria": {
+        "SOFTWARE_ENGINEERING": "Code, tests, build, and technical documentation of a software project.",
+        "OTHER": "Non-engineering writing or operations outside software engineering.",
+        "MIXED_OR_UNCLEAR": "Unclear or mixed domain scope."
+      }
+    },
+    "difficulty": {
+      "instructions": "Classify the implementation difficulty.",
+      "criteria": {
+        "EASY": "Exact-text mechanical edits and bounded small changes.",
+        "MEDIUM": "Standard engineering work and shared interfaces.",
+        "CHALLENGING": "Credentials, guardrails, concurrency or recovery invariants.",
+        "INSUFFICIENT_CONTEXT": "Missing requirements or ambiguous scope."
+      }
+    }
+  },
+  "riskFacts": {
+    "credentials-or-guardrails": {"description": "First implementation handling credentials or enforcing a guardrail.", "floor": "challenging"},
+    "recovery-or-concurrency": {"description": "Recovery or concurrency invariants.", "floor": "challenging"},
+    "shared-interface": {"description": "Changes a shared interface consumed across modules.", "floor": "medium"},
+    "technical-documentation": {"description": "Technical documentation of a software project.", "floor": "medium"}
+  },
+  "roundTiers": {"corrections": "easy", "correctionsReview": "medium", "documentReview": "medium"},
+  "jev": {
+    "provider": "openrouter", "model": "~typesafe/jev-latest", "minConfidence": 0.6, "maxContextRetries": 1,
+    "uncertainResult": "manager-judgment", "timeoutSeconds": 30, "keyFile": {"path": "/synthetic/private/openrouter-key.json", "field": "apiKey"}
+  },
+  "availabilityFallback": {
+    "roles": ["worker", "reviewer", "feature-lead"],
+    "manager": "owner-choice",
+    "chains": [
+      {"tier": "medium", "from": {"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}, "roles": ["worker"]}, "to": [{"providerInstanceId": "codex-synth-primary", "model": "gpt-6-sol", "options": {"reasoningEffort": "medium"}}]},
+      {"tier": "medium", "from": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-sol", "options": {"reasoningEffort": "medium"}}, "to": [{"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}, "roles": ["worker"]}]},
+      {"tier": "medium", "from": {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-0", "options": {"reasoningEffort": "medium"}}, "to": [{"providerInstanceId": "pi-synth-openrouter", "model": "glm-5.3", "options": {}, "roles": ["worker"]}]},
+      {"tier": "medium", "from": {"providerInstanceId": "pi-synth-openrouter", "model": "glm-5.3", "options": {}, "roles": ["worker"]}, "to": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-0", "options": {"reasoningEffort": "medium"}}]},
+      {"tier": "challenging", "from": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"reasoningEffort": "high"}}, "to": [{"providerInstanceId": "codex-synth-primary", "model": "gpt-6-codex", "options": {"reasoningEffort": "high"}}]},
+      {"tier": "challenging", "from": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-codex", "options": {"reasoningEffort": "high"}}, "to": [{"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"reasoningEffort": "high"}}]}
+    ],
+    "recordReason": true,
+    "reportReason": true
+  }
+}
