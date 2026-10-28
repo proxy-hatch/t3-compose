@@ -21,9 +21,12 @@ Because this repository is public, tracked files, commit messages and GitHub
 posts, such as pull request titles, bodies and comments, never hold the owner's
 email, keys or tokens, the Jev key file's path, paths under the owner's
 configuration directories, agy account or provider-instance names, T3 or Session
-IDs, or rapid-ship's task list. Before it publishes, the Engineering manager
-checks the commit messages and the pull request's title and body against the
-private identifier list in `.local/`.
+IDs, or rapid-ship's task list. The one exception is the `Co-authored-by`
+trailer that GitHub generates on a squash commit when Shawn merges: it may
+carry his commit email ([plan decision 7](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions)),
+and agents never write it. Before it publishes, the Engineering manager checks
+the commit messages and the pull request's title and body against the private
+identifier list in `.local/`.
 
 t3-compose is a public GitHub repository. Tasks land through pull requests after
 independent review of the final head. The Engineering manager coordinates, checks

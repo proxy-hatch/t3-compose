@@ -22,7 +22,8 @@ class OfflineJSON(OfflineTestCase):
         for limit in (6, 0, -1):
             with self.subTest(limit=limit), self.assertRaises(ValueError):
                 read_json(path, max_bytes=limit)
-        for data in (b"{", b'"\xff"', b'{"a":1,"a":2}', b"NaN", b"Infinity"):
+        for data in (b"{", b'"\xff"', b'{"a":1,"a":2}', b"NaN", b"Infinity",
+                     b'{"x":1e400}', b'{"x":-1e400}', b'"\\ud800"'):
             path.write_bytes(data)
             with self.subTest(data=data), self.assertRaises(ValueError):
                 read_json(path)

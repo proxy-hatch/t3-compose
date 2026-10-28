@@ -3,6 +3,7 @@ import io
 import json
 import os
 import runpy
+import shutil
 import socket
 import subprocess
 import sys
@@ -13,8 +14,9 @@ from tests.support import OfflineTestCase, ROOT
 
 
 class OfflineCLI(OfflineTestCase):
-    def run_cli(self, *args, flags=("-I", "-S"), entry=None):
-        return subprocess.run([sys.executable, *flags, str(entry or ROOT / "bin/t3c"), *args],
+    def run_cli(self, *args, flags=("-I", "-S", "-B"), entry=None):
+        target = str(entry or ROOT / "bin/t3c")
+        return subprocess.run([sys.executable, *flags, str(ROOT / "tests/support.py"), target, *args],
                               cwd=self.temp, capture_output=True, text=True)
 
     def test_version_from_other_directory_and_symlink(self):
@@ -95,6 +97,30 @@ class OfflineCLI(OfflineTestCase):
                 self.assertNotIn("synthetic_missing_dependency", err)
                 self.assertNotIn("synthetic-secret", err)
 
+    def test_registry_system_exit_at_import(self):
+        import t3compose
+        from t3compose.cli import main
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            (self.temp / "evidence.py").write_text("import sys; sys.exit(0)\n")
+            sys.modules.pop("t3compose.evidence", None)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["version"])
+            self.assertEqual((code, out.getvalue()), (2, ""))
+            self.assertIn("evidence", err.getvalue())
+
+    def test_registry_system_exit_in_register(self):
+        import t3compose
+        from t3compose.cli import main
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            (self.temp / "evidence.py").write_text("import sys\ndef register(registry):\n    sys.exit(0)\n")
+            sys.modules.pop("t3compose.evidence", None)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["version"])
+            self.assertEqual((code, out.getvalue()), (2, ""))
+            self.assertIn("evidence", err.getvalue())
+
     def test_local_dir_and_exit_codes(self):
         from t3compose.cli import CommandError, ExitCode, main
         import t3compose
@@ -147,3 +173,96 @@ class OfflineGuard(OfflineTestCase):
                      lambda: os.popen("curl https://example.invalid")):
             with self.assertRaises(AssertionError):
                 call()
+
+    def test_offline_guard_regression_coverage(self):
+        marker = self.temp / "marker.txt"
+        for name in ("security", "gh", "ssh", "curl"):
+            exe = self.temp / name
+            exe.write_text(f"#!/bin/sh\necho ran > {marker}\n")
+            exe.chmod(0o755)
+
+        # os.posix_spawn and os.posix_spawnp
+        for name in ("security", "gh", "ssh", "curl"):
+            exe = str(self.temp / name)
+            with self.assertRaises(AssertionError):
+                os.posix_spawn(exe, [exe], os.environ)
+            self.assertFalse(marker.exists())
+            with self.assertRaises(AssertionError):
+                os.posix_spawnp(exe, [exe], os.environ)
+            self.assertFalse(marker.exists())
+
+        # os.spawnv, and one os.exec* function
+        with self.assertRaises(AssertionError):
+            os.spawnv(os.P_WAIT, str(self.temp / "security"), [str(self.temp / "security")])
+        self.assertFalse(marker.exists())
+        with self.assertRaises(AssertionError):
+            os.execv(str(self.temp / "security"), [str(self.temp / "security")])
+        self.assertFalse(marker.exists())
+
+        # subprocess.Popen with the program as the third positional argument
+        with self.assertRaises(AssertionError):
+            subprocess.Popen(["synthetic"], -1, str(self.temp / "security"))
+        self.assertFalse(marker.exists())
+
+        # a Python child started without the bootstrap
+        with self.assertRaises(AssertionError):
+            subprocess.run([sys.executable, "-c", "pass"])
+        self.assertFalse(marker.exists())
+        script = self.temp / "script.py"
+        script.write_text("pass\n")
+        with self.assertRaises(AssertionError):
+            subprocess.run([sys.executable, "-I", "-S", str(script)])
+        self.assertFalse(marker.exists())
+
+        # a Python child started through the bootstrap that tries to start the synthetic gh,
+        # to create a socket, and to call urllib.request.urlopen on a data: URL (each refused in child)
+        child_code = (
+            "import socket\n"
+            "import subprocess\n"
+            "import sys\n"
+            "import urllib.request\n\n"
+            f"gh_path = {repr(str(self.temp / 'gh'))}\n"
+            "try:\n"
+            "    subprocess.run([gh_path])\n"
+            "except AssertionError:\n"
+            "    pass\n"
+            "else:\n"
+            "    sys.exit(10)\n\n"
+            "try:\n"
+            "    socket.socket()\n"
+            "except AssertionError:\n"
+            "    pass\n"
+            "else:\n"
+            "    sys.exit(11)\n\n"
+            "try:\n"
+            "    urllib.request.urlopen('data:text/plain,synthetic')\n"
+            "except AssertionError:\n"
+            "    pass\n"
+            "else:\n"
+            "    sys.exit(12)\n\n"
+            "sys.exit(0)\n"
+        )
+        child_script = self.temp / "child_runner.py"
+        child_script.write_text(child_code)
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", str(ROOT / "tests/support.py"), str(child_script)],
+            capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, f"Child failed: {result.stderr}")
+        self.assertFalse(marker.exists())
+
+        # an allowed program, git --version, still runs through subprocess.run and through os.posix_spawn
+        git_res = subprocess.run(["git", "--version"], capture_output=True, text=True)
+        self.assertEqual(git_res.returncode, 0)
+        self.assertIn("git version", git_res.stdout)
+
+        git_path = shutil.which("git") or "/usr/bin/git"
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            pid = os.posix_spawn(git_path, [git_path, "--version"], os.environ,
+                                 file_actions=[(os.POSIX_SPAWN_DUP2, null_fd, 1)])
+            _, status = os.waitpid(pid, 0)
+        finally:
+            os.close(null_fd)
+        exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else os.WEXITSTATUS(status)
+        self.assertEqual(exit_code, 0)

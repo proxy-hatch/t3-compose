@@ -1,6 +1,7 @@
 """Canonical UTF-8 JSON and bounded reads; persistence belongs to records."""
 import hashlib
 import json
+import math
 
 
 def canonical_json(value):
@@ -29,6 +30,13 @@ def _invalid_constant(value):
     raise ValueError("non-finite JSON number")
 
 
+def _parse_float(value):
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite JSON number")
+    return result
+
+
 def read_json(path, max_bytes=16384):
     if max_bytes < 0:
         raise ValueError("invalid JSON read limit")
@@ -37,7 +45,10 @@ def read_json(path, max_bytes=16384):
     if len(data) > max_bytes:
         raise ValueError("JSON read limit exceeded")
     try:
-        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object,
-                          parse_constant=_invalid_constant)
+        parsed = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object,
+                            parse_constant=_invalid_constant,
+                            parse_float=_parse_float)
+        canonical_json(parsed)
+        return parsed
     except (UnicodeError, ValueError):
         raise ValueError("invalid JSON data") from None

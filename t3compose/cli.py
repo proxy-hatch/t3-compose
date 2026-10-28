@@ -76,7 +76,7 @@ class Registry:
                 if importlib.util.find_spec(qualified) is None:
                     continue
                 importlib.import_module(qualified).register(self)
-            except Exception:
+            except (Exception, SystemExit):
                 raise CommandError("cannot load command module: " + name) from None
 
 
