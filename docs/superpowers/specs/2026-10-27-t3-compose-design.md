@@ -38,7 +38,7 @@ That count describes coupling, not an estimate that all 28 files require edits.
 A complete T3 backend would also need to address implementer execution, reporting,
 recovery and agy routing. The owner's later Jev/OpenRouter authorization removes
 the routing model's API-authentication conflict, but does not authorize API-backed
-Worker models beyond the limited fallback in plan decision 9, or Compose's
+Worker models beyond the GLM Worker selection in plan decision 9, or Compose's
 entire verification stack. Its skill's
 required Linear CLI conflicts with rapid-ship's official MCP/API rule.
 
@@ -207,22 +207,26 @@ correctness failures escalate to a medium-tier Worker. An unavailable master is
 reported to the owner; the package does not replace the Engineering manager
 without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
 the configured availability fallback at the selected tier. The config names
-each source selection and its ordered target selections and options; re-home
-decision 3 added reverse chains. A target may name the roles it serves; absent
-role limits, it serves all configured fallback roles. A selection uses its
-chain once, taking the first available target eligible for the role. It never
-follows a target's own chain. If no target qualifies, report to Shawn (exit 5).
-Plan decision 9 puts the GLM 5.3 Worker fallback last in medium Worker chains,
-after both Sol and Sonnet, whichever is primary. Record and report
-the reason, preserve all quality requirements, and resolve the original attempt
-before retrying. Availability fallback grants no extra permissions.
+each source and target selection and its options; each chain has exactly one
+target. Re-home decision 3 added reverse chains. Any selection, whether a
+preference or a chain target, may carry an optional `roles` list: a non-empty
+subset of `availabilityFallback.roles`; absent means all of them. A role the
+selection does not serve treats it as unavailable and may use that selection's
+one fallback, once. Check the target's tier, role eligibility and live
+availability. If it is unavailable too, or no chain applies, report to Shawn
+(exit 5); never fall back twice or follow the target's own chain. Plan decision 9
+supports GLM 5.3 as a medium Worker selection; Shawn chooses its place in config.
+Record and report the reason, preserve all quality requirements, and resolve
+the original attempt before retrying. Availability fallback grants no extra
+permissions.
 
 ## Jev decision routing
 
 Use Jev through OpenRouter, as explicitly authorized by the owner on 2026-10-27.
 The Jev exception is limited to the router. Claude, Codex and agy execution
 continues through the existing subscription Harnesses; plan decision 9 adds
-only the Pi/OpenRouter medium Worker fallback as a second exception.
+only the GLM medium Worker selection in Pi through OpenRouter as a second
+exception.
 Jev credentials stay in the existing private credential configuration; never
 place them in briefs, source, logs or argv. The routing adapter reads its own
 key from the `OPENROUTER_API_KEY` environment variable
@@ -518,8 +522,10 @@ The Worker App lacks the workflows permission, so it cannot push changes under
 `.github/workflows/`; Shawn pushes those changes. This is known from the same
 App's use in rapid-ship and not yet observed on t3-compose.
 
-Shawn merges t3-compose pull requests, squash only, and agents never merge
-(publication decision 2). On 2026-10-28, the manager read the repository settings
+Shawn merges t3-compose pull requests today, squash only (publication decision
+2). A managed repository's own rules decide who merges; rapid-ship's flight
+mode lets agents approve and merge pull requests. Workers and Reviewers still
+never merge. On 2026-10-28, the manager read the repository settings
 through the GitHub API: only squash merges are allowed, and GitHub deletes a
 pull request's branch when it merges. `main` has a GitHub ruleset (publication
 decision 4): a pull request is required, force
@@ -723,6 +729,10 @@ Shawn made these decisions on 2026-10-27, after the re-home:
    post.
 2. Merge authority. Shawn merges t3-compose pull requests, squash only. Agents
    never merge.
+
+   Owner note, 2026-10-28: Shawn said, "this is not a standing rule. Once used with rapid-ship, there is a flight-mode for agents to auto approve and merge PRs".
+   The record above states t3-compose's current rule. A managed repository's
+   own rules decide who merges. Workers and Reviewers still never merge.
 3. License. MIT, in [`LICENSE`](../../../LICENSE). Reused Compose or Firstmate
    code keeps its MIT attribution.
 4. Ruleset. `main` has a GitHub ruleset: a pull request is required, force pushes
@@ -768,25 +778,24 @@ numbers match the plan's Decisions section.
   merges. They may carry his commit email, which F7 found already public.
   Agents never write it. The privacy rule above covers a match in a squash
   commit that a branch update brings into a review range.
-- **Decision 9, 2026-10-28: medium Worker fallback.** Shawn said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
-  GLM 5.3 through OpenRouter is the last medium Worker fallback, after both
-  Sol and Sonnet, whichever is primary. It serves Workers only, never a
-  Reviewer, Feature lead, text helper or the master. It runs in the Pi
-  Harness, which T3 offers as a provider and which calls OpenRouter with
-  Shawn's own key. This is a second exception to subscription-only execution,
-  limited to this fallback; the Jev exception still covers routing only.
-  Each use is billed per token and recorded and reported as a fallback.
-  Ordered targets replace the former "never fall back twice" rule: use one
-  chain once, take the first available target eligible for the role, and never
-  follow a target's own chain. Targets may limit their roles. If no target
-  qualifies, report to Shawn (exit 5).
+- **Decision 9, 2026-10-28: medium Worker selection.** Shawn first said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
+  He clarified: "Never fallback twice is a sound rule. The current routing rule remains flexible. Some time in the future I will consider GLM -> Sonnet fallback." and "GLM and jev are both added, as 2 new Pi providers in T3 code, using separate API keys."
+  GLM 5.3 through OpenRouter, run in the Pi Harness with Shawn's own key, is a
+  supported medium Worker selection. It serves Workers only, never a Reviewer,
+  Feature lead, text helper or the master. Shawn chooses where it sits in the
+  config and may later configure GLM -> Sonnet. Until Shawn places it, the
+  config does not use it. The earlier ordered-target rule is withdrawn: each
+  chain has exactly one target; a selection falls back at most once; never
+  fall back twice. Role limits apply to preferences and chain targets alike.
+  This is a second exception to subscription-only execution, limited to GLM
+  Workers; the Jev exception still covers routing only. Each GLM use is billed
+  per token and recorded and reported, whether a preference or a fallback.
   Pi Workers carry their instructions inline, as for agy, until Pi's
-  instruction-file handling is verified. Pi's OpenRouter key stays in Pi's
-  own configuration. The helper never reads, passes or logs it; briefs,
-  source, logs and argv never hold it.
-  The target is available only when T3's live catalog lists the Pi instance
-  with GLM 5.3 and reports `canRunChildTask: true`. The config holds it only
-  with the catalog's exact instance and model IDs; never guess an ID.
+  instruction-file handling is verified. Pi's key stays in Pi. The helper
+  never reads, passes or logs it; briefs, source, logs and argv never hold it.
+  The selection is available only when T3's live catalog lists the Pi instance
+  with GLM 5.3 and reports `canRunChildTask: true`. The config uses only the
+  catalog's exact instance and model IDs; never guess an ID.
 
 ## Findings
 

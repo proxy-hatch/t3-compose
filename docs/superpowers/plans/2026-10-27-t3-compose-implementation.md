@@ -43,7 +43,9 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   synthetic form.
 - Workers commit on their branch only. Workers and Reviewers do not push, open,
   edit or merge pull requests, or post to GitHub. The manager publishes. Shawn
-  merges t3-compose pull requests.
+  merges t3-compose pull requests today, squash only. A managed repository's
+  own rules decide who merges; rapid-ship's flight mode lets agents approve
+  and merge pull requests.
 - The helper's checks are instructional. They create no security boundary
   ([Checks and publication][d-publication]).
 - rapid-ship stays on hold until the pilot starts
@@ -68,7 +70,8 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   reviewed source.
 - **Files.** A Task changes only the files it lists. Tasks that may run in
   parallel share no file. Only HS-1 edits `t3compose/cli.py`; later Tasks add
-  modules that its registry loads.
+  modules that its registry loads. The manager sequences Tasks that share a
+  spec file.
 - **Tests.** `SUITE` means
   `python3 -I -S -B -m unittest discover -s tests -t . -v`, run from the
   repository root; `SUITE -p 'test_x.py'` runs one file. The suite passes under
@@ -76,6 +79,10 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   class derives from the offline guard in `tests/support.py` and is named
   `Offline…`, or `Simulated…` when it injects quota responses. Tests cover
   failure and refusal paths as well as success.
+- **Specs.** A Task that adds or changes a command documents its invocation,
+  options, output, exit codes and module contract in `docs/cli.md`. A Task
+  that changes the test harness documents it in `docs/testing.md`. The
+  Reviewer checks the specs against the code ([decision 10](#decisions)).
 - **Live checks.** Live checks sit in `live/`, outside the suite, print `LIVE`
   and run only when the manager runs them after review. Synthetic inputs are
   labeled synthetic. No offline or simulated test counts as a live pass. Live
@@ -122,7 +129,7 @@ reports it; the manager decides.
 | `tests/` | offline suite | each Task |
 | `live/` | live checks | JV-1, RT-1, RP-1 |
 | `skill/SKILL.md`, `skill/templates/` | manager skill and brief templates | SK-1, BT-1, PH-1, FL-1 |
-| `docs/` | configuration, record, restart and pilot contracts | CF-1, RC-1, PH-1, RP-1, FL-1 |
+| `docs/` | `docs/cli.md`, `docs/testing.md`; configuration, record, restart and pilot contracts | HS-1 first, then each Task that adds commands; CF-1, RC-1, PH-1, RP-1, FL-1 |
 | `pilot/` | synthetic router examples | RP-1 |
 
 ### Commands
@@ -267,12 +274,12 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
         "roles": ["worker", "reviewer", "feature-lead"],
         "manager": "owner-choice",
         "chains": [{"tier": "medium" | "challenging",
-                    "from": Selection, "to": [Target, ...]}],
+                    "from": Selection, "to": [Selection]}],
         "recordReason": true, "reportReason": true}
     }
     Selection     = {"providerInstanceId": "<instance>", "model": "<model>",
                      "options": {"<id>": "<value>"}}
-    Target        = Selection plus optional "roles": ["<role>", ...]
+    Selection may also carry optional "roles": ["<role>", ...]
     PoolSelection = {"providerPool": "<pool>", "model": "<model>",
                      "options": {"<id>": "<value>"}}
 
@@ -292,17 +299,19 @@ Validation rules:
   `uncertainResult` is `manager-judgment`.
 - No pool member appears in `modelPreferences` or in a fallback chain, so agy is
   never a Reviewer and never a fallback.
-- Each chain has an explicit tier and one or more targets, in order. Each
-  `(tier, from)` appears once. No target selection equals its source or another
-  target selection in its chain, regardless of role limits. The source and
-  every target are validated selections associated with that tier; none must
-  be a primary preference. This allows a configured primary to fall back to a
-  non-primary selection and permits its reverse chain. A chain without its
-  reverse is a notice, not an error, because directions are owner values.
-  A target's optional `roles` is a non-empty subset of
-  `availabilityFallback.roles`; absent means all of them. RT-1 enforces role
-  eligibility, tier association and live availability, using one chain, once,
-  in order. It never follows a target's own chain ([decision 9](#decisions)).
+- Each chain has an explicit tier and exactly one target. Each `(tier, from)`
+  appears once, and its target differs from its source, regardless of role
+  limits. Both endpoints are validated selections associated with that tier;
+  neither must be a primary preference. This allows a configured primary to
+  fall back to a non-primary selection and permits its reverse chain. A chain
+  without its reverse is a notice, not an error, because directions are owner
+  values.
+- Any `Selection`, including a preference or a chain target, may carry optional
+  `roles`: a non-empty subset of `availabilityFallback.roles`; absent means
+  all of them. A role it does not serve treats it as unavailable, which may
+  use that selection's one fallback. RT-1 checks tier, role eligibility and
+  live availability. A selection falls back at most once; never fall back
+  twice or follow the target's own chain ([decision 9](#decisions)).
 - `easyWorker` and `textHelper` name a configured pool.
 - The digest is `sha256:` and the hex SHA-256 of the file's bytes. Every routing
   record and dispatch intent stores it.
@@ -327,9 +336,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   command); [Pilot and validation][d-pilot] (test labels).
 - **Files.** Create `bin/t3c`, `t3compose/__init__.py`, `t3compose/cli.py`,
   `t3compose/paths.py`, `t3compose/jsonio.py`, `tests/__init__.py`,
-  `tests/support.py`, `tests/test_cli.py`, `tests/test_jsonio.py` and
-  `tests/test_labels.py`. Modify `AGENTS.md`: the sentence that says no runtime
-  or test commands exist gives way to `SUITE` and the label rule.
+  `tests/support.py`, `tests/test_cli.py`, `tests/test_jsonio.py`,
+  `tests/test_labels.py`, `docs/cli.md` and `docs/testing.md`. Modify
+  `AGENTS.md`: the sentence that says no runtime or test commands exist gives
+  way to `SUITE` and the label rule.
 - **Interfaces.** `bin/t3c` checks for Python 3.9 or later and for
   `sys.flags.isolated` and `sys.flags.no_site`, puts its own root on `sys.path`
   and calls `t3compose.cli.main`. `cli.py` holds the fixed module list (`config`,
@@ -351,6 +361,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   5. `tests/test_labels.py` fails when a test class lacks the guard or the
      `Offline` or `Simulated` prefix.
   6. `AGENTS.md` names `SUITE` and says that only the manager runs `live/`.
+  7. `docs/cli.md` and `docs/testing.md` describe every implemented command,
+     option, output and exit code, the module registry contract, the JSON
+     utilities and the offline guard contract. Pull request #4 adds them.
 - **Offline tests.** `SUITE`.
 - **Depends on.** This plan, merged.
 - **Parallel with.** DOC-1; later code Tasks depend on HS-1.
@@ -371,7 +384,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow].
 - **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`.
   Decision 9 adds `docs/superpowers/plans/2026-10-27-t3-compose-implementation.md`
-  to DOC-1 for the fallback contract.
+  to DOC-1 for the routing and command-spec contracts.
 - **Interfaces.** None; design and plan text only.
 - **Changes.**
   - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, and
@@ -404,9 +417,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     Agents never write it. The trailers sit on the base branch, normally
     outside the review ranges that privacy checks cover. A match in a squash
     commit that a branch update brings into a range goes to Shawn (item 14).
-  - Apply [decision 9](#decisions) to both documents: ordered fallback chains,
-    role-limited targets, the last medium Worker fallback, the limited
-    subscription exception, inline instructions and catalog-gated setup.
+  - Apply [decision 9](#decisions) to both documents: one fallback at most,
+    role limits on any selection, Shawn's choice of GLM's place in config,
+    the limited subscription exception, inline instructions and live catalog.
+  - Scope merge authority to t3-compose's current rule and each managed
+    repository's own rules; record Shawn's dated publication comment.
+  - Record [decision 10](#decisions) and the command and test-harness spec
+    convention in this plan, including HS-1's files and acceptance.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -417,7 +434,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Acceptance.** Decisions 1, 2, 5, 6, 7 and 9 replace the superseded text
   without contradictions. Tier names replace fixed Worker, Reviewer and
   Feature lead model names outside decision 9 and sentences citing it. Items
-  1 to 4, 13 and 14 have the dispositions above. No other design decision changes. Tree and message privacy checks are
+  1 to 4, 13 and 14 have the dispositions above. Merge authority is scoped to
+  the repository and its current rules; decision 10 governs command and
+  test-harness specs in this plan. No other design decision changes. Tree and
+  message privacy checks are
   clean; all links and anchors resolve, including `#open-decisions` with its
   heading and one-line pointer to the recorded decisions.
 - **Offline tests.** Link and privacy checks; after HS-1 merges, `SUITE`,
@@ -443,6 +463,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Files.** Create `t3compose/config.py`, `docs/configuration.md`,
   `docs/examples/agent-routing.example.json`,
   `docs/examples/agent-routing-state.example.json` and `tests/test_config.py`.
+  Update `docs/cli.md`.
 - **Interfaces.** `t3c config check [--config PATH] [--state PATH]` prints the
   digest, the rule version, the risk facts with their floors, the round tiers
   and any notices; it exits 0 or 3. `load_config()` returns a validated,
@@ -455,10 +476,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   2. The current version-1 shape fails with a message that names the missing
      sections.
   3. Both examples pass and use synthetic instance names. A primary with a
-     non-primary fallback and its reverse, an ordered chain and a role-limited
-     target pass. Missing tier associations, duplicate sources in one tier,
-     duplicate targets, an empty target `roles` list and a pool member as a
-     source or target fail.
+     non-primary fallback and its reverse, a Worker-only preference and a
+     Worker-only fallback target pass. Missing tier associations, duplicate
+     sources in one tier, zero or multiple targets, a target equal to its
+     source regardless of role limits, an empty or out-of-set `roles` list on
+     any selection, and a pool member as source or target fail.
   4. An error names the path and the rule, and never prints a value read from a
      key file.
   5. `docs/configuration.md` says that Shawn changes values, or the manager at
@@ -486,6 +508,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as data), `docs/records.md`, `tests/test_records.py` and
   `tests/test_reconcile.py`. Modify `t3compose/jsonio.py` and
   `tests/test_jsonio.py` to add atomic replace and exclusive create.
+  Update `docs/cli.md`.
 - **Interfaces.**
   - `t3c work new --repo REPO --work ID --file WORK.json --writer W`
   - `t3c event add --repo REPO --work ID --kind KIND --file DATA.json --writer W [--checkout PATH]`
@@ -603,6 +626,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Accepted review policy][d-review] (agy is never a Reviewer).
 - **Files.** Create `t3compose/routing.py`, `t3compose/quota.py`,
   `live/catalog_shape.py`, `tests/test_routing.py` and `tests/test_quota.py`.
+  Update `docs/cli.md`.
 - **Interfaces.**
   - `t3c route input --repo REPO --work ID --input TASK.json` records the
     common input with RC-1 and prints its reference, input digest and policy digest.
@@ -645,14 +669,17 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     model, the provider reports `canRunChildTask: true`, and the catalog
     advertises its options. A failed status check counts as unavailable. A
     catalog read more than 15 minutes earlier is refused.
-  - An unavailable selection uses its configured chain at the selected tier
-    once, taking the first available target eligible for the role, in order
-    ([decision 9](#decisions)). A target may limit its roles; absent limits, it
-    serves all `availabilityFallback.roles`. It need not be a primary
-    preference, but its tier association, role eligibility and live
-    availability are checked. Never follow a target's own chain. If no target
-    qualifies, or no chain applies, exit 5 (report to Shawn). Record and report
-    every fallback. The master selection never falls back.
+  - Any selection, whether a preference or a chain target, may limit its
+    roles; absent limits, it serves all `availabilityFallback.roles`. A role
+    it does not serve treats it as unavailable. An unavailable selection uses
+    its one configured fallback at the selected tier, once
+    ([decision 9](#decisions)). The target need not be a primary preference,
+    but its tier association, role eligibility and live availability are
+    checked. If the target is unavailable too, or no chain applies, exit 5
+    (report to Shawn). Never fall back twice or follow the target's own chain.
+    Record and report every fallback. Record and report every GLM use as
+    billed per token, even when it is the preference. The master never falls
+    back.
   - agy: use the active account until confirmed exhaustion, then the next
     non-exhausted account in pool order. An exhausted account returns only after
     its reset time passes or an `available` observation. Unknown quota is usable.
@@ -669,9 +696,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   and scoped re-review tiers; Corrections after a floored first round; an
   escalated Corrections round, including one after `roundTiers.corrections`
   rises and one with no recorded Corrections round; and changed `roundTiers`
-  values. Under [decision 9](#decisions), with Sol and Sonnet both unavailable,
-  a Worker gets the role-limited last target and a Reviewer exits 5. A target
-  that is itself the source of another chain is not followed further.
+  values. Under [decision 9](#decisions), a Worker-only preference serves a
+  Worker; a Reviewer uses that preference's one eligible fallback. A
+  Worker-only fallback target leaves a Reviewer with exit 5. A target that is
+  itself the source of another chain is not followed further. GLM is eligible
+  only for medium Workers; every use records and reports its per-token billing.
   `Simulated…` tests inject
   quota observations to show rotation in order, wrap-around, reset evidence and
   all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
@@ -685,11 +714,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Depends on.** CF-1, RC-1.
 - **Parallel with.** JV-1; L1 and L2 as their prerequisites finish.
 - **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
-  Reviewer) and subtle invariants (one chain, once, in order; exhaustion order) →
+  Reviewer) and subtle invariants (one fallback, exhaustion order) →
   the challenging tier. Reviewer: challenging.
 - **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
-  first round; one chain, once, in order; the rotation rules; the config
-  digest in every record.
+  first round; role limits on preferences and targets; one fallback at most;
+  the rotation rules; the config digest in every record.
 - **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
   follow-up Task.
 
@@ -700,7 +729,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Jev decision routing][d-jev];
   [Routing and personal configuration][d-routing].
 - **Files.** Create `t3compose/jev.py`, `live/jev_contract.py` and
-  `tests/test_jev.py`.
+  `tests/test_jev.py`. Update `docs/cli.md`.
 - **Interfaces.** `t3c route classify --repo REPO --work ID --input TASK.json [--context EXTRA.json]`.
   `TASK.json` holds only `intent`, `acceptance`, `interfaces`, `scope`,
   `riskFacts` and `dependencies`. Unknown keys fail, so global boilerplate
@@ -757,7 +786,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   routes recorded apart from unnecessary expensive ones);
   [Jev decision routing][d-jev].
 - **Files.** Create `pilot/router-examples.json`, `live/router_pilot.py`,
-  `docs/router-pilot.md` and `tests/test_router_pilot.py`.
+  `docs/router-pilot.md` and `tests/test_router_pilot.py`. Update `docs/cli.md`.
 - **Content.** At least twelve synthetic examples: software engineering, other
   work, mixed scope, easy but sensitive (at least one for each confirmed floor),
   and technical documentation. Each holds the author's expected domain, tier
@@ -788,6 +817,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Accepted review policy][d-review]; [Checks and publication][d-publication]
   (a check on another commit does not cover the head).
 - **Files.** Create `t3compose/evidence.py` and `tests/test_evidence.py`.
+  Update `docs/cli.md`.
 - **Interfaces.** `t3c evidence check --repo REPO --work ID --head SHA [--pr-ready]`
   prints `verified` or the gaps. It exits 0 or 1, and 2 for invalid records.
 - **Rules.** Verified needs all of the following. The head is the latest result
@@ -824,7 +854,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [t3-compose repository workflow][d-workflow] (privacy, the author
   check and failure action); [Checks and publication][d-publication] (head check).
 - **Files.** Create `t3compose/privacy.py`, `t3compose/pullrequest.py`,
-  `tests/test_privacy.py` and `tests/test_pullrequest.py`.
+  `tests/test_privacy.py` and `tests/test_pullrequest.py`. Update `docs/cli.md`.
 - **Interfaces.**
   - `t3c privacy check --repo-path P --range BASE..HEAD [--branch NAME] [--text LABEL=FILE ...]`
   - `t3c pr verify --repo OWNER/NAME --number N --head SHA [--base BRANCH] [--author LOGIN]`
@@ -869,7 +899,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [t3-compose repository workflow][d-workflow] (privacy);
   [Accepted review policy][d-review].
 - **Files.** Create `skill/templates/worker.md`, `skill/templates/reviewer.md`,
-  `t3compose/briefs.py` and `tests/test_briefs.py`.
+  `t3compose/briefs.py` and `tests/test_briefs.py`. Update `docs/cli.md`.
 - **Worker template.** Sections, in order:
   - Role and routing: the tier, the model and the reason; stay on this
     Assignment and this model; start no agents or T3 tasks. A slot carries the
@@ -946,6 +976,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   commit, runner and check process IDs, start time) is atomically written to
   `heavy-check-status.json` beside it; it is never written into the lock file.
 - **Files.** Create `t3compose/heavy.py` and `tests/test_heavy.py`.
+  Update `docs/cli.md`.
 - **Interfaces.**
   `t3c heavy run --repo-path WORKTREE --commit SHA --label TEXT --log FILE [--wait] -- CMD [ARGS...]`
   and `t3c heavy status`.
@@ -995,6 +1026,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   GA-3. The port holds no private value: the App's ID, installation account
   and Keychain item stay in `.local/github-app.json`.
 - **Files.** Create `t3compose/github_app.py` and `tests/test_github_app.py`.
+  Update `docs/cli.md`.
 - **Kept behavior.**
   - The App config is strict: permission names `contents` and `pull_requests`
     only, levels `read` or `write`, and a repository owner equal to the
@@ -1043,6 +1075,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Shawn's stored credentials or SSH key); [publication decision 1][d-pubdec].
 - **Source.** As for GA-1.
 - **Files.** Create `t3compose/token_run.py` and `tests/test_token_run.py`.
+  Update `docs/cli.md`.
 - **Kept behavior.**
   - The child receives the token only in `GH_TOKEN`. `GITHUB_TOKEN` is removed.
   - Git config passed through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
@@ -1095,7 +1128,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Source.** As for GA-1.
 - **Files.** Create `t3compose/token_preconditions.py` and
   `tests/test_token_preconditions.py`. Modify `t3compose/token_run.py` to call
-  the checks before minting.
+  the checks before minting. Update `docs/cli.md`.
 - **Kept behavior.** From the first review's findings: `run` builds GA-2's
   sanitized environment first and passes it to every preflight Git invocation.
   It refuses when Git's effective config, read from the directory `run` starts
@@ -1133,6 +1166,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Checks and publication][d-publication];
   [t3-compose repository workflow][d-workflow]; [Work cycle][d-cycle], step 8.
 - **Files.** Create `t3compose/publish.py` and `tests/test_publish.py`.
+  Update `docs/cli.md`.
 - **Interfaces.**
   - `t3c publish push --repo-path P --work ID --head SHA --branch NAME`
   - `t3c publish pr --work ID --head SHA --branch NAME --base main --title-file F --body-file F`
@@ -1199,7 +1233,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Checks and publication][d-publication]; [Design refinement][d-refine].
 - **Files.** Create `skill/SKILL.md`, `t3compose/skill_install.py` and
   `tests/test_skill.py`. Modify `README.md` (installation, updates and status)
-  and `AGENTS.md` (status).
+  and `AGENTS.md` (status). Update `docs/cli.md`.
 - **`SKILL.md` covers.**
   - Hard rules: the manager makes no project edits; it does not move or write
     the owner's checkout beyond the design's list; Workers commit on their
@@ -1274,7 +1308,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Taking over existing Claude work][d-takeover];
   [Manager threads and bases][d-bases]; [re-home decisions 1 and 2][d-rehome].
 - **Files.** Create `skill/templates/manager-kickoff.md`, `docs/restart.md`,
-  `docs/pilot.md` and `tests/test_pilot_docs.py`.
+  `docs/pilot.md` and `tests/test_pilot_docs.py`. Update `docs/cli.md`.
 - **Interfaces.** No new command. The kickoff template's placeholders are the
   pointers listed below, rendered with `t3c brief render`. The procedures use
   `t3c work snapshot`, `t3c work reconcile`, `t3c event add` and T3's
@@ -1341,7 +1375,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Feature lead options][d-leads];
   [decision 1 after grill-with-docs][d-grill].
 - **Files.** Create `skill/templates/feature-lead.md`, `docs/feature-leads.md`
-  and `tests/test_feature_lead.py`.
+  and `tests/test_feature_lead.py`. Update `docs/cli.md`.
 - **Interfaces.** No new command. The lead brief renders with
   `t3c brief render`; a lead writes its records with the `lead:` writer form
   from [Record format](#record-format).
@@ -1412,15 +1446,15 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 | L8 | after RP-1 and L1 | manager | `live/router_pilot.py` | live, synthetic |
 | L9 | after the handoff | rapid-ship manager thread | The pilot | live |
 | L10 | after the pilot | manager | The nested scratch pilot (FL-1) | live |
-| L11 | after RT-1 and Shawn's setup | Shawn, then the manager at his instruction | Verify the last medium Worker fallback under [decision 9](#decisions), as described below | owner step, live |
+| L11 | after RT-1 and Shawn places GLM in config | manager | Verify the medium Worker selection and role limits under [decision 9](#decisions), as described below | live, synthetic |
 
-Under [decision 9](#decisions), L11 waits until Shawn installs Pi, gives it an
-OpenRouter key and enables it in T3. The manager saves a live catalog and
-confirms it lists the Pi instance with GLM 5.3 and `canRunChildTask: true`.
-At Shawn's instruction, it adds the target using only the catalog's exact
-instance and model IDs. It runs one `t3c route select` per role on synthetic
-work with Sol and Sonnet marked unavailable: the Worker gets GLM 5.3 and the
-Reviewer exits 5. Record and report the fallback and the results.
+Under [decision 9](#decisions), L11 runs after RT-1 and once Shawn places GLM
+in the config using only the catalog's exact instance and model IDs. The manager
+saves a live catalog and confirms it lists the Pi instance with GLM 5.3 and
+`canRunChildTask: true`. It runs `t3c route select` once per role on synthetic
+work: a Worker selection may get GLM 5.3; a Reviewer selection never does and
+gets its one eligible fallback or exits 5. Record and report the selections,
+any fallback and any GLM use's per-token billing.
 
 L7 tests two behaviors in a scratch thread bound to the t3-compose root, with a
 trivial read-only child. First, the ways to clear the conversation while
@@ -1508,7 +1542,7 @@ step's reviews leave to this plan.
 |---|---|---|
 | Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1, EV-1, JV-1 |
 | Validated config schema and its digest | [Routing and personal configuration][d-routing] | CF-1 |
-| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, one chain, in order, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
+| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1, EV-1 |
 | Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
@@ -1553,23 +1587,29 @@ Shawn added these decisions on 2026-10-28:
 8. **Routing stays untuned.** Unoptimized routing is acceptable for now.
    Evaluating and tuning the thresholds that route work to each model and
    reasoning level is backlog work outside this plan.
-9. **Medium Worker fallback, 2026-10-28.** Shawn said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
-   GLM 5.3 through OpenRouter is last in medium Worker chains, after both Sol
-   and Sonnet, whichever is primary. It serves Workers only, never a Reviewer,
-   Feature lead, text helper or the master. It runs in T3's Pi Harness with
-   Shawn's own OpenRouter key. This second subscription-only exception covers
-   only this Worker fallback; the Jev exception still covers routing only.
-   Each use is billed per token and recorded and reported as a fallback.
-   Ordered chains replace "never fall back twice": use one chain once, take
-   the first available target eligible for the role, and never follow its
-   own chain. Targets may limit roles; no qualifying target means exit 5,
-   report to Shawn. Pi Workers carry instructions inline, as for agy, until
-   Pi's instruction-file handling is verified. Pi's key stays in its own
-   configuration: the helper never reads, passes or logs it, and briefs,
-   source, logs and argv never hold it. The target is available only when
-   T3's live catalog lists the Pi instance with GLM 5.3 and
-   `canRunChildTask: true`. Add it to config only with the catalog's exact
-   instance and model IDs; never guess an ID. L11 verifies it after setup.
+9. **Medium Worker selection, 2026-10-28.** Shawn first said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
+   He clarified: "Never fallback twice is a sound rule. The current routing rule remains flexible. Some time in the future I will consider GLM -> Sonnet fallback." and "GLM and jev are both added, as 2 new Pi providers in T3 code, using separate API keys."
+   GLM 5.3 through OpenRouter, run in the Pi Harness with Shawn's own key, is a
+   supported medium Worker selection. It serves Workers only, never a Reviewer,
+   Feature lead, text helper or the master. Shawn chooses where it sits in the
+   config and may later configure GLM -> Sonnet. Until Shawn places it, the
+   config does not use it. The earlier ordered-target rule is withdrawn: each
+   chain has exactly one target; a selection falls back at most once; never
+   fall back twice. Role limits apply to preferences and chain targets alike.
+   This is a second exception to subscription-only execution, limited to GLM
+   Workers; the Jev exception still covers routing only. Each GLM use is billed
+   per token and recorded and reported, whether a preference or a fallback.
+   Pi Workers carry their instructions inline, as for agy, until Pi's
+   instruction-file handling is verified. Pi's key stays in Pi. The helper
+   never reads, passes or logs it; briefs, source, logs and argv never hold it.
+   The selection is available only when T3's live catalog lists the Pi instance
+   with GLM 5.3 and reports `canRunChildTask: true`. The config uses only the
+   catalog's exact instance and model IDs; never guess an ID. L11
+   verifies it once Shawn places GLM in config.
+10. **Command and test-harness specs, 2026-10-28.** Shawn said: "I also don't see the spec supporting the impl choices in pr4. The impl design of all the CLI cmds implemented need to be surfaced."
+    Every implemented command and test-harness contract has a written spec in
+    the repository. HS-1 adds `docs/cli.md` and `docs/testing.md`; later Tasks
+    keep them current, and the Reviewer checks them against the code.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
