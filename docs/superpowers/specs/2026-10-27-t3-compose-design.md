@@ -233,9 +233,11 @@ one fallback, once. Check the target's tier, role eligibility and live
 availability. If it is unavailable too, or no chain applies, report to Shawn
 (exit 5); never fall back twice or follow the target's own chain. Plan decision 9
 supports GLM 5.3 as a medium Worker selection; plan decision 12 adds Argon
-through the agy subscription. Shawn chooses each model's place in config; neither
-has been placed. Argon needs no new API exception. The pool contract does not
-wait for placement. Record and report the reason, preserve all quality
+through the agy subscription. Shawn chose Argon as the medium software-engineering
+Worker preference, with Sol as its one fallback; GLM remains unplaced. Medium
+Reviewers and Feature leads use that fallback to Sol. The Engineering manager
+applies the choice in private config. Argon needs no new API exception.
+Record and report the reason, preserve all quality
 requirements, and resolve the original attempt before retrying. Availability
 fallback grants no extra permissions.
 
@@ -831,9 +833,12 @@ numbers match the plan's Decisions section.
 - **Decision 12, 2026-10-28: medium Worker pool selections and Argon.** Shawn said: "There's another model to support: gemini-4-argon-high as medium worker model (in agy subscription, only 2/3 accounts have it, slowly rolling out), same tier as GLM5.3 and Sonnet/Sol."
   Argon through the agy subscription is a supported medium Worker choice,
   alongside the choice in decision 9. It serves Workers only, never a Reviewer,
-  Feature lead, text helper or the master. Shawn chooses its placement; none
-  is authorized yet. Do not change config until he places it. The subscription
-  covers Argon; this adds no API exception. agy Workers carry instructions inline.
+  Feature lead, text helper or the master. Shawn then chose: "Use Argon as the medium Worker preference, with Sol as its one fallback".
+  This is the medium software-engineering preference, with exactly
+  `"roles": ["worker"]`; medium Reviewers and Feature leads reach Sol through
+  its one fallback. The Engineering manager applies the choice in private
+  config. GLM remains unplaced. The subscription covers Argon; this adds no API
+  exception. agy Workers carry instructions inline.
   The catalog observation on 2026-10-28 found the model on two of three pool
   accounts with `canRunChildTask: true`; this is rollout evidence, not quota
   evidence. Account identities are recorded in `.local/`.

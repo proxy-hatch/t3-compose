@@ -448,7 +448,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   - Apply [decision 12](#decisions) and CD-1 to both documents: medium
     Worker-only pool preferences and chain endpoints, model-aware account
     walking, per-account quota, role exclusions and L11 for the added choice.
-    Record support independently of Shawn's pending placement; change no
+    Record Shawn's choice of Argon as the medium software-engineering Worker
+    preference with Sol as its one fallback; the Engineering manager changes
     private config. Preserve decision 11's call, alias, records and freshness.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
@@ -462,8 +463,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Feature lead model names outside decisions 9 and 12 and sentences citing them.
   CF-1's schema, RT-1's selection and records, L11 and coverage agree with CD-1;
   no blanket pool fallback ban remains. First-round floors, review tiers and
-  the one-fallback rule remain. Neither supported medium Worker choice is
-  placed by this Task. Items 1 to 4, 13 and 14 have the dispositions above. Merge authority is scoped to
+  the one-fallback rule remain. This Task records Shawn's placement choice;
+  the Engineering manager changes private config. Items 1 to 4, 13 and 14
+  have the dispositions above. Merge authority is scoped to
   the repository and its current rules; decision 10 governs command and
   test-harness specs in this plan. No other design decision changes. Tree and
   message privacy checks are
@@ -1522,7 +1524,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 Under [decisions 9 and 12](#decisions), L11 covers both GLM 5.3 and Argon
 (`gemini-4-argon-high`). It runs for each after RT-1 and Shawn's placement of
 that choice in config, using only the catalog's exact identifiers and options.
-Neither choice is placed yet. L11 is independent of the handoff gate.
+Shawn chose Argon as the medium software-engineering Worker preference with
+Sol as its one fallback; the Engineering manager applies the private config.
+GLM remains unplaced. L11 is independent of the handoff gate.
 
 The manager saves a live catalog. For GLM it confirms that the Pi instance lists
 GLM 5.3 with the requested options and `canRunChildTask: true`. For Argon it
@@ -1702,9 +1706,12 @@ Shawn added these decisions on 2026-10-28:
 12. **Medium Worker pool selections and Argon, 2026-10-28.** Shawn said: "There's another model to support: gemini-4-argon-high as medium worker model (in agy subscription, only 2/3 accounts have it, slowly rolling out), same tier as GLM5.3 and Sonnet/Sol."
     Argon through the agy subscription is a supported medium Worker choice,
     alongside decision 9's choice. It serves Workers only, never a Reviewer,
-    Feature lead, text helper or the master. Shawn chooses its placement;
-    none is authorized yet. Do not change config until he places it. The
-    subscription covers Argon; no new API exception is added. agy Workers
+    Feature lead, text helper or the master. Shawn then chose: "Use Argon as the medium Worker preference, with Sol as its one fallback".
+    This is the medium software-engineering preference, with exactly
+    `"roles": ["worker"]`; medium Reviewers and Feature leads reach Sol through
+    its one fallback. The Engineering manager applies the choice in private
+    config. GLM remains unplaced. The subscription covers Argon; no new API
+    exception is added. agy Workers
     carry instructions inline. The catalog observation on 2026-10-28 found
     it on two of three pool accounts with `canRunChildTask: true`; account
     identities are recorded in `.local/`. This is rollout evidence, not quota
@@ -1727,7 +1734,7 @@ Shawn added these decisions on 2026-10-28:
     observations stay per account for all its pool models, without model keys.
     Role exclusion applies to preferences and endpoints: Reviewers and
     Feature leads reach one eligible fallback or exit 5. CF-1 and RT-1 implement
-    this contract independently of pending placement. L11 verifies both
+    this contract; private config records Shawn's chosen placement. L11 verifies both
     supported choices after Shawn places each, independently of the handoff gate.
 
 [glossary]: ../../../GLOSSARY.md
