@@ -89,11 +89,13 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   project counts as software engineering. The config decides the model for
   each tier. The manager confirms the route at dispatch and records its class
   and reason; until the router is live, it routes in prose. Corrections rounds
-  with enumerated findings and scoped re-reviews follow the prose rules at the
-  medium tier. Document reviews are medium. First reviews of challenging code
-  follow the Task's tier; other first reviews are at least medium. agy is never
-  a Reviewer. DOC-1 aligns the design with these owner decisions
-  ([decisions 1 and 5](#decisions)).
+  with enumerated findings use the easy tier, even when a floor set the first
+  round's tier. Their scoped re-reviews are medium, as are document reviews.
+  First reviews of challenging code follow the Task's tier; other first
+  reviews are at least medium. agy is never a Reviewer. The config holds these
+  round tiers. DOC-1 aligns the design with these owner decisions
+  ([decisions 1, 5 and 6](#decisions)). Tuning the tiers is outside this plan
+  ([decision 8](#decisions)).
 - **Records.** Until RC-1 is installed, the manager keeps its manual dispatch
   log in `.local/`. From then on it records through the helper. The manual log
   stays as history and is not migrated.
@@ -254,6 +256,9 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
       },
       "riskFacts": {"<fact-id>": {"description": "<text>",
                                   "floor": "medium" | "challenging"}},
+      "roundTiers": {"corrections": "easy" | "medium" | "challenging",
+                     "correctionsReview": "medium" | "challenging",
+                     "documentReview": "medium" | "challenging"},
       "jev": {"provider": "openrouter", "model": "<pinned model>",
               "minConfidence": <number>, "maxContextRetries": 0 | 1,
               "uncertainResult": "manager-judgment", "timeoutSeconds": <1 to 120>,
@@ -278,6 +283,10 @@ Validation rules:
   until the new sections hold Shawn's values.
 - Floors are medium or challenging only. Fact IDs are lowercase words joined by
   hyphens.
+- `roundTiers` holds the owner's round rules ([decisions 5 and 6](#decisions)):
+  the Worker tier for enumerated Corrections, initially easy, and the Reviewer
+  tiers for scoped Corrections re-reviews and document reviews, initially
+  medium. A Reviewer tier is never easy.
 - `minConfidence` is above 0 and at most 1. `maxContextRetries` is 0 or 1.
   `uncertainResult` is `manager-judgment`.
 - No pool member appears in `modelPreferences` or in a fallback chain, so agy is
@@ -348,8 +357,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 
 ### DOC-1 Design alignment with owner decisions
 
-- **Objective.** Reconcile the design with Shawn's decisions of 2026-10-27,
-  replace stale routing text, and record publication failure actions.
+- **Objective.** Reconcile the design with Shawn's decisions of 2026-10-27 and
+  2026-10-28, replace stale routing text, and record publication failure
+  actions.
 - **Design.** [Open decisions][d-open]; [Routing and personal configuration][d-routing];
   [Manager threads and bases][d-bases]; [Accepted review policy][d-review];
   [Feature lead options][d-leads]; [Design refinement][d-refine];
@@ -358,14 +368,19 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   only.
 - **Interfaces.** None; design text only.
 - **Changes.**
-  - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, in the design.
+  - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, and
+    decisions 6 and 7, dated 2026-10-28, in the design.
     Decision 1 replaces open decision 4. Keep a heading named "Open decisions"
     with one line saying no decisions remain open and linking to the sections
     recording them, so links to `#open-decisions` keep working. Update the
     status line and superseded references to open items (plan input 3).
-  - Replace the design's Reviewer-tier rule with decision 5: document reviews,
-    enumerated Corrections and scoped re-reviews use the medium tier; first
-    reviews of challenging code follow the Task's tier; agy is never a Reviewer.
+  - Replace the design's Reviewer-tier rule with decision 5: document reviews
+    and scoped re-reviews use the medium tier; first reviews of challenging
+    code follow the Task's tier; agy is never a Reviewer. Record decision 6:
+    enumerated Corrections use the easy tier, even after a floored first
+    round, so the rule that easy work goes to agy only when no floor applies
+    covers first rounds only. Say that these round tiers are config values,
+    with decisions 5 and 6 as their initial values.
   - Replace fixed model names in routing, Feature lead, design-refinement and
     fallback text, including earlier decision summaries, with tier names and
     configured selections. The config decides models, options and availability
@@ -377,34 +392,33 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     private-identifier match blocks publication until Corrections or Shawn
     resolves it. A mismatched pull request head, or author where identity
     rules name one, means "report to Shawn; not PR-ready" (items 1 and 2).
-  - Record Shawn's choice on GitHub-generated squash trailers (item 14) when
-    he supplies it. Until then, retain that one explicit owner item separately
-    from the "Open decisions" heading; do not infer an exception to
-    commit-message privacy from public commit metadata.
+  - Record [decision 7](#decisions) in the t3-compose privacy rule. The
+    `Co-authored-by` trailers that GitHub generates on a squash commit when
+    Shawn merges may carry his commit email, which F7 found already public.
+    Agents never write it. The trailers sit only on the base branch, outside
+    the review ranges that privacy checks cover (item 14).
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
   "Documents are medium. Technical documentation of a software project counts
   as software engineering. A floor applies to what a Task changes, not what it
-  mentions." For item 14, copying Shawn's eventual wording is also an easy-tier
-  follow-up when the brief supplies that text. Any follow-up edits get current
-  checks and a medium-tier re-review; they do not run beside DOC-1's writer.
-- **Acceptance.** Decisions 1, 2 and 5 replace the superseded text without
-  contradictions. Tier names replace fixed Worker, Reviewer and Feature lead
-  model names. Items 1 to 4, 13 and 14 have the dispositions above. No other
-  design decision changes. Tree and message privacy checks are clean; all
-  links and anchors resolve, including `#open-decisions` with its heading and
-  one-line pointer to the recorded decisions.
+  mentions." Any follow-up edits get current checks and a medium-tier
+  re-review; they do not run beside DOC-1's writer.
+- **Acceptance.** Decisions 1, 2, 5, 6 and 7 replace the superseded text
+  without contradictions. Tier names replace fixed Worker, Reviewer and
+  Feature lead model names. Items 1 to 4, 13 and 14 have the dispositions
+  above. No other design decision changes. Tree and message privacy checks are
+  clean; all links and anchors resolve, including `#open-decisions` with its
+  heading and one-line pointer to the recorded decisions.
 - **Offline tests.** Link and privacy checks; after HS-1 merges, `SUITE`,
   unchanged. DOC-1 has no runtime prerequisite.
-- **Depends on.** This plan, merged. Item 14's final wording waits for Shawn;
-  the other changes can proceed now.
+- **Depends on.** This plan, merged.
 - **Parallel with.** HS-1 and later code Tasks; it owns only the design.
 - **Risk facts and tier.** Reconciliation across one document → the medium
   tier. The exact-text carve-outs above use the easy tier. Reviewer: medium,
   never agy.
 - **Review focus.** Faithful decisions; no contradictory tier or checkout rule;
-  no inferred squash-trailer exception; resolved links.
+  a squash-trailer exception no wider than decision 7; resolved links.
 - **Size.** About 150 lines, including replaced text.
 
 ### CF-1 Config schema and validation
@@ -420,9 +434,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `docs/examples/agent-routing.example.json`,
   `docs/examples/agent-routing-state.example.json` and `tests/test_config.py`.
 - **Interfaces.** `t3c config check [--config PATH] [--state PATH]` prints the
-  digest, the rule version, the risk facts with their floors and any notices;
-  it exits 0 or 3. `load_config()` returns a validated, read-only view and its
-  digest, plus the routing-policy digest defined in [Record format](#record-format).
+  digest, the rule version, the risk facts with their floors, the round tiers
+  and any notices; it exits 0 or 3. `load_config()` returns a validated,
+  read-only view and its digest, plus the routing-policy digest defined in
+  [Record format](#record-format).
   Nothing is cached between commands, so a valid edit applies to the
   next dispatch and running children keep their recorded selection.
 - **Acceptance.**
@@ -598,14 +613,18 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   - First-round Worker tier: the higher of the difficulty and every declared
     fact's floor. The Corrections rule below replaces that first-round floor
     calculation for enumerated Corrections.
-    `--escalate` sets it one step above the highest Worker tier already recorded
-    on the Task; escalation from challenging exits 4. Easy work goes to the agy
-    pool only when no floor applies.
-  - Corrections with enumerated findings use the medium tier under the prose
-    rules; a brief that adds unresolved work is split or classified afresh.
-    Reviewer tier: medium for documents and scoped Corrections re-reviews;
-    first reviews of challenging code follow the Task's tier, including any
-    escalation. Other first reviews are at least medium. The round and scope
+    `--escalate` sets it one step above the highest Worker tier already
+    recorded for the same round kind on the Task; escalation from challenging
+    exits 4. Easy first-round work goes to the agy pool only when no floor
+    applies.
+  - Corrections with enumerated findings use `roundTiers.corrections`
+    (initially easy, so the agy pool), even when a floor set the first round's
+    tier ([decision 6](#decisions)); a brief that adds unresolved work is
+    split or classified afresh. Reviewer tier: `roundTiers.documentReview` for
+    documents and `roundTiers.correctionsReview` for scoped Corrections
+    re-reviews, both initially medium; first reviews of challenging code
+    follow the Task's tier, including any escalation. Other first reviews are
+    at least medium. The round and scope
     are recorded; a Reviewer selection is never a pool member.
   - Feature lead: the preference at the Task's tier, at least medium. Text
     helper: the fixed `textHelper` route, with no classification.
@@ -630,8 +649,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Acceptance.** Offline tests cover each rule, including a changed input,
   criteria or threshold after both classification and judgment; an explicitly
   named stale input or policy; a non-primary fallback; a fallback at the wrong
-  tier or ineligible for the role; and the first-review, document, Corrections
-  and scoped re-review tiers. `Simulated…` tests inject
+  tier or ineligible for the role; the first-review, document, Corrections
+  and scoped re-review tiers; Corrections after a floored first round; an
+  escalated Corrections round; and changed `roundTiers` values.
+  `Simulated…` tests inject
   quota observations to show rotation in order, wrap-around, reset evidence and
   all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
   (L3).
@@ -647,8 +668,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Reviewer) and subtle invariants (one fallback, exhaustion order) →
   the challenging tier. Reviewer: challenging.
 - **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
-  Task; one fallback at most; the rotation rules; the config digest in every
-  record.
+  first round; one fallback at most; the rotation rules; the config digest in
+  every record.
 - **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
   follow-up Task.
 
@@ -793,7 +814,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     the range, the branch name and each text file. A match that a later commit
     removed still blocks, because a push publishes every commit. `*.lock`
     files are skipped, as in the manual check. Author and committer fields are
-    not checked ([finding F7][d-findings]); item 14 remains an owner choice.
+    not checked ([finding F7][d-findings]). GitHub's squash trailers
+    ([decision 7](#decisions)) sit only on the base branch, outside a Task's
+    review range, so the check makes no exception for them.
   - Output names the field, commit, file and list line number, never matched
     text. A match blocks publication until Corrections or Shawn resolves it.
   - `pr verify` reads the pull request through the GitHub API, read-only. It
@@ -1315,7 +1338,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Risk facts and tier.** None for the files: a template and procedures. The
   live pilot is the manager's work → the medium tier. Reviewer:
   medium. A defect that L10 finds in recovery code is fixed by a separate
-  Task at the challenging tier; enumerated Corrections follow the medium tier.
+  Task at the challenging tier; its enumerated Corrections use the easy tier.
 - **Review focus.** One writer per record across the manager and the lead; no
   duplicate children; escalations that cannot be lost.
 - **Size.** About 500 lines.
@@ -1396,8 +1419,8 @@ Routing comes first, as Shawn requested on 2026-10-27. Dispatch CF-1, RC-1
 and PV-1a first, then RT-1 as soon as CF-1 and RC-1 finish; JV-1 also needs
 PV-1a. L1 follows CF-1; L2 follows JV-1 and L1; L3 follows RT-1 and L1.
 The router goes live once JV-1, RT-1 and L1 to L3 pass, before publication
-and the skill. DOC-1's remaining squash-trailer choice does not block routing.
-L7 is independent of the helper and can run while the routing path is built.
+and the skill. L7 is independent of the helper and can run while the routing
+path is built.
 
 The stages give dispatch priority, not extra dependencies. EV-1, PV-1b,
 BT-1, HC-1 and GA-1 may start earlier once their listed dependencies finish
@@ -1428,7 +1451,7 @@ step's reviews leave to this plan.
 |---|---|---|---|
 | 1 | A privacy match before publication | Decided. A match blocks publication. A match in a commit's message or tree returns to the Worker in a Corrections round whose brief carries the privacy-rewrite exception, which covers only unpublished commits. The manager fixes its own text: branch name, title and body. Shawn decides when an identifier seems necessary. | PV-1b, PB-1, BT-1, SK-1; DOC-1 records it |
 | 2 | The failure action for the head-commit check | Decided. It applies to every repository: report to Shawn; not PR-ready. | PV-1b; DOC-1 records it |
-| 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4 and keeps an "Open decisions" heading with one line saying no decisions remain open and pointing to their recorded answers, preserving `#open-decisions`. The pending squash-trailer choice stays a separate owner item. | DOC-1 |
+| 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4 and keeps an "Open decisions" heading with one line saying no decisions remain open and pointing to their recorded answers, preserving `#open-decisions`. | DOC-1 |
 | 4 | Risk floors and the documentation criterion | Decided by Shawn on 2026-10-27 ([decision 1](#decisions)). Floors count changed behavior; documents are medium and technical project documentation is software engineering. CF-1 defines the fields; the confirmed values enter `.local/` at L1. | CF-1, L1, DOC-1 |
 | 5 | The interim token step | Decided. The helper absorbs it. GA-1 (minting, scope, revocation), GA-2 (running a command) and GA-3 (refusals before minting) port its reviewed behavior: the key only in an anonymous pipe, the token only in the child's environment, the helper reset, SSH refusal and redirect refusal. PB-1 builds the flow. After L4 and L5, the manager stops using the interim step, and Shawn may delete it. | GA-1, GA-2, GA-3, PB-1 |
 | 6 | The interim step's two questions | Decided. Keep `protocol.ssh.allow=never` and remove an inherited `GIT_ALLOW_PROTOCOL`. Revoke every token: `check` fails when revocation fails; `run` warns and keeps the child's status. | GA-1, GA-2 |
@@ -1439,7 +1462,7 @@ step's reviews leave to this plan.
 | 11 | A message-only rewrite after a privacy match | Decided. A rewritten commit is a new commit, so the design's rule applies ([Work cycle][d-cycle], step 7). The manager confirms that the trees are identical, the required checks rerun on the new head, and a scoped re-review covers it. Keeping the earlier review would relax the design; only Shawn can make that change. | BT-1, SK-1 |
 | 12 | The token step's second-review findings and usage rules | Decided. GA-2 adds V1 (forward SIGTERM and SIGHUP to the child, then revoke) and V3 (build the sanitized environment, removing `GIT_CONFIG`, before both preflight and execution). GA-3 adds V2 (refuse `trace2.envVars` and a false-like `http.sslVerify`), and the usage rules become checks: `publish run` refuses `git -C`, `git -c` and a shell as the command, and PB-1 runs it from the repository directory with explicit `--head` and `--base`. SK-1 carries the Keychain rule: Allow, not Always Allow. If the interim step stays in use for long, a Worker Assignment may add V1 to V3 to it first. | GA-2, GA-3, PB-1, SK-1 |
 | 13 | T3 may fast-forward the owner's checkout after merge | Decided. Read the provisioned HEAD at each dispatch; never assume the checkout lags origin. After a merge, the manager may run `git pull --ff-only` on clean `main` only when T3 has not already fast-forwarded it ([decision 2](#decisions)). | RC-1, BT-1, SK-1; DOC-1 records it |
-| 14 | GitHub-generated squash trailers | Open for Shawn: permit the generated owner-email trailer or remove it at merge. DOC-1 records his choice once supplied; until then commit-message privacy has no new exception. | DOC-1 |
+| 14 | GitHub-generated squash trailers | Decided by Shawn on 2026-10-28 ([decision 7](#decisions)): accept them. They may carry the owner's commit email; agents never write it. They sit only on the base branch, outside the review ranges that privacy checks cover. | DOC-1 records it; PV-1b |
 
 ## Coverage
 
@@ -1477,11 +1500,22 @@ Shawn answered the plan's five questions on 2026-10-27:
    enumerated findings, document reviews and scoped re-reviews use the medium
    tier. First reviews of challenging code follow the Task's tier. DOC-1
    aligns the design's Reviewer-tier text and fixed model names with the
-   decisions; the config supplies the models.
+   decisions; the config supplies the models. Decision 6 replaces the
+   Corrections part.
 
-**Open owner item (plan input 14).** GitHub-generated squash trailers may
-include the owner's email. Shawn chooses whether to permit that generated
-trailer or remove it at merge. DOC-1 records the choice once supplied.
+Shawn added three decisions on 2026-10-28, in reply to this plan's pull
+request:
+
+6. **Corrections at the easy tier.** Corrections rounds with enumerated
+   findings use the easy tier, even when a floor set the first round's tier.
+   Their scoped re-reviews stay medium, and agy is never a Reviewer.
+7. **Squash trailers.** Shawn accepts the `Co-authored-by` trailers that
+   GitHub generates on a squash commit when he merges. They may carry his
+   commit email, which is already public ([finding F7][d-findings]). Agents
+   never write it (plan input 14).
+8. **Routing stays untuned.** Unoptimized routing is acceptable for now.
+   Evaluating and tuning the thresholds that route work to each model and
+   reasoning level is backlog work outside this plan.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
