@@ -104,10 +104,11 @@ def check(args):
             _fail("privacy commit enumeration is invalid")
     branch = args.branch
     if branch is None:
-        raw = _git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", allow_detached=True)
-        if not raw.endswith(b"\n"):
+        raw = _git(repo, "symbolic-ref", "--quiet", "HEAD", allow_detached=True)
+        prefix = b"refs/heads/"
+        if not raw.startswith(prefix) or not raw.endswith(b"\n"):
             _fail("privacy branch response is invalid")
-        branch = _text(raw[:-1])
+        branch = _text(raw[len(prefix):-1])
     if not branch:
         _fail("privacy branch is empty")
     findings = []
@@ -134,7 +135,7 @@ def check(args):
         if not separator:
             _fail("privacy commit has no message separator")
         screen("message", _text(message), commit=sha)
-        tree = _git(repo, "ls-tree", "-r", "-z", "--full-tree", sha, "--")
+        tree = _git(repo, "ls-tree", "-r", "-t", "-z", "--full-tree", sha, "--")
         if tree and not tree.endswith(b"\0"):
             _fail("privacy tree response is invalid")
         for entry in tree[:-1].split(b"\0") if tree else []:
@@ -144,10 +145,12 @@ def check(args):
             filename = _text(path)
             if filename.endswith(".lock"):
                 continue
-            if not re.fullmatch(rb"(?:100644|100755|120000) blob [0-9a-f]{40}", metadata):
+            if not re.fullmatch(rb"(?:(?:100644|100755|120000) blob|040000 tree) [0-9a-f]{40}", metadata):
                 _fail("privacy tree contains an unsupported entry")
-            blob = metadata[-40:].decode("ascii")
             screen("path", filename, commit=sha, file=filename)
+            if metadata.startswith(b"040000 tree "):
+                continue
+            blob = metadata[-40:].decode("ascii")
             screen("file", _text(_object(repo, "blob", blob)), commit=sha, file=filename)
     data = {"ok": not findings, "commits": len(commits), "findings": findings,
             "action": "publication blocked; Corrections or Shawn must resolve matches" if findings else None}

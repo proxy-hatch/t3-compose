@@ -73,7 +73,7 @@ def read_pull_request(repo, number):
     """Single GET; tests replace this function or process.run, never launch gh."""
     _request(repo, number)
     try:
-        result = process.run(["gh", "api", "--method", "GET", f"repos/{repo}/pulls/{number}"],
+        result = process.run(["gh", "api", "--hostname", "github.com", "--method", "GET", f"repos/{repo}/pulls/{number}"],
                              capture_output=True, check=False, timeout=TIMEOUT_SECONDS)
     except (process.ProcessError, OSError, ValueError):
         _fail("PR API read failed")

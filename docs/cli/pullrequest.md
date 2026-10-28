@@ -39,12 +39,15 @@ parsed API object. Its production implementation uses exactly one read-only
 call, through `process.run`, with list argv:
 
 ```text
-gh api --method GET repos/OWNER/NAME/pulls/N
+gh api --hostname github.com --method GET repos/OWNER/NAME/pulls/N
 ```
 
-It captures stdout/stderr, uses a 30-second timeout, and never invokes a shell,
-pagination, mutations, credential retrieval or agent harnesses. `gh` uses its
-existing authentication. Headers, tokens, environment values and API error
+The hostname is explicitly pinned to GitHub.com; ambient `GH_HOST` or default
+host configuration cannot select another service. Enterprise-host support would
+require a separate explicit interface. It captures stdout/stderr, uses a
+30-second timeout, and never invokes a shell, pagination, mutations, credential
+retrieval or agent harnesses. `gh` uses its existing authentication for that
+host. Headers, tokens, environment values and API error
 bodies never appear in results or diagnostics. Tests replace the reader or
 patch the module's `process.run` lookup with `tests.support.FakeRunner`; they
 never launch `gh`, even a stub.

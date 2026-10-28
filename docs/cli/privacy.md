@@ -24,8 +24,10 @@ precede `privacy`. Imports and registration perform no process or state I/O.
   sets and object-path expressions are invalid. Hashes, named refs, `HEAD`,
   `HEAD~2` and `HEAD^` are supported. Endpoints are passed to `cat-file` on stdin,
   peeled to commits, and resolved to immutable 40-hex SHAs before enumeration.
-- `--branch` defaults to the current symbolic branch name. Detached HEAD
-  requires an explicit publication branch. The supplied name must be nonempty
+- `--branch` defaults to the current branch name, read as a full symbolic ref
+  and stripped of its exact `refs/heads/` prefix. A colliding tag cannot alter
+  the screened name. Other symbolic-ref namespaces and malformed responses are
+  refused. Detached HEAD requires an explicit publication branch. The supplied name must be nonempty
   supported text; it need not exist locally and this check does not validate
   its suitability for a later push.
 - Repeated `--text-file` values split at the first `=` into nonempty label and
@@ -51,8 +53,10 @@ block publication and needs Corrections or Shawn's decision.
 
 Paths ending in `.lock` are excluded, case-sensitively, including their names
 and contents. NUL-delimited tree records preserve tabs/newlines in filenames.
-Regular and executable files and symlink blobs are supported. Symlink blobs
-are read from Git without following targets. Submodules and other unsupported
+Directory paths, including empty subtrees, are screened alongside regular and
+executable files and symlink blobs. Tree entries are enumerated explicitly;
+only supported blobs have contents read. Symlink blobs are read from Git
+without following targets. Submodules and other unsupported
 tree entries fail closed. Shallow repositories are refused. Replacement
 objects, grafts, ambient `GIT_*` selectors, optional lock writes, lazy fetches
 and transport protocols are disabled for these reads. No hooks, filters,

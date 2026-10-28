@@ -109,6 +109,27 @@ class OfflinePrivacy(OfflineTestCase):
         empty = self.data(self.invoke("--branch", "syn-other", revision="HEAD..HEAD", entry=True), 1)
         self.assertEqual(empty["commits"], 0)
 
+    def test_corrections_branch_tag_collision_keeps_anchored_branch_screen(self):
+        self.git("branch", "syn-secret")
+        self.git("tag", "syn-secret")
+        self.git("symbolic-ref", "HEAD", "refs/heads/syn-secret")
+        self.list_file.write_text("^syn-secret$\n")
+        for extra in ((), ("--branch", "syn-secret")):
+            with self.subTest(explicit=bool(extra)):
+                data = self.data(self.invoke(*extra, revision="HEAD..HEAD", entry=True), 1)
+                self.assertEqual(data["commits"], 0)
+                self.assertEqual(data["findings"], [{"field": "branch", "commit": None,
+                    "file": None, "label": None, "lines": [1]}])
+
+    def test_corrections_empty_directory_paths_are_screened(self):
+        empty = self.git("mktree", input=b"")
+        tree = self.git("mktree", input=("040000 tree " + empty + "\tsyn-secret-dir\n").encode())
+        commit = self.git("commit-tree", tree, "-p", self.base, input=b"public\n")
+        data = self.data(self.invoke(revision=self.base + ".." + commit, entry=True), 1)
+        self.assertEqual(data["commits"], 1)
+        self.assertEqual(data["findings"], [{"field": "path", "commit": commit,
+            "file": "[redacted]", "label": None, "lines": [1]}])
+
     def test_merge_side_commits_are_selected(self):
         self.git("checkout", "-q", "-b", "side")
         side = self.commit("side", {"side-file": "syn-secret"})
@@ -214,9 +235,9 @@ class OfflinePrivacy(OfflineTestCase):
         # Synthetic object protocol: shallow flag, endpoints, walk, branch,
         # commit size/content, tree, blob size/content.
         a, b, c = b"a" * 40, b"b" * 40, b"c" * 40
-        replies = [b"false\n", a + b" commit\n", b + b" commit\n", b + b"\n", b"main\n",
+        replies = [b"false\n", a + b" commit\n", b + b" commit\n", b + b"\n", b"refs/heads/main\n",
                    b"15\n", b"header\n\npublic\n", b"100644 blob " + c + b"\tfile\0", b"6\n", b"public"]
-        corruptions = [(1, b"bad commit\n"), (3, b"\xff\n"), (3, b"bad\n"), (4, b"main"),
+        corruptions = [(1, b"bad commit\n"), (3, b"\xff\n"), (3, b"bad\n"), (4, b"main"), (4, b"refs/tags/main\n"),
                        (5, b"1048577\n"), (6, b"no separator---"), (7, b"broken"),
                        (7, b"160000 commit " + c + b"\tsubmodule\0"), (8, b"bad\n"), (9, b"other")]
         args = cli.build_parser().parse_args(["--local-dir", str(self.local), "privacy", "check",

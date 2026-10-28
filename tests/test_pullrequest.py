@@ -3,6 +3,7 @@ import contextlib
 import importlib
 import io
 import json
+import os
 import subprocess
 import traceback
 from unittest.mock import patch
@@ -122,11 +123,22 @@ class OfflinePullRequest(OfflineTestCase):
         calls = [(argv, kw) for argv, kw in runner.calls if argv[0] == "gh"]
         self.assertEqual(len(calls), 1)
         argv, kwargs = calls[0]
-        self.assertEqual(argv, ["gh", "api", "--method", "GET", "repos/example/project/pulls/7"])
+        self.assertEqual(argv, ["gh", "api", "--hostname", "github.com", "--method", "GET", "repos/example/project/pulls/7"])
         self.assertTrue(kwargs["capture_output"])
         self.assertFalse(kwargs.get("shell", False))
         self.assertGreater(kwargs["timeout"], 0)
         self.assertNotIn("syn-secret", "".join(result[1:]))
+
+    def test_corrections_api_host_is_explicit_despite_ambient_host(self):
+        module = self.module()
+        runner = FakeRunner({"gh": lambda argv, **kw:
+            subprocess.CompletedProcess(argv, 0, json.dumps(self.payload).encode(), b"")})
+        with patch.dict(os.environ, {"GH_HOST": "other.example.invalid"}), \
+                patch.object(process, "run", runner):
+            self.assertEqual(module.read_pull_request("example/project", 7), self.payload)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0][0], ["gh", "api", "--hostname", "github.com",
+                                            "--method", "GET", "repos/example/project/pulls/7"])
 
     def test_api_process_and_json_failures_are_private(self):
         module = self.module()
