@@ -4,7 +4,6 @@ import hashlib
 import math
 from pathlib import Path
 import re
-import sys
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -84,7 +83,7 @@ def _int_not_bool(v):
 
 
 def _num_not_bool(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and (isinstance(v, int) or math.isfinite(v))
 
 
 def _err(errors, path, rule):
@@ -124,6 +123,10 @@ def _collect_missing_v2_sections(raw):
                     missing.append(f"classification.{req}")
                 elif req in ("domain", "difficulty") and isinstance(sec_obj[req], dict):
                     missing.extend(f"classification.{req}.{s}" for s in ("instructions", "criteria") if s not in sec_obj[req])
+                    criteria = sec_obj[req].get("criteria")
+                    if isinstance(criteria, dict):
+                        keys = DOMAIN_CRITERIA_KEYS if req == "domain" else DIFFICULTY_CRITERIA_KEYS
+                        missing.extend(f"classification.{req}.criteria.{key}" for key in keys if key not in criteria)
         elif sec == "riskFacts" and not sec_obj:
             missing.append("riskFacts")
         elif sec == "roundTiers":
@@ -169,6 +172,7 @@ def _validate_roles(roles, path, allowed_roles, errors, worker_only=False):
 
 
 def _validate_selection(obj, path, kind, pools, pool_members, allowed_roles, errors):
+    error_count = len(errors)
     if not isinstance(obj, dict):
         _err(errors, path, "expected-object")
         return None
@@ -199,6 +203,8 @@ def _validate_selection(obj, path, kind, pools, pool_members, allowed_roles, err
                 _err(errors, f"{path}.roles", "pool-selection-requires-worker-only-role")
             else:
                 _validate_roles(obj["roles"], f"{path}.roles", allowed_roles, errors, worker_only=True)
+        if len(errors) != error_count:
+            return None
         return ("pool", pool_name, obj.get("model"), canonical_json(obj["options"]) if isinstance(obj.get("options"), dict) else b"")
 
     _check_keys(obj, path, ("providerInstanceId", "model", "options"), ("roles",), errors)
@@ -212,6 +218,8 @@ def _validate_selection(obj, path, kind, pools, pool_members, allowed_roles, err
         _validate_options(obj["options"], f"{path}.options", errors)
     if "roles" in obj:
         _validate_roles(obj["roles"], f"{path}.roles", allowed_roles, errors, worker_only=False)
+    if len(errors) != error_count:
+        return None
     return ("direct", inst_id, obj.get("model"), canonical_json(obj["options"]) if isinstance(obj.get("options"), dict) else b"")
 
 
@@ -311,7 +319,7 @@ def validate_config_data(raw):
         else:
             for fid in sorted(raw_facts):
                 fpath, fobj = f"riskFacts.{fid}", raw_facts[fid]
-                if not isinstance(fid, str) or not FACT_ID_RE.match(fid):
+                if not isinstance(fid, str) or not FACT_ID_RE.fullmatch(fid):
                     _err(errors, fpath, "invalid-fact-id")
                 if _check_keys(fobj, fpath, ("description", "floor"), (), errors):
                     _check_str_field(fobj, "description", fpath, errors)
@@ -331,7 +339,7 @@ def validate_config_data(raw):
         if "provider" in raw_jev and raw_jev["provider"] != "openrouter":
             _err(errors, "jev.provider", "invalid-jev-provider")
         _check_str_field(raw_jev, "model", "jev", errors)
-        if "minConfidence" in raw_jev and (not _num_not_bool(raw_jev["minConfidence"]) or not (0 < float(raw_jev["minConfidence"]) <= 1.0)):
+        if "minConfidence" in raw_jev and (not _num_not_bool(raw_jev["minConfidence"]) or not (0 < raw_jev["minConfidence"] <= 1)):
             _err(errors, "jev.minConfidence", "invalid-min-confidence")
         if "maxContextRetries" in raw_jev and (not _int_not_bool(raw_jev["maxContextRetries"]) or raw_jev["maxContextRetries"] not in (0, 1)):
             _err(errors, "jev.maxContextRetries", "invalid-max-context-retries")
@@ -484,11 +492,10 @@ def check_config_command(args):
     except ConfigValidationError as exc:
         errors.extend(thaw_value(e) for e in exc.errors)
         missing_sections = exc.missing_sections
-    if state_path.exists() or args.state is not None:
-        try:
-            loaded_state = load_quota_state(state_path, config=loaded_cfg.data if loaded_cfg is not None else None)
-        except ConfigValidationError as exc:
-            errors.extend(thaw_value(e) for e in exc.errors)
+    try:
+        loaded_state = load_quota_state(state_path, config=loaded_cfg.data if loaded_cfg is not None else None)
+    except ConfigValidationError as exc:
+        errors.extend(thaw_value(e) for e in exc.errors)
     if errors:
         payload = {"valid": False, "errors": errors}
         if missing_sections:
@@ -496,7 +503,7 @@ def check_config_command(args):
         return Outcome(payload, ExitCode.INVALID_CONFIG)
     return {
         "digest": loaded_cfg.digest, "policyDigest": loaded_cfg.policy_digest,
-        "stateDigest": loaded_state.digest if loaded_state is not None else None,
+        "stateDigest": loaded_state.digest,
         "ruleVersion": loaded_cfg.data["classification"]["ruleVersion"],
         "riskFacts": {fid: info["floor"] for fid, info in loaded_cfg.data["riskFacts"].items()},
         "roundTiers": thaw_value(loaded_cfg.data["roundTiers"]),
@@ -509,4 +516,3 @@ def register(registry):
     parser.add_argument("--config", default=None)
     parser.add_argument("--state", default=None)
     parser.set_defaults(handler=check_config_command)
-    sys.modules.pop(__name__, None)

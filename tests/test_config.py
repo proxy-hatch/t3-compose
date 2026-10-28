@@ -1,16 +1,13 @@
 import builtins
-import contextlib
 import copy
 import hashlib
 import importlib
-import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 from unittest.mock import patch
 
-import t3compose
 from tests.support import OfflineTestCase, ROOT, guarded_helper_command
 
 
@@ -23,11 +20,7 @@ def _valid_state_dict():
 
 
 def _cfg():
-    mod = importlib.import_module("t3compose.config")
-    if not hasattr(mod, "ConfigValidationError"):
-        sys.modules.pop("t3compose.config", None)
-        mod = importlib.import_module("t3compose.config")
-    return mod
+    return importlib.import_module("t3compose.config")
 
 
 def _mut(base, fn):
@@ -43,12 +36,6 @@ class OfflineConfigValidation(OfflineTestCase):
         self.local.mkdir(exist_ok=True)
         self.config_path = self.local / "agent-routing.json"
         self.state_path = self.local / "agent-routing-state.json"
-
-    def tearDown(self):
-        sys.modules.pop("t3compose.config", None)
-        if hasattr(t3compose, "config"):
-            delattr(t3compose, "config")
-        super().tearDown()
 
     def write_json(self, path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +68,11 @@ class OfflineConfigValidation(OfflineTestCase):
         self.assertIsInstance(loaded.data["providerPools"]["agy-synth-pool"]["providerInstanceIds"], tuple)
         self.assertIsInstance(loaded.data["availabilityFallback"]["chains"], tuple)
 
-        loaded_state = cfg_mod.load_quota_state(self.state_path, config=loaded)
+        from t3compose import cli
+        cli.build_parser()
+        self.assertIs(_cfg(), cfg_mod)
+        self.assertIs(sys.modules["t3compose.config"].ConfigValidationError, cfg_mod.ConfigValidationError)
+        loaded_state = _cfg().load_quota_state(self.state_path, config=loaded)
         self.assertTrue(loaded_state.digest.startswith("sha256:"))
         self.assertEqual(cfg_mod.load_quota_state(config=loaded.data).digest, loaded_state.digest)
         self.assertIsInstance(loaded_state.data["quotaObservations"]["agy-synth-alpha"], tuple)
@@ -274,7 +265,7 @@ class OfflineConfigValidation(OfflineTestCase):
             self.assert_invalid(_mut(base, lambda d: d["master"]["options"].__setitem__("bad", bad_opt)), "master.options.bad", "invalid-option-value")
 
         for k, valid_vals, invalid_vals, rule in (
-            ("minConfidence", (0.0001, 0.6, 1, 1.0), (0, 0.0, -0.1, 1.0001, "0.6"), "invalid-min-confidence"),
+            ("minConfidence", (0.0001, 0.6, 1, 1.0), (0, 0.0, -0.1, 1.0001, "0.6", 10**400, -(10**400)), "invalid-min-confidence"),
             ("maxContextRetries", (0, 1), (-1, 2, 1.0, "1"), "invalid-max-context-retries"),
             ("timeoutSeconds", (1, 60, 120), (0, -5, 121, 30.0, "30"), "invalid-timeout-seconds"),
         ):
@@ -283,7 +274,7 @@ class OfflineConfigValidation(OfflineTestCase):
             for v in invalid_vals:
                 self.assert_invalid(_mut(base, lambda d: d["jev"].__setitem__(k, v)), f"jev.{k}", rule)
 
-        for bad_id in ("UPPER", "snake_case", "trailing-", "-leading", "a--b", "word1"):
+        for bad_id in ("UPPER", "snake_case", "trailing-", "-leading", "a--b", "word1", "bad\n", "bad\t", "bad\r"):
             self.assert_invalid(_mut(base, lambda d: d["riskFacts"].__setitem__(bad_id, {"description": "desc", "floor": "medium"})), f"riskFacts.{bad_id}", "invalid-fact-id")
 
         self.assert_invalid(_mut(base, lambda d: d["riskFacts"]["shared-interface"].__setitem__("floor", "easy")), "riskFacts.shared-interface.floor", "invalid-floor")
@@ -356,127 +347,108 @@ class OfflineConfigValidation(OfflineTestCase):
         self.assertEqual([dict(e) for e in ctx_size.exception.errors], [{"path": "config", "rule": "size-limit-exceeded"}])
 
     def test_cli_config_check_and_example_fixtures(self):
-        from t3compose import cli
-        cfg_mod = _cfg()
-        ex_cfg = ROOT / "docs" / "examples" / "agent-routing.example.json"
-        ex_state = ROOT / "docs" / "examples" / "agent-routing-state.example.json"
-        loaded_ex = cfg_mod.load_config(ex_cfg)
-        loaded_ex_state = cfg_mod.load_quota_state(ex_state, config=loaded_ex)
-
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["config", "check", "--config", str(ex_cfg), "--state", str(ex_state)])
-        self.assertEqual((code, err.getvalue()), (0, ""))
-        payload = json.loads(out.getvalue())
-        self.assertEqual((payload["digest"], payload["policyDigest"], payload["stateDigest"]), (loaded_ex.digest, loaded_ex.policy_digest, loaded_ex_state.digest))
-        self.assertEqual((payload["ruleVersion"], payload["notices"]), ("2026-10-28-v2", []))
-        self.assertEqual(payload["roundTiers"], {"corrections": "easy", "correctionsReview": "medium", "documentReview": "medium"})
-
+        def invoke(*args):
+            proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), *args),
+                                  cwd=self.temp, text=True, capture_output=True)
+            self.assertEqual(proc.stderr, "")
+            return proc.returncode, json.loads(proc.stdout)
+        ex_cfg = ROOT / "docs/examples/agent-routing.example.json"
+        ex_state = ROOT / "docs/examples/agent-routing-state.example.json"
+        code, data = invoke("config", "check", "--config", str(ex_cfg), "--state", str(ex_state))
+        self.assertEqual(code, 0)
+        for key, path in (("digest", ex_cfg), ("stateDigest", ex_state)):
+            self.assertEqual(data[key], "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(data["policyDigest"], _cfg().load_config(ex_cfg).policy_digest)
+        self.assertEqual(data["notices"], [])
         self.write_json(self.config_path, _valid_config_dict())
-        out_t, err_t = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out_t), contextlib.redirect_stderr(err_t):
-            code_t = cli.main(["--text", "--local-dir", str(self.local), "config", "check"])
-        self.assertEqual(code_t, 0)
-        self.assertIn("policyDigest:", out_t.getvalue())
-        self.assertIn("stateDigest: null", out_t.getvalue())
-
-        self.write_json(self.config_path, _mut(_valid_config_dict(), lambda d: (d.__setitem__("version", 1), d.__delitem__("classification"))))
-        out_f, err_f = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out_f), contextlib.redirect_stderr(err_f):
-            code_f = cli.main(["--local-dir", str(self.local), "config", "check"])
-        self.assertEqual((code_f, err_f.getvalue()), (3, ""))
-        fail_payload = json.loads(out_f.getvalue())
-        self.assertFalse(fail_payload["valid"])
-        self.assertIn("classification", fail_payload["missingSections"])
-
+        code, data = invoke("config", "check")
+        self.assertEqual(code, 3)
+        self.assertIn({"path": "state", "rule": "unreadable-file"}, data["errors"])
+        self.write_json(self.state_path, _valid_state_dict())
+        cases = (
+            (("version",), 1, "version", "unsupported-version-1"),
+            (("availabilityFallback", "chains", 0, "from", "providerPool"), [], "availabilityFallback.chains[0].from.providerPool", "invalid-string"),
+            (("availabilityFallback", "chains", 0, "to", 0, "model"), [], "availabilityFallback.chains[0].to[0].model", "invalid-string"),
+            (("jev", "minConfidence"), 10**400, "jev.minConfidence", "invalid-min-confidence"),
+        )
+        for path, value, error_path, rule in cases:
+            config = _valid_config_dict()
+            target = config
+            for part in path[:-1]:
+                target = target[part]
+            target[path[-1]] = value
+            if path == ("version",):
+                del config["classification"]
+            self.write_json(self.config_path, config)
+            code, data = invoke("config", "check")
+            self.assertEqual(code, 3)
+            self.assertFalse(data["valid"])
+            self.assertTrue(any(e["path"] == error_path and e["rule"] == rule for e in data["errors"]))
+            if path == ("version",):
+                self.assertIn("classification", data["missingSections"])
+        config = _valid_config_dict()
+        config["version"] = 1
+        del config["classification"]["domain"]["criteria"]["OTHER"]
+        self.write_json(self.config_path, config)
+        code, data = invoke("config", "check")
+        self.assertEqual(code, 3)
+        self.assertIn("classification.domain.criteria.OTHER", data["missingSections"])
         self.write_json(self.config_path, _valid_config_dict())
         self.write_json(self.state_path, _mut(_valid_state_dict(), lambda s: s.__setitem__("activeProviderInstanceId", "not-a-member")))
-        out_sf, err_sf = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out_sf), contextlib.redirect_stderr(err_sf):
-            code_sf = cli.main(["--local-dir", str(self.local), "config", "check"])
-        self.assertEqual(code_sf, 3)
-        self.assertIn({"path": "state.activeProviderInstanceId", "rule": "unknown-pool-member"}, json.loads(out_sf.getvalue())["errors"])
+        code, data = invoke("config", "check")
+        self.assertEqual(code, 3)
+        self.assertIn({"path": "state.activeProviderInstanceId", "rule": "unknown-pool-member"}, data["errors"])
 
-        proc = subprocess.run(
-            guarded_helper_command("config", "check", "--config", str(ex_cfg), "--state", str(ex_state)),
-            cwd=self.temp, text=True, capture_output=True, check=False,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(proc.stdout)["policyDigest"], loaded_ex.policy_digest)
-
-    def test_structural_shapes_and_edge_branches(self):
-        cfg_mod = _cfg()
+    def test_closed_objects_reject_unknown_missing_and_wrong_shapes(self):
+        cfg = _cfg()
+        def objects(value, path=()):
+            if isinstance(value, dict):
+                yield path, value
+                for key, item in value.items():
+                    yield from objects(item, (*path, key))
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    yield from objects(item, (*path, index))
+        for base, validate in ((_valid_config_dict(), cfg.validate_config_data),
+                               (_valid_state_dict(), cfg.validate_quota_state_data)):
+            for path, obj in objects(base):
+                if path and path[-1] in ("providerPools", "riskFacts", "options", "quotaObservations"):
+                    continue  # These mappings have dynamic keys, not closed field sets.
+                changes = [("extra", "__unexpected__"), ("shape", None)]
+                changes += [("missing", key) for key in obj if not (key == "roles" and "providerInstanceId" in obj)]
+                changes += [("type", key) for key, value in obj.items() if not isinstance(value, (dict, list))]
+                for kind, key in changes:
+                    with self.subTest(path=path, kind=kind, key=key):
+                        data = copy.deepcopy(base)
+                        target = data
+                        for part in path:
+                            target = target[part]
+                        if kind == "extra":
+                            target[key] = True
+                        elif kind == "missing":
+                            del target[key]
+                        elif kind == "type":
+                            target[key] = []
+                        elif path:
+                            parent = data
+                            for part in path[:-1]:
+                                parent = parent[part]
+                            parent[path[-1]] = []
+                        else:
+                            data = []
+                        with self.assertRaises(cfg.ConfigValidationError):
+                            validate(data)
         base = _valid_config_dict()
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx_root:
-            cfg_mod.validate_config_data(["not-a-dict"])
-        self.assertEqual(ctx_root.exception.to_payload(), {"valid": False, "errors": [{"path": "$", "rule": "expected-object"}]})
-        self.assertEqual(cfg_mod._collect_missing_v2_sections(["not-a-dict"]), ())
-
-        v1_extra = _mut(base, lambda d: (d.__setitem__("version", 1), d.__delitem__("riskFacts"), d.__setitem__("unknownV1Key", True)))
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx_v1:
-            cfg_mod.validate_config_data(v1_extra)
-        self.assertIn("missingSections", ctx_v1.exception.to_payload())
-        self.assertIn({"path": "unknownV1Key", "rule": "unknown-key"}, [dict(e) for e in ctx_v1.exception.errors])
-
-        for fn, path, rule in (
-            (lambda d: d["master"].__setitem__("options", "bad"), "master.options", "expected-object"),
-            (lambda d: d["master"]["options"].__setitem__("   ", "val"), "master.options", "invalid-option-key"),
-            (lambda d: d.__setitem__("master", "bad"), "master", "expected-object"),
-            (lambda d: d["easyWorker"].__setitem__("providerPool", ""), "easyWorker.providerPool", "invalid-string"),
-            (lambda d: d["easyWorker"].__setitem__("model", ""), "easyWorker.model", "invalid-string"),
-            (lambda d: d["modelPreferences"]["software-engineering"]["medium"].__setitem__("providerPool", ""), "modelPreferences.software-engineering.medium.providerPool", "invalid-string"),
-            (lambda d: d["modelPreferences"]["software-engineering"]["medium"].__setitem__("providerPool", "missing"), "modelPreferences.software-engineering.medium.providerPool", "unknown-provider-pool"),
-            (lambda d: d["modelPreferences"]["software-engineering"]["medium"].__setitem__("model", ""), "modelPreferences.software-engineering.medium.model", "invalid-string"),
-            (lambda d: d["master"].__setitem__("providerInstanceId", ""), "master.providerInstanceId", "invalid-string"),
-            (lambda d: d["master"].__setitem__("model", ""), "master.model", "invalid-string"),
-            (lambda d: d.__setitem__("providerPools", "bad"), "providerPools", "expected-object"),
-            (lambda d: d["providerPools"].__setitem__("  ", {"selection": "exhaust-in-order", "providerInstanceIds": ["x"]}), "providerPools.  ", "invalid-pool-name"),
-            (lambda d: d["providerPools"]["agy-synth-pool"].__setitem__("providerInstanceIds", "bad"), "providerPools.agy-synth-pool.providerInstanceIds", "expected-list"),
-            (lambda d: d["providerPools"]["agy-synth-pool"].__setitem__("providerInstanceIds", []), "providerPools.agy-synth-pool.providerInstanceIds", "empty-list"),
-            (lambda d: d["providerPools"]["agy-synth-pool"].__setitem__("providerInstanceIds", [""]), "providerPools.agy-synth-pool.providerInstanceIds[0]", "invalid-string"),
-            (lambda d: d.__setitem__("availabilityFallback", "bad"), "availabilityFallback", "expected-object"),
-            (lambda d: d["availabilityFallback"].__setitem__("roles", "bad"), "availabilityFallback.roles", "expected-list"),
-            (lambda d: d.__setitem__("modelPreferences", "bad"), "modelPreferences", "expected-object"),
-            (lambda d: d["modelPreferences"].__delitem__("non-engineering"), "modelPreferences.non-engineering", "missing-key"),
-            (lambda d: d["modelPreferences"].__setitem__("non-engineering", "bad"), "modelPreferences.non-engineering", "expected-object"),
-            (lambda d: d.__setitem__("classification", "bad"), "classification", "expected-object"),
-            (lambda d: d["classification"].__setitem__("ruleVersion", ""), "classification.ruleVersion", "invalid-string"),
-            (lambda d: d["classification"].__delitem__("domain"), "classification.domain", "missing-key"),
-            (lambda d: d["classification"].__setitem__("domain", "bad"), "classification.domain", "expected-object"),
-            (lambda d: d["classification"]["domain"].__setitem__("instructions", ""), "classification.domain.instructions", "invalid-string"),
-            (lambda d: d["classification"]["domain"].__setitem__("criteria", "bad"), "classification.domain.criteria", "expected-object"),
-            (lambda d: d["classification"]["domain"]["criteria"].__setitem__("OTHER", ""), "classification.domain.criteria.OTHER", "invalid-string"),
-            (lambda d: d.__setitem__("riskFacts", "bad"), "riskFacts", "expected-object"),
-            (lambda d: d["riskFacts"].__setitem__("shared-interface", "bad"), "riskFacts.shared-interface", "expected-object"),
-            (lambda d: d["riskFacts"]["shared-interface"].__setitem__("description", ""), "riskFacts.shared-interface.description", "invalid-string"),
-            (lambda d: d.__setitem__("roundTiers", "bad"), "roundTiers", "expected-object"),
-            (lambda d: d["roundTiers"].__setitem__("corrections", "invalid"), "roundTiers.corrections", "invalid-tier"),
-            (lambda d: d.__setitem__("jev", "bad"), "jev", "expected-object"),
-            (lambda d: d["jev"].__setitem__("model", ""), "jev.model", "invalid-string"),
-            (lambda d: d["jev"].__setitem__("keyFile", "bad"), "jev.keyFile", "expected-object"),
-            (lambda d: d["jev"]["keyFile"].__setitem__("field", ""), "jev.keyFile.field", "invalid-string"),
-            (lambda d: d["availabilityFallback"].__setitem__("chains", "bad"), "availabilityFallback.chains", "expected-list"),
-            (lambda d: d["availabilityFallback"].__setitem__("chains", ["bad"]), "availabilityFallback.chains[0]", "expected-object"),
-            (lambda d: d["availabilityFallback"]["chains"][0].__setitem__("to", "bad"), "availabilityFallback.chains[0].to", "expected-list"),
-        ):
-            self.assert_invalid(_mut(base, fn), path, rule)
-
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx_s_root:
-            cfg_mod.validate_quota_state_data(["bad"])
-        self.assertEqual([dict(e) for e in ctx_s_root.exception.errors], [{"path": "$", "rule": "expected-object"}])
-
-        for fn, path, rule in (
-            (lambda s: s.__setitem__("activeProviderInstanceId", ""), "activeProviderInstanceId", "invalid-string"),
-            (lambda s: s.__setitem__("note", 123), "note", "invalid-string"),
-            (lambda s: s.__setitem__("quotaObservations", "bad"), "quotaObservations", "expected-object"),
-            (lambda s: s["quotaObservations"].__setitem__("  ", []), "quotaObservations.  ", "invalid-instance-id"),
-            (lambda s: s["quotaObservations"].__setitem__("agy-synth-alpha", ["bad"]), "quotaObservations.agy-synth-alpha[0]", "expected-object"),
-        ):
-            with self.assertRaises(cfg_mod.ConfigValidationError) as ctx_s:
-                cfg_mod.validate_quota_state_data(_mut(_valid_state_dict(), fn))
-            self.assertIn({"path": path, "rule": rule}, [dict(e) for e in ctx_s.exception.errors])
-
-        self.state_path.write_text('["not-an-object"]', encoding="utf-8")
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx_ls:
-            cfg_mod.load_quota_state(self.state_path)
-        self.assertEqual([dict(e) for e in ctx_ls.exception.errors], [{"path": "state", "rule": "expected-object"}])
+        for index, side in ((0, "from"), (1, "from"), (0, "to"), (1, "to")):
+            for key in ("model", "options", "providerPool" if (index, side) in ((0, "from"), (1, "to")) else "providerInstanceId"):
+                for value in ([], {}):
+                    data = copy.deepcopy(base)
+                    endpoint = data["availabilityFallback"]["chains"][index][side]
+                    if side == "to":
+                        endpoint = endpoint[0]
+                    endpoint[key] = value
+                    if key == "options" and value == {}:
+                        cfg.validate_config_data(data)
+                    else:
+                        with self.assertRaises(cfg.ConfigValidationError):
+                            cfg.validate_config_data(data)
