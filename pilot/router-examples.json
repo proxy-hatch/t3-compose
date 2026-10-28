@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "label": "synthetic",
+  "examples": [
+    {
+      "id": "literal-color", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: in the pure badge_color() function, replace the literal return value 'violet' with 'amber'.",
+        "acceptance": ["badge_color() returns exactly 'amber'; no other statements change."],
+        "interfaces": ["badge_color() -> str; signature stays the same"],
+        "scope": ["fictional_badge.py, one return literal"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "easy", "floors": []}
+    },
+    {
+      "id": "literal-empty", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: in empty_label(), replace the exact statement return 'none' with return 'empty'.",
+        "acceptance": ["Only that return statement changes; empty_label() returns 'empty'."],
+        "interfaces": ["empty_label() -> str; no caller changes"],
+        "scope": ["fictional_label.py, one statement"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "easy", "floors": []}
+    },
+    {
+      "id": "recipe-spelling", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: in a fictional recipe sentence, replace 'stirr the soup' with 'stir the soup'.",
+        "acceptance": ["Return the corrected sentence with no other wording changes."],
+        "interfaces": ["Plain prose input and output"],
+        "scope": ["One fictional recipe sentence"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "OTHER", "tier": "easy", "floors": []}
+    },
+    {
+      "id": "travel-rewrite", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: rewrite this fictional travel paragraph for clarity: 'At dawn we crossed the glass bridge. The market was quiet. Later we returned by boat.'",
+        "acceptance": ["Keep the sequence of events and all three facts; use a warm, concise voice in two sentences."],
+        "interfaces": ["Plain prose input and output"],
+        "scope": ["One fictional travel paragraph; choose the wording"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "OTHER", "tier": "medium", "floors": []}
+    },
+    {
+      "id": "readme-spelling", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: in a fictional software library README, replace 'instal the package' with 'install the package'.",
+        "acceptance": ["Only correct that spelling in the installation section."],
+        "interfaces": ["README.md is technical documentation for the fictional Pebble library"],
+        "scope": ["README.md, one word"], "riskFacts": ["technical-documentation"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["technical-documentation"]}
+    },
+    {
+      "id": "design-note", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: update a fictional software module design note to say its token cache lasts ten minutes instead of five. Explain the already-decided value; implement no credential or cache behavior.",
+        "acceptance": ["State ten minutes consistently in the module note; change no code."],
+        "interfaces": ["Module design note, technical documentation"],
+        "scope": ["fictional-module-note.md"], "riskFacts": ["technical-documentation"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["technical-documentation"]}
+    },
+    {
+      "id": "credential-field", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: first implement read_token(settings) in a fictional module; return settings['token'] only when it is a nonempty string, otherwise raise a fixed setup error.",
+        "acceptance": ["Read exactly the token field; never include its contents in errors or logs."],
+        "interfaces": ["read_token(settings) -> str"],
+        "scope": ["fictional_token.py, one small credential-reading function"], "riskFacts": ["credentials-or-guardrails"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["credentials-or-guardrails"]}
+    },
+    {
+      "id": "command-boundary", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: first enforce a fictional outbound-command boundary. Permit only the exact argument vector ['echo', 'hello']; refuse every other vector before launch.",
+        "acceptance": ["The exact permitted vector passes; extra arguments, alternate paths, and empty input fail before execution."],
+        "interfaces": ["allowed(argv) -> bool is the command launch gate"],
+        "scope": ["fictional_gate.py, one allowlist check"], "riskFacts": ["credentials-or-guardrails"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["credentials-or-guardrails"]}
+    },
+    {
+      "id": "atomic-recovery", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: repair a fictional atomic-save routine's interrupted-recovery invariant. After interruption immediately before or after rename, recovery must retain a complete old or new document.",
+        "acceptance": ["Exercise both interruption points; recovery neither truncates the destination nor replaces it with a partial temporary file."],
+        "interfaces": ["save_document(path, data) and recover_document(path)"],
+        "scope": ["fictional_save.py, small ordering correction"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["recovery-or-concurrency"]}
+    },
+    {
+      "id": "shared-writer", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: correct a fictional shared writer so two simultaneous appenders cannot claim the same sequence number or overwrite each other's entry.",
+        "acceptance": ["A synchronized two-writer test retains both successful entries under distinct sequence numbers; failed writes leave readable history."],
+        "interfaces": ["append_entry(store, value) under simultaneous callers"],
+        "scope": ["fictional_writer.py, mutual exclusion and sequence allocation"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["recovery-or-concurrency"]}
+    },
+    {
+      "id": "shared-parameter", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: migrate the shared fictional render(label) API to render(text), with the exact same behavior. Rename the keyword in both consumers and their tests.",
+        "acceptance": ["Both consumers use text=; output stays identical; no label= call remains."],
+        "interfaces": ["render(label: str) becomes render(text: str), consumed by two modules"],
+        "scope": ["fictional_render.py and its two callers"], "riskFacts": ["shared-interface"], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["shared-interface"]}
+    },
+    {
+      "id": "integer-parser", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: implement an isolated comma-separated integer parser. Choose a clear internal design and tests within one module.",
+        "acceptance": ["Allow optional signs and surrounding ASCII spaces; reject empty tokens, nondecimal characters, and values outside signed 32-bit range; return [] for empty input."],
+        "interfaces": ["parse_numbers(text: str) -> list[int]; ValueError for invalid input"],
+        "scope": ["fictional_numbers.py, implementation and local tests only"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": []}
+    },
+    {
+      "id": "architecture-choice", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: resolve an unsettled architecture for a fictional planner and formatter. Decide whether the planner should own presentation tokens or the formatter should derive them, then implement the decision.",
+        "acceptance": ["Compare coupling and extensibility; justify ownership and preserve output behavior across two modules."],
+        "interfaces": ["The planner/formatter responsibility boundary has not been decided"],
+        "scope": ["fictional_planner.py and fictional_formatter.py, design judgment required"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": []}
+    },
+    {
+      "id": "mixed-assignment", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: change a fictional list sorter to descending order and also write unrelated marketing copy for an imaginary moonlight bakery.",
+        "acceptance": ["The sort returns descending values; the unrelated bakery gets a cheerful four-line advertisement."],
+        "interfaces": ["sort_values(values) and unrelated plain marketing prose"],
+        "scope": ["fictional_sort.py plus an unrelated fictional advertisement"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"domain": "MIXED_OR_UNCLEAR", "tier": null, "floors": []}
+    }
+  ]
+}
