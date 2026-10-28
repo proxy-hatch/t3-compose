@@ -199,7 +199,7 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
 | Kind | Required data |
 |---|---|
 | `routing-input` | task (original intent, acceptance, interfaces, scope, risk facts and dependencies), context (retry context or null), canonical input digest, routing-policy digest |
-| `routing-classification` | routing-input reference and digest, routing-policy digest, rule version, criteria text and digest, declared risk facts, pinned model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
+| `routing-classification` | routing-input reference and digest, routing-policy digest, rule version, criteria text and digest, declared risk facts, configured model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
 | `routing-judgment` | routing-input reference and digest, routing-policy digest, domain, difficulty, reason, basis (Jev failure, low confidence, mixed or unclear, manual) |
 | `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
 | `dispatch-intent` | role, round, `clientRequestId`, brief path and digest, selection, provisioned, start and review-base commits, dispatching checkout, isolation |
@@ -229,7 +229,7 @@ The common routing input is `{task, context}` and is capped at 16 KiB. `task`
 has only the six fields above; `context` is null or the supplied retry context.
 Its digest covers that whole canonical JSON object.
 The routing-policy digest covers classification instructions, criteria and rule
-version, risk facts and floors, the pinned Jev model, confidence threshold,
+version, risk facts and floors, the configured Jev model, confidence threshold,
 retry limit and uncertainty rule. CF-1 computes it from validated config. JV-1
 and RT-1 use RC-1's common input recorder; judgments have the same freshness
 contract as classifications. Selection names the current input and policy
@@ -268,7 +268,7 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
       "roundTiers": {"corrections": "easy" | "medium" | "challenging",
                      "correctionsReview": "medium" | "challenging",
                      "documentReview": "medium" | "challenging"},
-      "jev": {"provider": "openrouter", "model": "<pinned model>",
+      "jev": {"provider": "openrouter", "model": "<model or alias>",
               "minConfidence": <number>, "maxContextRetries": 0 | 1,
               "uncertainResult": "manager-judgment", "timeoutSeconds": <1 to 120>,
               "keyFile": {"path": "<absolute path>", "field": "<name>"}},
@@ -390,7 +390,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Interfaces.** None; design and plan text only.
 - **Changes.**
   - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, and
-    decisions 6, 7 and 9, dated 2026-10-28, in the design.
+    decisions 6, 7, 9 and 11, dated 2026-10-28, in the design.
     Decision 1 replaces open decision 4. Keep a heading named "Open decisions"
     with one line saying no decisions remain open and linking to the sections
     recording them, so links to `#open-decisions` keep working. Update the
@@ -426,6 +426,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     repository's own rules; record Shawn's dated publication comment.
   - Record [decision 10](#decisions) and the command and test-harness spec
     convention in this plan, including HS-1's files and acceptance.
+  - Apply [decision 11](#decisions) to both documents: the helper calls Jev
+    directly, and the config names the `~typesafe/jev-latest` alias.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -433,7 +435,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as software engineering. A floor applies to what a Task changes, not what it
   mentions." Any follow-up edits get current checks and a medium-tier
   re-review; they do not run beside DOC-1's writer.
-- **Acceptance.** Decisions 1, 2, 5, 6, 7 and 9 replace the superseded text
+- **Acceptance.** Decisions 1, 2, 5, 6, 7, 9 and 11 replace the superseded text
   without contradictions. Tier names replace fixed Worker, Reviewer and
   Feature lead model names outside decision 9 and sentences citing it. Items
   1 to 4, 13 and 14 have the dispositions above. Merge authority is scoped to
@@ -459,7 +461,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as [Config schema](#config-schema) defines, and document the contract, so
   that invalid config blocks routing.
 - **Design.** [Routing and personal configuration][d-routing];
-  [Jev decision routing][d-jev] (`jev.minConfidence`, the pinned model, the key
+  [Jev decision routing][d-jev] (`jev.minConfidence`, the Jev model, the key
   source); [Open decisions][d-open], item 4, as answered by
   [decision 1](#decisions) and reconciled by DOC-1.
 - **Files.** Create `t3compose/config.py`, `docs/configuration.md`,
@@ -729,7 +731,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Objective.** Ask Jev the domain and difficulty questions in one bounded
   request, validate the answer and record the classification.
 - **Design.** [Jev decision routing][d-jev];
-  [Routing and personal configuration][d-routing].
+  [Routing and personal configuration][d-routing]; [decision 11](#decisions).
 - **Files.** Create `t3compose/jev.py`, `live/jev_contract.py` and
   `tests/test_jev.py`. Create `docs/cli/jev.md`.
 - **Interfaces.** `t3c route classify --repo REPO --work ID --input TASK.json [--context EXTRA.json]`.
@@ -1441,7 +1443,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 | ID | When | Who | What | Label |
 |---|---|---|---|---|
 | L1 | after CF-1 | Shawn, or the manager at his instruction | Add the version-2 sections to the routing config with Shawn's values; `t3c config check` passes | owner step |
-| L2 | after JV-1 and L1 | manager | `live/jev_contract.py`: one call to the pinned model | live, synthetic |
+| L2 | after JV-1 and L1 | manager | `live/jev_contract.py`: one call to the configured model | live, synthetic |
 | L3 | after RT-1 and L1 | manager | Save a real catalog; run `live/catalog_shape.py` and one `t3c route select` on a synthetic work | live |
 | L4 | after GA-1 | manager | `t3c publish check` | live |
 | L5 | after PB-1 | manager | Publish the next pull request with `t3c publish push` and `t3c publish pr` | live |
@@ -1615,6 +1617,13 @@ Shawn added these decisions on 2026-10-28:
     the repository. HS-1 adds `docs/cli.md` and `docs/testing.md`; each later
     Task that adds commands adds its module's `docs/cli/<module>.md`, and the
     Reviewer checks the specs against the code.
+11. **Jev model and call path, 2026-10-28.** Shawn said: "calling jev directly is correct." After the manager reported that the Decisions API rejects `typesafe/jev-router`, Shawn said: "~typesafe/jev-latest is the correct choice."
+    The helper calls Jev directly through OpenRouter's Decisions API (JV-1); no
+    Harness or T3 provider runs Jev, and Shawn removes the Pi provider added
+    for Jev. The config names `~typesafe/jev-latest`, an alias for the current
+    Jev snapshot. Each classification records the configured model and the
+    response's snapshot `model` and `id`. A new snapshot behind the alias does
+    not by itself make a classification stale.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md

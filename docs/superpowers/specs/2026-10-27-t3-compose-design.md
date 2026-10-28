@@ -223,6 +223,8 @@ permissions.
 ## Jev decision routing
 
 Use Jev through OpenRouter, as explicitly authorized by the owner on 2026-10-27.
+The helper calls OpenRouter's Decisions API directly; no Harness or T3 provider
+runs Jev (plan decision 11).
 The Jev exception is limited to the router. Claude, Codex and agy execution
 continues through the existing subscription Harnesses; plan decision 9 adds
 only the GLM medium Worker selection in Pi through OpenRouter as a second
@@ -268,10 +270,11 @@ manager judgment with an explicit reason. API or malformed-response failures als
 fall back to recorded manager judgment, never silent selection of the cheapest model.
 
 Store the task-input digest, routing-rule version, domain criteria, declared risk
-facts, pinned Jev model, the snapshot ID from the response, classification,
+facts, configured Jev model, the response's snapshot and ID, classification,
 probabilities, confidence, fallback/override reason and final selection.
-Reclassify when task-relevant inputs or policy change. Availability and quota are
-checked at dispatch even when classification is reused.
+Reclassify when task-relevant inputs or policy change. A new snapshot behind the
+configured Jev alias is not a policy change. Availability and quota are checked
+at dispatch even when classification is reused.
 
 Jev does not generate prose. Typed routing needs no separate text model. When a
 bounded text-generation step is useful, use the configured text helper through
@@ -284,8 +287,9 @@ Claude/OpenRouter text helper. It does not already implement agy text generation
 or this task router. Leave that browser setup unchanged; no browser is required
 for routing.
 
-Pin `typesafe/jev-1.14` in config. A live call with synthetic input verified this
-Decisions API contract on 2026-10-27 (F3):
+Configure `~typesafe/jev-latest`, an alias that OpenRouter resolves to the
+current Jev snapshot (plan decision 11). A live call with synthetic input
+verified this Decisions API contract on 2026-10-27 (F3):
 
 - Request: `POST https://openrouter.ai/api/alpha/decisions` with body
   `{model, state, questions: {<name>: {type: "choice", instructions, criteria: {<OPTION>: <text>}}}}`.
@@ -293,7 +297,8 @@ Decisions API contract on 2026-10-27 (F3):
   plus top-level `id`, `model`, `provider` and `usage`
   (`input_tokens`, `output_tokens`, `cost`).
 - `model` is the resolved snapshot: `typesafe/jev-1.14` resolved to
-  `typesafe/jev-1.14-20261014`.
+  `typesafe/jev-1.14-20261014`. On 2026-10-28, `~typesafe/jev-latest` resolved
+  to the same snapshot (F3).
 - Probabilities summed to 1. `confidence` is separate from the chosen option's
   probability: 0.79 against 0.86 in one answer.
 - A two-question call cost about 0.000024 USD.
@@ -796,6 +801,13 @@ numbers match the plan's Decisions section.
   The selection is available only when T3's live catalog lists the Pi instance
   with GLM 5.3 and reports `canRunChildTask: true`. The config uses only the
   catalog's exact instance and model IDs; never guess an ID.
+- **Decision 11, 2026-10-28: Jev model and call path.** Shawn said: "calling jev directly is correct." After the manager reported that the Decisions API rejects `typesafe/jev-router`, Shawn said: "~typesafe/jev-latest is the correct choice."
+  The helper calls Jev directly through OpenRouter's Decisions API; no Harness
+  or T3 provider runs Jev, and Shawn removes the Pi provider added for Jev.
+  The config names `~typesafe/jev-latest`, an alias for the current Jev
+  snapshot. Each classification records the configured model and the
+  response's snapshot and ID. A new snapshot behind the alias does not by
+  itself make a classification stale.
 
 ## Findings
 
@@ -826,7 +838,9 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   resolving to snapshot `typesafe/jev-1.14-20261014` at about 0.000024 USD.
   jev-1.14 classified a README spelling fix as domain OTHER (0.86), and
   OpenRouter's public model list omits decision models.
-  - Status: verified live on 2026-10-27 with synthetic input.
+  - Status: verified live on 2026-10-27 with synthetic input. On 2026-10-28,
+    `~typesafe/jev-latest` resolved to the same snapshot and the Decisions API
+    rejected `typesafe/jev-router`; the evidence is recorded in `.local/`.
   - Changes: [Jev decision routing](#jev-decision-routing) and former open
     decision 4, answered by plan decision 1.
 - **F4, rapid-ship's hook and the Session's repository.** rapid-ship's guardrail
