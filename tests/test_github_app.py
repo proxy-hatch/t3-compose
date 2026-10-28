@@ -618,6 +618,56 @@ class OfflineCrypto(OfflineAppBase):
         self.assertNotIn(TOKEN, repr(secrets))
 
 
+class OfflineMalformedMint(OfflineAppBase):
+    def test_parse_refusals_revoke_observed_tokens(self):
+        token = json.dumps(TOKEN)
+        cases = [('"expires_at":' + bad, 'unknown') for bad in ('1e999', 'NaN', 'Infinity', '9' * 4301)]
+        cases += [('"expires_at":"first","expires_at":"second"', 'unknown'),
+                  ('"expires_at":' + json.dumps(EXPIRY) + ',"other":0,"other":1', EXPIRY),
+                  ('"expires_at":' + json.dumps(EXPIRY) + ',"token":' + token, EXPIRY)]
+        for suffix, expiry in cases:
+            for fail in (False, True):
+                self.http = FakeHTTP()
+                self.http.token = ('{"token":' + token + ',' + suffix + '}').encode()
+                if fail:
+                    self.http.errors[('DELETE', REVOKE)] = (500, {'message': 'refused'})
+                result = self.checked()
+                self.assert_revoked(result, 'failed' if fail else 'ok')
+                self.assertEqual(result['revocation']['expires_at'], expiry)
+        other = TOKEN + '-other'
+        self.http = FakeHTTP()
+        self.http.token = ('{"token":' + token + ',"token":' + json.dumps(other) + '}').encode()
+        result = self.checked()
+        self.assertEqual(result['revocation']['status'], 'ok')
+        self.assertEqual([r.get_header('Authorization') for m, p, r, _ in self.http.calls if m == 'DELETE'],
+                         ['Bearer ' + TOKEN, 'Bearer ' + other])
+        self.assertNotIn(other, self.output)
+
+    def test_failed_revocation_evidence_survives_unsafe_facts(self):
+        for field in ('expiry', 'permission', 'depth'):
+            for text in (False, True):
+                self.http = FakeHTTP()
+                if field == 'expiry':
+                    self.http.token['expires_at'] = '\ud800'
+                elif field == 'permission':
+                    self.http.token['permissions'] = {'contents': '\ud800' + TOKEN}
+                else:
+                    self.http.token = ('{"token":' + json.dumps(TOKEN) + ',"expires_at":' + json.dumps(EXPIRY) +
+                        ',"permissions":{"contents":' + '[' * 1200 + '0' + ']' * 1200 + '}}').encode()
+                self.http.errors[('DELETE', REVOKE)] = (500, {'message': 'refused\ud800' + TOKEN})
+                code, out, err = self.invoke(text=text)
+                self.assertEqual((code, err), (1, ''))
+                if text:
+                    self.assertIn('"status":"failed"', out)
+                    self.assertIn('unknown' if field == 'expiry' else EXPIRY, out)
+                else:
+                    result = json.loads(out)
+                    self.assertEqual(result['revocation'], {'status': 'failed',
+                        'expires_at': 'unknown' if field == 'expiry' else EXPIRY})
+                self.assertEqual(sum(m == 'DELETE' for m, _, _, _ in self.http.calls), 1)
+                self.assertNotIn(TOKEN, self.output)
+
+
 class OfflineHTTP(OfflineAppBase):
     def test_malformed_json_and_nonfinite_numbers_are_refused(self):
         for body in (b'{"duplicate":1,"duplicate":2}', b'{"value":NaN}',

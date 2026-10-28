@@ -79,17 +79,19 @@ class Secrets:
         return text
 
     def diagnostic(self, text):
-        text = ' '.join(self.redact(text).split())
+        text = ' '.join(self.redact(text).encode('utf-8', 'backslashreplace').decode().split())
         text = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', text)
         return text if len(text) <= 1000 else text[:997] + '...'
 
-    def public(self, data):
+    def public(self, data, depth=0):
         if isinstance(data, str):
-            return self.redact(data)
+            return self.redact(data).encode('utf-8', 'backslashreplace').decode()
+        if depth >= 8:
+            return '[omitted]'
         if isinstance(data, dict):
-            return {self.redact(k): self.public(v) for k, v in data.items()}
+            return {self.public(k): self.public(v, depth + 1) for k, v in data.items()}
         if isinstance(data, list):
-            return [self.public(v) for v in data]
+            return [self.public(v, depth + 1) for v in data]
         return data
 
 
@@ -302,13 +304,58 @@ def make_opener():
         urllib.request.HTTPSHandler(context=ssl.create_default_context()), RejectRedirects())
 
 
+class _ResponseObject(dict):
+    def __init__(self, pairs):
+        super().__init__(pairs)
+        self.pairs = pairs
+
+
+def _response_json(payload, lease, secrets):
+    # Defer semantic refusal until complete, bounded JSON has yielded its tokens.
+    invalid = []
+    def pairs(items):
+        if len(dict(items)) != len(items):
+            invalid.append(True)
+        return _ResponseObject(items)
+    def number(value):
+        result = float(value)
+        if not math.isfinite(result):
+            invalid.append(True)
+            return None
+        return result
+    def integer(value):
+        if len(value.lstrip('-')) > 4300:
+            invalid.append(True)
+            return None
+        return int(value)
+    data = json.loads(payload.decode('utf-8'), object_pairs_hook=pairs,
+                      parse_float=number, parse_constant=number, parse_int=integer)
+    if lease is not None and isinstance(data, _ResponseObject):
+        for name, value in data.pairs:
+            if name == 'token' and isinstance(value, str) and value:
+                secrets.add(value)
+                if value not in lease.tokens:
+                    lease.tokens += (value,)
+        expiries = [v for k, v in data.pairs if k == 'expires_at']
+        if len(expiries) == 1 and isinstance(expiries[0], str) and expiries[0]:
+            try:
+                expiries[0].encode('utf-8')
+            except UnicodeError:
+                pass
+            else:
+                lease.expires_at = expiries[0]
+    if invalid:
+        raise ValueError('invalid response JSON')
+    return data
+
+
 class GitHubAPI:
     """Fixed verified HTTPS origin, no redirects, bounded responses and timeouts."""
     def __init__(self, http, secrets):
         self._http = http
         self.secrets = secrets
 
-    def request(self, method, path, bearer, *, query=None, body=None):
+    def request(self, method, path, bearer, *, query=None, body=None, lease=None):
         url = API_BASE + path + ('?' + urllib.parse.urlencode(query) if query else '')
         headers = {'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
                    'User-Agent': 't3-compose/1', 'Authorization': 'Bearer ' + bearer}
@@ -339,8 +386,7 @@ class GitHubAPI:
         if not payload:
             return None
         try:
-            return json.loads(payload.decode('utf-8'), object_pairs_hook=_unique_keys,
-                              parse_constant=_no_constant, parse_float=_finite_float)
+            return _response_json(payload, lease, self.secrets)
         except (ValueError, RecursionError):
             raise CheckError(f'GitHub response to {method} {path} is not valid JSON') from None
 
@@ -407,6 +453,7 @@ class TokenLease:
     """
     api: GitHubAPI
     token: str | None = None
+    tokens: tuple = ()
     expires_at: str = 'unknown'
     status: str = 'not_needed'
     reason: str | None = None
@@ -416,18 +463,18 @@ class TokenLease:
         return self
 
     def __exit__(self, *exc):
-        if self.token:
-            self.status = 'failed'
+        tokens = tuple(dict.fromkeys((*self.tokens, *((self.token,) if self.token else ()))))
+        self.status = 'ok' if tokens else 'not_needed'
+        for token in tokens:
             try:
-                self.api.request('DELETE', '/installation/token', self.token)
+                self.api.request('DELETE', '/installation/token', token)
             except (Exception, KeyboardInterrupt, SystemExit) as error:
+                self.status = 'failed'
                 detail, code = _describe(error)
                 if code == ExitCode.INVALID_INPUT:
                     self.unexpected = detail
                 self.reason = self.api.secrets.diagnostic(
                     f'could not revoke token; expires_at={self.expires_at}: {detail}')
-            else:
-                self.status = 'ok'
         return False
 
 
@@ -456,25 +503,26 @@ def mint_token(config, rt, secrets, lease):
             raise CheckError('installation ' + name + ' does not match the config')
     try:
         data = lease.api.request('POST', f'/app/installations/{identifier}/access_tokens', jwt,
-                                body={'repositories': [config.name], 'permissions': dict(config.permissions)})
+                                body={'repositories': [config.name], 'permissions': dict(config.permissions)}, lease=lease)
     except GitHubError as error:
         if error.status == 422:
             raise CheckError('Shawn must add the repository to the installation or grant requested permissions; '
                              + str(error)) from None
         raise
     token = data.get('token') if isinstance(data, dict) else None
-    # Capture the credential before validating any other response field. Even a
-    # malformed nonempty string gets a revocation attempt, not an abandoned lease.
+    # The response decoder already registered every observable token for cleanup.
     if isinstance(token, str) and token:
         lease.token = token
         secrets.add(token)
     expiry = data.get('expires_at') if isinstance(data, dict) else None
-    if isinstance(expiry, str) and expiry:
-        lease.expires_at = expiry
     if not isinstance(token, str) or not _TOKEN.fullmatch(token):
         raise CheckError('GitHub token response has no usable token')
     if not isinstance(expiry, str) or not expiry:
         raise CheckError('GitHub token response has no expires_at')
+    try:
+        expiry.encode('utf-8')
+    except UnicodeError:
+        raise CheckError('GitHub token response has no expires_at') from None
     granted = data.get('permissions')
     selection = installation.get('repository_selection')
     return Minted(identifier, selection if isinstance(selection, str) else 'unknown',
