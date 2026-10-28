@@ -201,7 +201,7 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
 | `routing-input` | task (original intent, acceptance, interfaces, scope, risk facts and dependencies), context (retry context or null), canonical input digest, routing-policy digest |
 | `routing-classification` | routing-input reference and digest, routing-policy digest, rule version, criteria text and digest, declared risk facts, configured model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
 | `routing-judgment` | routing-input reference and digest, routing-policy digest, domain, difficulty, reason, basis (Jev failure, low confidence, mixed or unclear, manual) |
-| `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
+| `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, chosen pool account or null, every skipped pool account with its reason (empty when no pool was walked), availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
 | `dispatch-intent` | role, round, `clientRequestId`, brief path and digest, selection, provisioned, start and review-base commits, dispatching checkout, isolation |
 | `dispatch-confirmed` | `clientRequestId`, `taskId`, child thread reference, worktree path or unknown |
 | `result` | `taskId`, completed T3 status evidence, worktree path, result commit, parent commit, branch observed, Worker claims, facts the manager verified, questions |
@@ -247,8 +247,8 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
       "version": 2,
       "master": Selection,
       "modelPreferences": {
-        "software-engineering": {"medium": Selection, "challenging": Selection},
-        "non-engineering":      {"medium": Selection, "challenging": Selection}
+        "software-engineering": {"medium": MediumSelection, "challenging": Selection},
+        "non-engineering":      {"medium": MediumSelection, "challenging": Selection}
       },
       "easyWorker": PoolSelection,
       "textHelper": PoolSelection,
@@ -275,8 +275,7 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
       "availabilityFallback": {
         "roles": ["worker", "reviewer", "feature-lead"],
         "manager": "owner-choice",
-        "chains": [{"tier": "medium" | "challenging",
-                    "from": Selection, "to": [Selection]}],
+        "chains": [MediumChain | ChallengingChain, ...],
         "recordReason": true, "reportReason": true}
     }
     Selection     = {"providerInstanceId": "<instance>", "model": "<model>",
@@ -284,6 +283,12 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
     Selection may also carry optional "roles": ["<role>", ...]
     PoolSelection = {"providerPool": "<pool>", "model": "<model>",
                      "options": {"<id>": "<value>"}}
+    WorkerPoolSelection = PoolSelection with exactly "roles": ["worker"]
+    MediumSelection = Selection | WorkerPoolSelection
+    MediumChain = {"tier": "medium", "from": MediumSelection,
+                   "to": [MediumSelection]}
+    ChallengingChain = {"tier": "challenging", "from": Selection,
+                        "to": [Selection]}
 
 Validation rules:
 
@@ -299,8 +304,15 @@ Validation rules:
   medium. A Reviewer tier is never easy.
 - `minConfidence` is above 0 and at most 1. `maxContextRetries` is 0 or 1.
   `uncertainResult` is `manager-judgment`.
-- No pool member appears in `modelPreferences` or in a fallback chain, so agy is
-  never a Reviewer and never a fallback.
+- `Selection` is direct and never names a member of any configured pool.
+  It uses `providerInstanceId`; `PoolSelection` uses `providerPool`. The forms
+  are disjoint: neither accepts the other's key.
+- `MediumSelection` is the union of a direct `Selection` and a
+  `WorkerPoolSelection`. Under [decision 12](#decisions), a `PoolSelection`
+  in a medium preference or either medium chain endpoint requires exactly
+  `"roles": ["worker"]`. Missing roles, any other role or any pool selection
+  at the challenging tier fails. These rules apply to preferences and chain
+  endpoints alike. agy is never a Reviewer. No other slot is broadened.
 - Each chain has an explicit tier and exactly one target. Each `(tier, from)`
   appears once, and its target differs from its source, regardless of role
   limits. Both endpoints are validated selections associated with that tier;
@@ -308,20 +320,24 @@ Validation rules:
   fall back to a non-primary selection and permits its reverse chain. A chain
   without its reverse is a notice, not an error, because directions are owner
   values.
-- Any `Selection`, including a preference or a chain target, may carry optional
-  `roles`: a non-empty subset of `availabilityFallback.roles`; absent means
+- Any direct `Selection`, including a preference or either chain endpoint, may
+  carry optional `roles`: a non-empty subset of `availabilityFallback.roles`; absent means
   all of them. A role it does not serve treats it as unavailable, which may
   use that selection's one fallback. RT-1 checks tier, role eligibility and
   live availability. A selection falls back at most once; never fall back
   twice or follow the target's own chain ([decision 9](#decisions)).
-- `easyWorker` and `textHelper` name a configured pool.
+- `easyWorker` and `textHelper` keep their existing `PoolSelection` shape and
+  semantics; neither accepts `roles`. Every pool selection names a configured
+  pool. `master` remains a direct `Selection`.
 - The digest is `sha256:` and the hex SHA-256 of the file's bytes. Every routing
   record and dispatch intent stores it.
 
 The quota state file beside the config keeps its current shape:
 `activeProviderInstanceId`, `quotaObservations` (per instance, a list of
 `{observedAt, status, resetAt, evidence}`, where status is `exhausted` or
-`available`) and `note`.
+`available`) and `note`. Observations remain per account for all its pool
+models. No model-keyed quota contract is introduced. A model rollout gap is
+not exhaustion evidence ([decision 12](#decisions)).
 
 ## Tasks
 
@@ -377,20 +393,21 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 
 ### DOC-1 Design alignment with owner decisions
 
-- **Objective.** Reconcile the design with Shawn's decisions of 2026-10-27 and
-  2026-10-28, replace stale routing text, and record publication failure
-  actions.
+- **Objective.** Reconcile the design and plan with Shawn's decisions of
+  2026-10-27 and 2026-10-28, including CD-1's medium Worker-only pool contract.
+  Replace stale routing text and record publication failure actions.
 - **Design.** [Open decisions][d-open]; [Routing and personal configuration][d-routing];
   [Manager threads and bases][d-bases]; [Accepted review policy][d-review];
   [Feature lead options][d-leads]; [Design refinement][d-refine];
   [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow].
 - **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`.
   Decision 9 adds `docs/superpowers/plans/2026-10-27-t3-compose-implementation.md`
-  to DOC-1 for the routing and command-spec contracts.
+  to DOC-1 for the routing and command-spec contracts. Decision 12 updates
+  both documents for the shared CF-1 and RT-1 pool contract.
 - **Interfaces.** None; design and plan text only.
 - **Changes.**
   - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, and
-    decisions 6, 7, 9 and 11, dated 2026-10-28, in the design.
+    decisions 6, 7, 9, 11 and 12, dated 2026-10-28, in the design.
     Decision 1 replaces open decision 4. Keep a heading named "Open decisions"
     with one line saying no decisions remain open and linking to the sections
     recording them, so links to `#open-decisions` keep working. Update the
@@ -428,6 +445,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     convention in this plan, including HS-1's files and acceptance.
   - Apply [decision 11](#decisions) to both documents: the helper calls Jev
     directly, and the config names the `~typesafe/jev-latest` alias.
+  - Apply [decision 12](#decisions) and CD-1 to both documents: medium
+    Worker-only pool preferences and chain endpoints, model-aware account
+    walking, per-account quota, role exclusions and L11 for the added choice.
+    Record support independently of Shawn's pending placement; change no
+    private config. Preserve decision 11's call, alias, records and freshness.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -435,10 +457,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as software engineering. A floor applies to what a Task changes, not what it
   mentions." Any follow-up edits get current checks and a medium-tier
   re-review; they do not run beside DOC-1's writer.
-- **Acceptance.** Decisions 1, 2, 5, 6, 7, 9 and 11 replace the superseded text
-  without contradictions. Tier names replace fixed Worker, Reviewer and
-  Feature lead model names outside decision 9 and sentences citing it. Items
-  1 to 4, 13 and 14 have the dispositions above. Merge authority is scoped to
+- **Acceptance.** Decisions 1, 2, 5, 6, 7, 9, 11 and 12 replace the superseded
+  text without contradictions. Tier names replace fixed Worker, Reviewer and
+  Feature lead model names outside decisions 9 and 12 and sentences citing them.
+  CF-1's schema, RT-1's selection and records, L11 and coverage agree with CD-1;
+  no blanket pool fallback ban remains. First-round floors, review tiers and
+  the one-fallback rule remain. Neither supported medium Worker choice is
+  placed by this Task. Items 1 to 4, 13 and 14 have the dispositions above. Merge authority is scoped to
   the repository and its current rules; decision 10 governs command and
   test-harness specs in this plan. No other design decision changes. Tree and
   message privacy checks are
@@ -451,8 +476,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Risk facts and tier.** Reconciliation across two documents → the medium
   tier. The exact-text carve-outs above use the easy tier. Reviewer: medium,
   never agy.
-- **Review focus.** Faithful decisions; no contradictory tier or checkout rule;
-  a squash-trailer exception no wider than decision 7; resolved links.
+- **Review focus.** Faithful decisions and CD-1; no contradictory tier, pool
+  or checkout rule; a squash-trailer exception no wider than decision 7;
+  resolved links.
 - **Size.** About 150 lines, including replaced text.
 
 ### CF-1 Config schema and validation
@@ -480,11 +506,19 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   2. The current version-1 shape fails with a message that names the missing
      sections.
   3. Both examples pass and use synthetic instance names. A primary with a
-     non-primary fallback and its reverse, a Worker-only preference and a
-     Worker-only fallback target pass. Missing tier associations, duplicate
-     sources in one tier, zero or multiple targets, a target equal to its
-     source regardless of role limits, an empty or out-of-set `roles` list on
-     any selection, and a pool member as source or target fail.
+     non-primary fallback and its reverse, a direct Worker-only preference
+     and a direct Worker-only fallback target pass. Examples also include a
+     medium Worker-only pool preference, a pool source with a direct target,
+     and a direct source with a Worker-only pool target; all pass with exactly
+     `"roles": ["worker"]` on each pool selection ([decision 12](#decisions)).
+     Missing tier associations, duplicate sources in one tier, zero or
+     multiple targets, a target equal to its source regardless of role limits,
+     and an empty or out-of-set `roles` list on any direct selection fail.
+     Pool preferences and endpoints without roles, with another role (alone
+     or alongside Worker), or at the challenging tier fail. A direct
+     selection naming a pool member fails in every slot, including chain
+     sources and targets. Mixed direct/pool keys fail. Existing direct,
+     reverse-chain and decision-9 Worker examples remain covered.
   4. An error names the path and the rule, and never prints a value read from a
      key file.
   5. `docs/configuration.md` says that Shawn changes values, or the manager at
@@ -673,9 +707,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     model, the provider reports `canRunChildTask: true`, and the catalog
     advertises its options. A failed status check counts as unavailable. A
     catalog read more than 15 minutes earlier is refused.
-  - Any selection, whether a preference or a chain target, may limit its
-    roles; absent limits, it serves all `availabilityFallback.roles`. A role
-    it does not serve treats it as unavailable. An unavailable selection uses
+  - A direct selection, whether a preference or either chain endpoint, may
+    limit its roles; absent limits, it serves all `availabilityFallback.roles`.
+    A pool preference or chain endpoint is medium and has exactly
+    `"roles": ["worker"]` ([decision 12](#decisions)). It cannot serve
+    Reviewers or Feature leads. The added model in decision 12 also cannot
+    serve the text helper or master. A role it does not serve treats it as
+    unavailable. An unavailable selection uses
     its one configured fallback at the selected tier, once
     ([decision 9](#decisions)). The target need not be a primary preference,
     but its tier association, role eligibility and live availability are
@@ -684,11 +722,26 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     Record and report every fallback. Record and report every GLM use as
     billed per token, even when it is the preference. The master never falls
     back.
-  - agy: use the active account until confirmed exhaustion, then the next
-    non-exhausted account in pool order. An exhausted account returns only after
-    its reset time passes or an `available` observation. Unknown quota is usable.
-    An unavailable active account stops with exit 4; it is not rotated. When
-    every account is exhausted, the command exits 5.
+  - Before walking a pool, check the active account itself. If it is missing
+    from the catalog, reports `canRunChildTask: false`, or fails its status
+    check, stop with exit 4 without rotation. A missing model on an otherwise
+    available active account is handled by the walk below, not this stop.
+  - Resolve a pool selection by walking from the active account in pool order,
+    wrapping around once. Skip an account whose catalog does not list the
+    requested model and options; record "model not offered". This is not quota
+    evidence and does not rotate the active account. Skip confirmed exhausted
+    accounts. An exhausted account returns only after its reset time passes
+    or an `available` observation. Unknown quota is usable. Select the first
+    eligible offering account; never select an unavailable account. Record
+    the chosen account and every skipped account with its reason in
+    `routing-selection`, retaining skipped-account reasons even when the final
+    selection is a direct fallback. `easyWorker` uses this same model-aware walk.
+  - Walking accounts is not a fallback and does not consume another fallback.
+    If no eligible offering account remains, use the selection's one configured
+    fallback or exit 5. A pool reached as a fallback cannot follow its own
+    chain. Quota observations apply per account to all its pool models;
+    rollout gaps are never exhaustion evidence. No model-keyed quota contract
+    is introduced ([decision 12](#decisions)).
   - `route select` writes only its `routing-selection` event. `quota record`
     and `quota activate` write the quota file atomically and keep every
     observation. Tool and correctness failures are not quota evidence;
@@ -705,10 +758,21 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Worker-only fallback target leaves a Reviewer with exit 5. A target that is
   itself the source of another chain is not followed further. GLM is eligible
   only for medium Workers; every use records and reports its per-token billing.
-  `Simulated…` tests inject
-  quota observations to show rotation in order, wrap-around, reset evidence and
-  all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
-  (L3).
+  Under [decision 12](#decisions), a medium Worker-only pool preference serves
+  a Worker; a Reviewer and a Feature lead each reach its one eligible fallback.
+  A Worker-only pool chain target serves a Worker and leaves a Reviewer or
+  Feature lead with exit 5. The added choice never serves the text helper or
+  master. `Simulated…` tests inject quota observations to show rotation in
+  order, wrap-around and reset evidence. The walk skips a non-offering account,
+  including the active account, without changing the active account for that
+  rollout gap. It records each skip and the chosen account. Confirmed exhaustion
+  excludes an account for all pool models. All offering accounts exhausted
+  yields one fallback or exit 5, even if a non-offering account has usable quota.
+  Account walking never consumes a second fallback, including for a pool chain
+  target. An active account absent from the catalog, unable to run children or
+  failing its status check yields exit 4 without rotation. No test selects an
+  unavailable account. `easyWorker` has the same model-aware walk tests.
+  `live/catalog_shape.py` validates a saved real catalog (L3).
 - **Prework.** Before dispatch, the manager saves a redacted sample of a real
   `orchestrator_capabilities` result in `.local/state/` and names it in the
   brief. The parser reads only the fields it needs and treats an unknown shape
@@ -720,9 +784,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
   Reviewer) and subtle invariants (one fallback, exhaustion order) →
   the challenging tier. Reviewer: challenging.
-- **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
-  first round; role limits on preferences and targets; one fallback at most;
-  the rotation rules; the config digest in every record.
+- **Review focus.** Tier arithmetic and first-round floors; no path to agy
+  for a Reviewer; medium Worker-only pool preferences and endpoints; role
+  limits on preferences and endpoints; one fallback at most; model-aware
+  walking and per-account quota; the config digest in every record.
 - **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
   follow-up Task.
 
@@ -1452,15 +1517,24 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 | L8 | after RP-1 and L1 | manager | `live/router_pilot.py` | live, synthetic |
 | L9 | after the handoff | rapid-ship manager thread | The pilot | live |
 | L10 | after the pilot | manager | The nested scratch pilot (FL-1) | live |
-| L11 | after RT-1 and Shawn places GLM in config | manager | Verify the medium Worker selection and role limits under [decision 9](#decisions), as described below | live, synthetic |
+| L11 | after RT-1 and Shawn places each supported choice in config | manager | Verify both medium Worker choices and role limits under [decisions 9 and 12](#decisions), as described below | live, synthetic |
 
-Under [decision 9](#decisions), L11 runs after RT-1 and once Shawn places GLM
-in the config using only the catalog's exact instance and model IDs. The manager
-saves a live catalog and confirms it lists the Pi instance with GLM 5.3 and
-`canRunChildTask: true`. It runs `t3c route select` once per role on synthetic
-work: a Worker selection may get GLM 5.3; a Reviewer selection never does and
-gets its one eligible fallback or exits 5. Record and report the selections,
-any fallback and any GLM use's per-token billing.
+Under [decisions 9 and 12](#decisions), L11 covers both GLM 5.3 and Argon
+(`gemini-4-argon-high`). It runs for each after RT-1 and Shawn's placement of
+that choice in config, using only the catalog's exact identifiers and options.
+Neither choice is placed yet. L11 is independent of the handoff gate.
+
+The manager saves a live catalog. For GLM it confirms that the Pi instance lists
+GLM 5.3 with the requested options and `canRunChildTask: true`. For Argon it
+confirms which pool accounts offer `gemini-4-argon-high` with the requested
+options and `canRunChildTask: true`. The dated two-of-three observation in
+decision 12 is not a substitute for this check. Run `t3c route select` once per
+role on synthetic work for each placed choice: a Worker may get it; Argon must
+resolve only to an offering, available account. Reviewers and Feature leads
+never get either choice; each uses one eligible fallback or exits 5. Neither
+choice serves the text helper or master. Record and report the selections and
+any fallback. Record and report every GLM use's per-token billing; Argon remains
+covered by the agy subscription.
 
 L7 tests two behaviors in a scratch thread bound to the t3-compose root, with a
 trivial read-only child. First, the ways to clear the conversation while
@@ -1547,8 +1621,9 @@ step's reviews leave to this plan.
 | Requirement | Design | Tasks |
 |---|---|---|
 | Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1, EV-1, JV-1 |
-| Validated config schema and its digest | [Routing and personal configuration][d-routing] | CF-1 |
-| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
+| Validated config schema and its digest; medium Worker-only pool preferences and endpoints under decision 12 | [Routing and personal configuration][d-routing] | CF-1 |
+| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, model-aware pool walking, per-account quota and skipped-account reasons under decision 12, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
+| Medium Worker choices under decisions 9 and 12: owner-controlled placement, role limits, live catalog and GLM billing | [Routing and personal configuration][d-routing] | DOC-1, CF-1, RT-1, L11 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1, EV-1 |
 | Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
@@ -1624,6 +1699,36 @@ Shawn added these decisions on 2026-10-28:
     Jev snapshot. Each classification records the configured model and the
     response's snapshot `model` and `id`. A new snapshot behind the alias does
     not by itself make a classification stale.
+12. **Medium Worker pool selections and Argon, 2026-10-28.** Shawn said: "There's another model to support: gemini-4-argon-high as medium worker model (in agy subscription, only 2/3 accounts have it, slowly rolling out), same tier as GLM5.3 and Sonnet/Sol."
+    Argon through the agy subscription is a supported medium Worker choice,
+    alongside decision 9's choice. It serves Workers only, never a Reviewer,
+    Feature lead, text helper or the master. Shawn chooses its placement;
+    none is authorized yet. Do not change config until he places it. The
+    subscription covers Argon; no new API exception is added. agy Workers
+    carry instructions inline. The catalog observation on 2026-10-28 found
+    it on two of three pool accounts with `canRunChildTask: true`; account
+    identities are recorded in `.local/`. This is rollout evidence, not quota
+    evidence, and does not promise later availability.
+    The Engineering manager's shared contract CD-1 permits `PoolSelection`
+    in medium preferences and either medium chain endpoint only with exactly
+    `"roles": ["worker"]`. Missing or other roles and the challenging tier
+    fail validation. Direct selections never name pool members. `easyWorker`
+    and `textHelper` keep their schema and semantics; no other slot broadens.
+    Resolve a pool from the active account in pool order, wrapping around.
+    Skip non-offering accounts with "model not offered"; this neither proves
+    exhaustion nor changes the active account. Skip confirmed exhausted
+    accounts under the existing reset/availability rules. Choose the first
+    eligible offering account and record it and every skipped account with
+    its reason. An active account absent from the catalog, unable to run
+    children or failing its status check still stops with exit 4, without
+    rotation. Never select an unavailable account. `easyWorker` uses the
+    same walk. Walking is not a fallback: none left uses the selection's one
+    fallback or exits 5; never follow a fallback target's own chain. Quota
+    observations stay per account for all its pool models, without model keys.
+    Role exclusion applies to preferences and endpoints: Reviewers and
+    Feature leads reach one eligible fallback or exit 5. CF-1 and RT-1 implement
+    this contract independently of pending placement. L11 verifies both
+    supported choices after Shawn places each, independently of the handoff gate.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md

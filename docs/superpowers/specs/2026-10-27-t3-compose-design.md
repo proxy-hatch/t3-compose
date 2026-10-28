@@ -200,7 +200,19 @@ available only when the catalog lists it and its provider reports
 A listed model does not prove remaining quota. Persist a dispatch's selection
 and reason so the owner can see why cheap work was escalated.
 
-Use one agy account until confirmed quota exhaustion before moving to the next.
+Resolve a pool selection from the active account in pool order, wrapping around.
+Skip an account that does not offer the requested model and options; record
+"model not offered". This is not quota evidence and does not change the active
+account. Skip confirmed exhausted accounts until their reset time passes or
+availability evidence clears them. Quota observations apply per account to all
+its pool models, not per model. Select the first eligible offering account;
+never select an unavailable account. The active account missing from the catalog,
+reporting `canRunChildTask: false`, or failing its status check stops with exit 4,
+without rotation. This rule applies before walking the pool. `easyWorker` uses
+the same model-aware walk. Record the chosen account and every skipped account
+with its reason in the private routing-selection record. Walking accounts is
+not a fallback. If none is eligible, use the selection's one fallback or exit 5.
+
 Resolve the old attempt before retrying. Preserve its work and supply a continuation
 brief. Tool failures and correctness failures are not quota evidence. Repeated
 correctness failures escalate to a medium-tier Worker. An unavailable master is
@@ -208,17 +220,24 @@ reported to the owner; the package does not replace the Engineering manager
 without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
 the configured availability fallback at the selected tier. The config names
 each source and target selection and its options; each chain has exactly one
-target. Re-home decision 3 added reverse chains. Any selection, whether a
-preference or a chain target, may carry an optional `roles` list: a non-empty
-subset of `availabilityFallback.roles`; absent means all of them. A role the
-selection does not serve treats it as unavailable and may use that selection's
+target. Re-home decision 3 added reverse chains. A direct `Selection` may
+carry an optional `roles` list: a non-empty subset of
+`availabilityFallback.roles`; absent means all of them. A direct selection never
+names a pool member. Under plan decision 12, a `PoolSelection` may be a medium
+preference or either endpoint of a medium chain only with exactly
+`"roles": ["worker"]`. Missing roles, another role or the challenging tier
+fails validation. `easyWorker` and `textHelper` retain their existing schema and
+semantics. agy is never a Reviewer. A role the selection does not serve treats
+it as unavailable and may use that selection's
 one fallback, once. Check the target's tier, role eligibility and live
 availability. If it is unavailable too, or no chain applies, report to Shawn
 (exit 5); never fall back twice or follow the target's own chain. Plan decision 9
-supports GLM 5.3 as a medium Worker selection; Shawn chooses its place in config.
-Record and report the reason, preserve all quality requirements, and resolve
-the original attempt before retrying. Availability fallback grants no extra
-permissions.
+supports GLM 5.3 as a medium Worker selection; plan decision 12 adds Argon
+through the agy subscription. Shawn chooses each model's place in config; neither
+has been placed. Argon needs no new API exception. The pool contract does not
+wait for placement. Record and report the reason, preserve all quality
+requirements, and resolve the original attempt before retrying. Availability
+fallback grants no extra permissions.
 
 ## Jev decision routing
 
@@ -609,8 +628,9 @@ restart: that thread reconstructs state from the records. It then reconciles
 existing work, as described under
 [Taking over existing Claude work](#taking-over-existing-claude-work), and chooses
 one bounded unfinished task whose requirements are approved and whose files have
-no active writer. Choose the Worker tier from its risk; do not force a sensitive
-merge-guard change onto agy.
+no active writer. Choose the Worker tier from its risk; preserve the challenging
+floor for a sensitive merge-guard change. A medium Worker-only pool selection
+under plan decision 12 does not lower any first-round floor.
 
 The first live pilot must demonstrate:
 
@@ -808,6 +828,23 @@ numbers match the plan's Decisions section.
   snapshot. Each classification records the configured model and the
   response's snapshot and ID. A new snapshot behind the alias does not by
   itself make a classification stale.
+- **Decision 12, 2026-10-28: medium Worker pool selections and Argon.** Shawn said: "There's another model to support: gemini-4-argon-high as medium worker model (in agy subscription, only 2/3 accounts have it, slowly rolling out), same tier as GLM5.3 and Sonnet/Sol."
+  Argon through the agy subscription is a supported medium Worker choice,
+  alongside the choice in decision 9. It serves Workers only, never a Reviewer,
+  Feature lead, text helper or the master. Shawn chooses its placement; none
+  is authorized yet. Do not change config until he places it. The subscription
+  covers Argon; this adds no API exception. agy Workers carry instructions inline.
+  The catalog observation on 2026-10-28 found the model on two of three pool
+  accounts with `canRunChildTask: true`; this is rollout evidence, not quota
+  evidence. Account identities are recorded in `.local/`.
+  The Engineering manager's shared contract CD-1 permits medium Worker-only
+  pool preferences and chain endpoints with exactly `"roles": ["worker"]`.
+  Direct selections never name pool members. Account choice walks from the
+  active account in pool order, wrapping around and skipping non-offering or
+  confirmed exhausted accounts. The active-account exit-4 rule remains.
+  Account walking is not a fallback; one fallback at most remains the rule.
+  Quota observations stay per account for all its pool models. L11 verifies
+  both supported choices after Shawn places each; it is not a handoff gate.
 
 ## Findings
 
