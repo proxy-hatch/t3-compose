@@ -173,6 +173,8 @@ sequence. It parses once, calls `args.handler(args)`, prints the returned data,
 and returns `ExitCode.SUCCESS`. A handler returns JSON-compatible data on
 success. It raises `CommandError` with a public message and a listed exit code
 for an expected failure. Modules must honor the output contract above.
+Each command module documents its own commands, options, output and exit
+codes in `docs/cli/<module>.md`; this file keeps what every command shares.
 
 ## Paths and JSON utilities
 
