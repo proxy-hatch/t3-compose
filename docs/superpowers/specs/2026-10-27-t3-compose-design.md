@@ -85,8 +85,10 @@ identifies dependencies, commissions design work, delegates edits, reconciles
 results, explains decisions, and owns overall delivery accountability across
 features: cross-feature integration, integration tests in place and their
 evidence on the intended integrated result, operational readiness, dependencies
-and risks resolved or surfaced, and final delivery readiness to Shawn
-(plan decision 13). When no Feature lead is assigned, the manager also performs
+and risks resolved or surfaced, and final delivery readiness to Shawn; for a led
+Task, it sets the expected integration tests and machine prerequisites at Task
+start and checks `main` and the machine after a merge (plan decisions 13 and 17).
+When no Feature lead is assigned, the manager also performs
 Task-level coordination, required-check execution or assignment, independent
 review coordination through the final head, and publication of the Task's pull
 request. It may write task records and briefs.
@@ -110,10 +112,14 @@ Include an optional feature-lead role in version one. When a Feature lead is
 assigned, it coordinates earlier independent reviews, runs or assigns required
 checks, personally reviews and clears the Task's final head (with no separate
 Reviewer dispatched for that final head), maintains current evidence and finding
-dispositions, publishes its Task's own pull request (without authority to merge
-or to change other Tasks' pull requests), and reports Task readiness to the
-manager; because a lead makes no project edits, its final-head review does not
-approve its own implementation (plan decision 13). Use direct children for
+dispositions, and publishes its Task's own pull request with the machine
+prerequisites and integration evidence in the pull request body (without
+authority to merge or to change other Tasks' pull requests). It tells Shawn in
+its own thread that the pull request is ready, never reports pull request
+readiness to the manager, and sends no progress reports; it sends the manager
+one line when Shawn merges, plus blockers, cross-Task or shared-interface
+changes, new machine prerequisites, owner rule changes and agy exhaustion. Because a lead makes no project edits, its final-head review does not
+approve its own implementation (plan decisions 13 and 17). Use direct children for
 bounded independent tasks. Enable real feature leads only after the nested
 pilot. The package does not impose a new agent-count cap; the owner, runtime
 capacity, dependencies and exclusive file ownership determine safe parallelism.
@@ -143,8 +149,10 @@ The manager owns cross-feature priorities, shared interfaces, owner decisions,
 the global assignment record, assigning feature leads, and overall delivery
 accountability: cross-feature integration, integration tests in place and their
 evidence on the intended integrated result, operational readiness, dependencies
-and risks resolved or surfaced, and final delivery readiness to Shawn
-(plan decision 13). A feature lead owns one approved feature brief,
+and risks resolved or surfaced, and final delivery readiness to Shawn; for a led
+Task, it sets the expected integration tests and machine prerequisites when the
+Task starts and checks `main` and the machine after a merge (plan decisions 13
+and 17). A feature lead owns one approved feature brief,
 decomposition within that scope, its Worker and earlier-round Reviewer
 dispatches, local integration coordination, its Task's final-head review and
 verification, and publishing its Task's own pull request. When a feature lead is
@@ -156,12 +164,19 @@ separate Reviewer reviews that head; reviews of earlier heads (Worker rounds and
 Corrections re-reviews) still use separate Reviewers, and Tasks without a
 feature lead still require a separate Reviewer on the final head. The lead runs
 or assigns required checks (including the repository's heavy required check),
-records its final-head review and finding dispositions, publishes its Task's own
-pull request under the repository's identity and privacy gates (without
+records its final-head review and finding dispositions, and publishes its Task's own
+pull request under the repository's identity and privacy gates, with the machine
+prerequisites and integration evidence in the pull request body (without
 authority to merge or to change other Tasks' pull requests; the manager
-publishes for Tasks without a lead), and reports Task readiness, outcomes,
-blockers, changed interfaces and verified evidence to the manager. The manager
-uses a feature lead's verified Task evidence without routinely repeating the
+publishes for Tasks without a lead). Under plan decision 17, Shawn reads open
+pull requests himself and the lead tells Shawn in its own thread when the pull
+request is ready; a feature lead never reports to the manager that a pull
+request is ready and sends no progress reports. A lead sends the manager one
+line when Shawn merges its pull request, plus blockers, cross-Task or
+shared-interface changes, new machine prerequisites, owner rule changes and agy
+exhaustion, without turning that into a status-report channel. The manager uses
+the lead's verified Task evidence and pull request body without adding a
+manager pre-merge readiness approval or routinely repeating the
 same final-head review. A Verified Task or PR-ready Task is distinct from
 integrated delivery readiness; no new deployment or merge authority or automatic
 readiness rule is introduced. A feature lead delegates project edits and makes
@@ -552,15 +567,24 @@ the takeover exception under
    required checks passed on the current head, and the current head is cleared
    by the current Feature lead's final-head review (when the Task has a lead) or
    by an independent Reviewer (when it does not). An assigned Feature lead
-   publishes its Task's own pull request (without authority to merge or to
-   change other Tasks' pull requests) and reports Task readiness and verified
-   evidence to the manager; the manager publishes for Tasks without a lead. The
+   publishes its Task's own pull request with the machine prerequisites and
+   integration evidence in the pull request body (without authority to merge or
+   to change other Tasks' pull requests) and tells Shawn in its own thread that
+   the pull request is ready; it never reports pull request readiness to the
+   manager and sends no progress reports. The lead sends the manager one line
+   when Shawn merges its pull request, plus blockers, cross-Task or
+   shared-interface changes, new machine prerequisites, owner rule changes and
+   agy exhaustion. The manager publishes for Tasks without a lead and tells
+   Shawn when such a pull request is ready. The
    manager retains overall delivery accountability across features—cross-feature
    integration, integration tests in place and their evidence on the intended
    integrated result, operational readiness, and resolved or surfaced
-   dependencies and risks—and reports final delivery readiness to Shawn, using
-   lead evidence without routinely repeating the same Task-level final-head
-   review (plan decision 13). Delivery readiness is not a per-Task verification
+   dependencies and risks: at Task start it sets the expected integration tests
+   and machine prerequisites, and after a merge it checks `main` and the
+   machine, using the lead's verified Task evidence and pull request body
+   without adding a manager pre-merge readiness approval or routinely repeating
+   the same Task-level final-head review (plan decisions 13 and 17). Delivery
+   readiness is not a per-Task verification
    input. Keep verified, PR-ready, merged and integrated delivery readiness
    distinct. Integration and publishing follow the repository's existing
    authority and identity rules (see
@@ -812,7 +836,7 @@ decision 16), while t3-compose agents still do no rapid-ship work and the formal
 
 Shawn approved choice 1 on 2026-10-27: independently review every Task.
 On 2026-10-28, Shawn refined step 4 and step 5 for Tasks that have a Feature
-lead (plan decision 13): when a Task has a Feature lead, earlier heads (Worker
+lead (plan decisions 13 and 17): when a Task has a Feature lead, earlier heads (Worker
 rounds and Corrections re-reviews) still go to separate Reviewers, and the
 Feature lead's own review is the final-head review, with no separate Reviewer
 dispatched for that head; when a Task has no Feature lead, a separate Reviewer
@@ -837,17 +861,26 @@ A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
 5. For a Task with a Feature lead, the lead verifies that required checks, its
    final-head review and all finding dispositions are current on the exact final
    commit, publishes its Task's own pull request under the repository's identity
-   and privacy gates (without authority to merge or to change other Tasks' pull
-   requests), and reports Task readiness and verified evidence to the manager.
-   The manager uses the lead's verified Task evidence without routinely
-   repeating the same final-head review, investigates unresolved findings and
-   cross-feature decisions, and owns overall delivery readiness to Shawn:
-   cross-feature integration, integration tests in place and their evidence on
-   the intended integrated result, operational readiness, and resolved or
-   surfaced dependencies and risks. When there is no Feature lead, the manager
-   checks the independent review result and check evidence, publishes the Task's
-   pull request, and reports readiness. Task verification and PR-ready remain
-   distinct from integrated delivery readiness.
+   and privacy gates with the machine prerequisites and integration evidence in
+   the pull request body (without authority to merge or to change other Tasks'
+   pull requests), and tells Shawn in its own thread that the pull request is
+   ready. Under plan decision 17, Shawn reads open pull requests himself: the
+   lead never reports to the manager that a pull request is ready and sends no
+   progress reports. The lead sends the manager one line when Shawn merges its
+   pull request, plus blockers, cross-Task or shared-interface changes, new
+   machine prerequisites, owner rule changes and agy exhaustion. The manager
+   sets the expected integration tests and machine prerequisites when a Task
+   starts and checks `main` and the machine after a merge, using the lead's
+   verified Task evidence and pull request body without adding a manager
+   pre-merge readiness approval or routinely repeating the same final-head
+   review, investigates unresolved findings and cross-feature decisions, and
+   owns overall delivery readiness to Shawn: cross-feature integration,
+   integration tests in place and their evidence on the intended integrated
+   result, operational readiness, and resolved or surfaced dependencies and
+   risks. When there is no Feature lead, the manager checks the independent
+   review result and check evidence, publishes the Task's pull request, and
+   reports readiness to Shawn. Task verification and PR-ready remain distinct
+   from integrated delivery readiness.
 
 For who runs a repository's heavy required check, see
 [Checks and publication](#checks-and-publication).
@@ -1038,12 +1071,17 @@ numbers match the plan's Decisions section.
   project edits, reviewing a Worker's final head does not approve its own
   implementation. The lead runs or assigns required checks (including the
   repository's heavy required check) on the exact final commit, maintains
-  current evidence and finding dispositions, publishes its Task's own pull
+  current evidence and finding dispositions, and publishes its Task's own pull
   request under the repository's identity and privacy gates (without authority
-  to merge or to change other Tasks' pull requests), and reports Task readiness
-  and verified evidence to the Engineering manager; when there is no Feature
+  to merge or to change other Tasks' pull requests); when there is no Feature
   lead, the manager performs that Task-level coordination and publishes the
-  Task's pull request. Workers and Reviewers still never push, open pull
+  Task's pull request. Under the 2026-10-28 refinement in decision 17, a Feature
+  lead tells Shawn in its own thread when the pull request is ready, puts the
+  machine prerequisites and integration evidence in the pull request body, never
+  reports pull request readiness to the Engineering manager, and sends no
+  progress reports; it sends the manager one line when Shawn merges, plus
+  blockers, cross-Task or shared-interface changes, new machine prerequisites,
+  owner rule changes and agy exhaustion. Workers and Reviewers still never push, open pull
   requests, post or merge. Heavy checks still run one at a time on the whole
   machine with a stable lock, in a clean linked worktree at the exact commit
   under check after its writer has finished, never moving or writing the owner's
@@ -1065,9 +1103,13 @@ numbers match the plan's Decisions section.
   or the lead). The Engineering manager retains overall delivery accountability:
   cross-feature integration, integration tests in place and their evidence on
   the intended integrated result, operational readiness, dependencies and risks
-  resolved or surfaced, and final delivery readiness to Shawn. It uses the
-  lead's verified Task evidence without routinely repeating the same Task-level
-  final-head review. Delivery readiness is not an EV-1 input, and Task
+  resolved or surfaced, and final delivery readiness to Shawn. Under decision
+  17's 2026-10-28 refinement, manager delivery checks happen at two points—at
+  Task start it sets the expected integration tests and machine prerequisites,
+  and after a merge it checks `main` and the machine—using the lead's verified
+  Task evidence and pull request body without adding a manager pre-merge
+  readiness approval or routinely repeating the same Task-level final-head
+  review. Delivery readiness is not an EV-1 input, and Task
   verification and PR-ready remain distinct from integrated delivery readiness.
   No new deployment or merge authority or automatic readiness rule is
   introduced, and this documentation revision claims no integration or live
@@ -1125,6 +1167,20 @@ numbers match the plan's Decisions section.
   nothing in any rapid-ship checkout), and the formal helper-backed pilot (L9)
   still waits for `t3c` and its existing handoff gates. No formal pilot pass or
   runtime implementation of the private prompt is claimed.
+- **Decision 17, 2026-10-28: Feature lead reporting and manager delivery timing.**
+  Shawn said: "btw, notice how each feature lead notifies you when a task is ready for me to merge? I can check that they have open PRs for me myself. In the future, don't let them notify you at this point, it's a waste of your context and tokens".
+  A Feature lead never reports to its manager that a pull request is ready, and
+  sends no progress reports; Shawn reads open pull requests himself, and a lead
+  still tells Shawn in its own thread that the pull request is ready. A lead
+  still sends one line to the manager when Shawn merges, and sends blockers,
+  cross-Task or shared-interface changes, new machine prerequisites, owner rule
+  changes and agy exhaustion, without turning that into a status-report
+  channel. Manager delivery duty moves to two points: at Task start the manager
+  sets expected integration tests and machine prerequisites; after a merge it
+  checks `main` and the machine. The lead's pull request body carries the
+  prerequisites and integration evidence. There is no extra manager pre-merge
+  readiness approval or repeated final-head review; the manager still owns
+  overall delivery, and delivery readiness remains separate from EV-1.
 
 ## Findings
 
