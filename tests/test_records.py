@@ -622,18 +622,19 @@ class OfflineRecordStore(OfflineTestCase):
         self.add("reconciliation", reconciliation)
         self.add("dispatch-intent", {**second, "clientRequestId": "synthetic-third", "round": 3})
 
-    def test_deferred_transitions_refused_by_store_entrypoint_and_load(self):
+    def test_invalid_transition_histories_refused_by_store_entrypoint_and_load(self):
         import os
         for kind in ("review", "finding-disposition", "lead-assignment", "restart", "handoff", "writer-transfer"):
             with self.subTest(kind=kind):
-                with self.assertRaisesRegex(ValueError, "RC-1c"):
+                if kind == "lead-assignment":
+                    self.payloads[kind]["assignedBy"] = "manager@synthetic/wrong"
+                with self.assertRaises(ValueError):
                     self.add(kind)
                 data = self.temp / "synthetic-data.json"
                 data.write_bytes(canonical_json(self.payloads[kind]))
                 result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--kind", kind,
                                       "--file", str(data), "--writer", MANAGER_WRITER)
                 self.assertEqual((result.returncode, result.stdout), (2, ""))
-                self.assertIn("RC-1c", result.stderr)
                 payload = copy.deepcopy(self.payloads[kind])
                 if "checkpoint" in payload:
                     payload["checkpoint"]["lastSeq"] = 0
@@ -822,7 +823,7 @@ except ValueError:
             importlib.reload(self.r)
             registry = cli.Registry(cli.Parser(prog="synthetic"))
             self.r.register(registry)
-            self.assertEqual(set(registry.validate()), {("work", "new"), ("work", "show"), ("work", "list"), ("event", "add")})
+            self.assertEqual(set(registry.validate()), {("work", action) for action in ("new", "show", "list", "snapshot", "reconcile", "repair")} | {("event", "add")})
 
     def test_nonobject_corruption_and_unsafe_temporary_isolate_work(self):
         import os
@@ -918,3 +919,164 @@ except ValueError:
         self.assertEqual(add("dispatch-intent", second, 0)["seq"], 4)
         add("dispatch-intent", {**second, "briefDigest": DIGEST_B}, 2)
         self.assertEqual(len(self.load()["events"]), 4)
+
+
+class OfflineReviewHistory(OfflineTestCase):
+    setUp = OfflineRecordStore.setUp
+    add = OfflineRecordStore.add
+    load = OfflineRecordStore.load
+    command = OfflineRecordStore.command
+
+    def reviewer(self, round=1):
+        request, task = f"synthetic-review-{round}", f"synthetic-native-review-{round}"
+        self.add("dispatch-intent", {**self.payloads["dispatch-intent"], "role": "reviewer",
+                                    "clientRequestId": request, "startCommit": SHA_B, "round": round})
+        self.add("dispatch-confirmed", {**self.payloads["dispatch-confirmed"], "clientRequestId": request,
+                                       "taskId": task, "childThread": f"synthetic-review-thread-{round}"})
+        self.add("result", {**self.payloads["result"], "taskId": task})
+        return {**self.payloads["review"], "reviewer": {"kind": "task", "taskId": task}}
+
+    def worker_result(self):
+        for kind in ("dispatch-intent", "dispatch-confirmed", "result"):
+            self.add(kind)
+
+    def refuses_replay(self, event, mutation):
+        import os
+        path = self.directory / "events" / f'{event["seq"]}.json'
+        original = path.read_bytes()
+        path.write_bytes(canonical_json({**event, **mutation}))
+        try:
+            with self.assertRaises(ValueError):
+                self.load()
+            with self.assertRaises(ValueError):
+                self.add("next-action")
+        finally:
+            path.write_bytes(original)
+            os.chmod(path, 0o600)
+
+    def test_native_reviewer_provenance_and_two_round_finding_keys(self):
+        self.worker_result()
+        for reviewer in ({"kind": "task", "taskId": "synthetic-invented"},
+                         {"kind": "task", "taskId": self.payloads["result"]["taskId"]}):
+            with self.assertRaises(ValueError):
+                self.add("review", {**self.payloads["review"], "reviewer": reviewer})
+        first_data = self.reviewer()
+        for mutation in ({"base": SHA_C}, {"head": SHA_C}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("review", {**first_data, **mutation})
+        first = self.add("review", first_data)
+        second = self.add("review", self.reviewer(2))
+        disposition = {**self.payloads["finding-disposition"], "reviewRef": first["seq"]}
+        for mutation in ({"reviewRef": 1}, {"reviewRef": 999}, {"findingId": "missing"},
+                         {"reviewRef": first_data["reviewer"]["taskId"]}, {"commit": None},
+                         {"evidence": {"artifact": {"unknown": "missing"}}}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("finding-disposition", {**disposition, **mutation})
+        missing = dict(disposition)
+        del missing["reviewRef"]
+        with self.assertRaises(ValueError):
+            self.add("finding-disposition", missing)
+        fixed = self.add("finding-disposition", disposition)
+        self.assertEqual([e["data"]["reviewRef"] for e in self.load()["events"]
+                          if e["kind"] == "finding-disposition"], [first["seq"]])
+        self.refuses_replay(fixed, {"data": {**disposition, "reviewRef": 1}})
+        self.refuses_replay(second, {"data": {**second["data"], "head": SHA_C}})
+        self.add("finding-disposition", {**disposition, "reviewRef": second["seq"]})
+        self.assertNotEqual(first["seq"], second["seq"])
+        for seq, key, value in ((4, "role", "worker"), (5, "worktreePath", "synthetic-wrong"),
+                                (6, "resultCommit", SHA_C), (4, "startCommit", SHA_C)):
+            event = self.load()["events"][seq - 1]
+            self.refuses_replay(event, {"data": {**event["data"], key: value}})
+
+    def test_dispositions_authorship_severity_and_evidence(self):
+        self.worker_result()
+        data = self.reviewer()
+        data["findings"].append({"id": "minor", "severity": "minor", "summary": "synthetic style"})
+        review = self.add("review", data)
+        disposition = {**self.payloads["finding-disposition"], "reviewRef": review["seq"]}
+        for change in ({"disposition": "withdrawn", "by": "lead:synthetic-wrong"},
+                       {"disposition": "declined", "reason": "synthetic reason"},
+                       {"disposition": "resolved-outside-tree", "evidence": {}},
+                       {"disposition": "owner-decided", "evidence": {"decisionRef": 1}},
+                       {"disposition": "rejected-by-second-review", "evidence": {"reviewRef": review["seq"]}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.add("finding-disposition", {**disposition, **change})
+        self.add("finding-disposition", {**disposition, "disposition": "withdrawn",
+                                         "by": "task:" + data["reviewer"]["taskId"]})
+        self.add("finding-disposition", {**disposition, "findingId": "minor", "disposition": "declined", "reason": "style"})
+        for state in ("resolved-outside-tree", "disputed"):
+            self.add("finding-disposition", {**disposition, "disposition": state})
+        decision = self.add("decision")
+        self.add("finding-disposition", {**disposition, "disposition": "owner-decided",
+                                         "evidence": {"decisionRef": decision["seq"]}})
+        second = self.add("review", self.reviewer(2))
+        self.add("finding-disposition", {**disposition, "disposition": "rejected-by-second-review",
+                                         "evidence": {"reviewRef": second["seq"]}})
+
+    def test_lead_forms_currency_historical_reviews_and_source_labels(self):
+        import json
+        self.worker_result()
+        assignment = self.add("lead-assignment")
+        evidence = self.temp / "synthetic-review.md"
+        evidence.write_text("Synthetic personal review")
+        data = {**self.payloads["review"], "reviewer": {"kind": "lead", "thread": assignment["data"]["thread"]},
+                "evidence": {"path": str(evidence), "digest": "sha256:" + hashlib.sha256(evidence.read_bytes()).hexdigest()}}
+        for mutation in ({"reviewer": {"kind": "lead", "thread": "synthetic-wrong"}}, {"evidence": None},
+                         {"reviewer": {**data["reviewer"], "taskId": "synthetic-fabricated"}},
+                         {"reviewer": {"kind": "worker", "taskId": "synthetic-worker"}}, {"head": SHA_C}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("review", {**data, **mutation})
+        review = self.add("review", data)
+        self.refuses_replay(assignment, {"data": {**assignment["data"], "assignedBy": "manager@synthetic/wrong"}})
+        self.refuses_replay(review, {"data": {**data, "reviewer": {"kind": "lead", "thread": "synthetic-wrong"}}})
+        self.add("lead-assignment", {**assignment["data"], "thread": "synthetic-new-lead"})
+        self.assertIn(review, self.load()["events"])
+        with self.assertRaises(ValueError):
+            self.add("review", data)
+        for author in ("lead:synthetic-new-lead", "task:synthetic-wrong"):
+            with self.assertRaises(ValueError):
+                self.add("finding-disposition", {**self.payloads["finding-disposition"], "reviewRef": review["seq"],
+                                                 "disposition": "withdrawn", "by": author})
+        self.add("finding-disposition", {**self.payloads["finding-disposition"], "reviewRef": review["seq"],
+                                         "disposition": "withdrawn", "by": "lead:" + data["reviewer"]["thread"]})
+        for source in ("feature-lead", "worker"):
+            check = self.add("check", {**self.payloads["check"], "source": source})
+            self.assertEqual(check["data"]["source"], source)
+        # Actual entrypoint accepts the new current lead, preserving the old review.
+        data["reviewer"]["thread"] = "synthetic-new-lead"
+        file = self.temp / "synthetic-data.json"
+        file.write_bytes(canonical_json(data))
+        args = ("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--writer", MANAGER_WRITER,
+                "--kind", "review", "--file", str(file))
+        result = self.command(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["data"], data)
+        self.assertNotIn("verified", self.load())
+
+    def test_actual_native_reviewer_history_and_missing_completion_refusal(self):
+        import json
+        checkout, _, head = OfflineRecordStore.git_fixture(self)
+        self.worker_result()
+        task = "synthetic-cli-reviewer"
+        intent = {**self.payloads["dispatch-intent"], "role": "reviewer", "clientRequestId": "synthetic-cli-request",
+                  "startCommit": SHA_B, "dispatchingCheckout": str(checkout), "provisionedCommit": head}
+        confirmed = {**self.payloads["dispatch-confirmed"], "clientRequestId": intent["clientRequestId"],
+                     "taskId": task, "childThread": "synthetic-cli-review-thread"}
+        review = {**self.payloads["review"], "reviewer": {"kind": "task", "taskId": task}}
+        file = self.temp / "synthetic-cli-payload.json"
+        def append(kind, data, expected=0):
+            file.write_bytes(canonical_json(data))
+            result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--kind", kind,
+                                  "--writer", MANAGER_WRITER, "--file", str(file))
+            self.assertEqual(result.returncode, expected, result.stderr)
+            if expected == 0:
+                return json.loads(result.stdout)
+            self.assertEqual(result.stdout, "")
+        append("dispatch-intent", intent)
+        append("review", review, 2)
+        append("dispatch-confirmed", confirmed)
+        append("review", review, 2)
+        append("result", {**self.payloads["result"], "taskId": task})
+        event = append("review", review)
+        self.assertEqual(event["data"]["reviewer"], {"kind": "task", "taskId": task})
+        self.assertEqual(self.load()["events"][-1], event)

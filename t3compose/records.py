@@ -1,7 +1,9 @@
-"""Durable immutable records and validated history (RC-1b, part 2 of 3)."""
+"""Durable records, validated history, prefix checkpoints and conservative recovery."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
+import errno
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -11,7 +13,6 @@ from urllib.parse import urlsplit
 
 from . import cli, jsonio, process, schema
 
-DEFERRED = frozenset({"review", "finding-disposition", "lead-assignment", "restart", "handoff", "writer-transfer"})
 SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MAX_RECORD_BYTES = 1024 * 1024
 
@@ -119,12 +120,44 @@ def read_file(fd, name):
         os.close(handle)
 
 
+def checkpoint(work, events, through_seq=None):
+    count = len(events) if through_seq is None else through_seq
+    require(type(count) is int and 0 <= count <= len(events), "invalid checkpoint sequence")
+    payload = {"work": work, "events": events[:count]}
+    return {"lastSeq": count, "digest": "sha256:" + hashlib.sha256(jsonio.canonical_json(payload)).hexdigest()}
+
+
+def preserved(data):
+    native, artifacts = data["t3Facts"], data["gitFacts"]
+    require(data["outcome"] == "stopped-and-preserved" and native.get("state") == "stopped"
+            and native.get("childrenReconciled") is True and artifacts.get("commitsPreserved") is True
+            and artifacts.get("uncommittedPreserved") is True, "preservation evidence required")
+    for facts, key in ((native, "evidence"), (artifacts, "evidence"), (artifacts, "worktreePath")):
+        require(isinstance(facts.get(key), str) and facts[key].strip(), "preservation evidence required")
+
+
+def concrete(value):
+    if isinstance(value, dict):
+        return bool(value) and "unknown" not in value and all(concrete(v) for v in value.values())
+    if isinstance(value, list):
+        return bool(value) and all(concrete(v) for v in value)
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+
+def review_author(review):
+    actor = review["reviewer"]
+    return actor["kind"] + ":" + actor["taskId" if actor["kind"] == "task" else "thread"]
+
+
 def history(work, events):
     schema.validate_work(work)
     effective = dict(work)
     intents, confirmations, tasks, results, cleared, operations = {}, {}, {}, {}, set(), set()
     prior_worker = None
     latest_result = None
+    lead, tenure, restarted = None, 0, set()
+    manager = "manager@" + work["repository"]
+    lead_writer = "lead:" + work["workId"] + "@" + work["repository"]
 
     def reference(seq, *kinds):
         require(type(seq) is int and 1 <= seq <= len(seen), "missing history reference")
@@ -136,10 +169,78 @@ def history(work, events):
     for event in events:
         require(isinstance(event, dict), "invalid event object")
         kind, data = event.get("kind"), event.get("data")
-        require(kind not in DEFERRED, "transition requires RC-1c")
         schema.validate_event(event)
-        require(event["seq"] == len(seen) + 1 and event["writer"] == work["writer"])
-        if kind == "dispatch-intent":
+        require(event["seq"] == len(seen) + 1 and event["writer"] == effective["writer"])
+        if kind in {"handoff", "restart", "writer-transfer"}:
+            saved = data["checkpoint"]
+            require(saved == checkpoint(work, seen, saved["lastSeq"]), "checkpoint digest mismatch")
+            if kind == "restart" and data["phase"] == "after":
+                before = reference(data["beforeRef"], "restart")
+                require(before["phase"] == "before" and before["checkpoint"] == saved
+                        and data["beforeRef"] not in restarted, "invalid restart reference")
+                restarted.add(data["beforeRef"])
+            else:
+                require(saved["lastSeq"] == len(seen), "checkpoint must cover pre-event prefix")
+            if kind == "handoff":
+                require(data["pointers"]["repository"] == work["repository"], "handoff repository mismatch")
+        if kind == "writer-transfer":
+            proof = reference(data["reconciliationRef"], "reconciliation")
+            preserved(proof)
+            require(data["from"] == effective["writer"] and data["to"] in {manager, lead_writer}
+                    and (data["to"] != lead_writer or lead is not None), "invalid writer transfer")
+            require(data["reconciliationRef"] > tenure and proof["item"] ==
+                    {"kind": "takeover", "ref": data["from"]} and
+                    proof["t3Facts"].get("writer") == data["from"], "writer reconciliation mismatch")
+            require(set(intents) <= cleared and not any(e["kind"] == "dispatch-intent"
+                    for e in seen[data["reconciliationRef"]:]), "writer children unresolved")
+            require(not any(e["kind"] == "reconciliation" and e["data"]["item"] == proof["item"]
+                            for e in seen[data["reconciliationRef"]:]), "writer reconciliation superseded")
+            if data["from"] == lead_writer and lead is not None:
+                require(proof["t3Facts"].get("thread") == lead, "lead reconciliation mismatch")
+            effective["writer"], tenure = data["to"], event["seq"]
+        elif kind == "lead-assignment":
+            require(event["writer"] == manager and data["assignedBy"] == manager, "manager ownership required")
+            lead = data["thread"]
+        elif kind == "review":
+            require(data["base"] == work["reviewBase"] and data["head"] in
+                    {work["reviewBase"], *(r["resultCommit"] for t, r in results.items()
+                     if intents[tasks[t]]["role"] == "worker")}, "review work provenance mismatch")
+            if data["reviewer"]["kind"] == "lead":
+                require(data["reviewer"]["thread"] == lead, "review requires current lead")
+            else:
+                task = data["reviewer"]["taskId"]
+                require(task in results, "review requires completed native result")
+                intent = intents[tasks[task]]
+                require(intent["role"] == "reviewer" and intent["reviewBase"] == data["base"]
+                        and intent["startCommit"] == data["head"] == results[task]["resultCommit"],
+                        "review native provenance mismatch")
+        elif kind == "finding-disposition":
+            review = reference(data["reviewRef"], "review")
+            findings = [f for f in review["findings"] if f["id"] == data["findingId"]]
+            require(findings and concrete(data["evidence"]), "finding or evidence missing")
+            disposition = data["disposition"]
+            if disposition == "withdrawn":
+                require(data["by"] == review_author(review), "withdrawal requires review author")
+            elif disposition == "declined":
+                require(findings[0]["severity"] == "minor", "only minor findings may be declined")
+            elif disposition in {"owner-decided", "rejected-by-second-review"}:
+                evidence = data["evidence"]
+                require(isinstance(evidence, dict), "disposition reference required")
+                if disposition == "owner-decided":
+                    decision = reference(evidence.get("decisionRef"), "decision")
+                    require(isinstance(decision["answer"], str), "owner decision unresolved")
+                else:
+                    other = reference(evidence.get("reviewRef"), "review")
+                    require(evidence["reviewRef"] > data["reviewRef"] and other["reviewer"]["kind"] == "task"
+                            and other["reviewer"] != review["reviewer"] and
+                            (other["base"], other["head"]) == (review["base"], review["head"]),
+                            "independent second review required")
+        elif kind == "reconciliation" and data["item"]["kind"] == "takeover":
+            if data["outcome"] == "stopped-and-preserved":
+                preserved(data)
+                require(data["item"]["ref"] == effective["writer"] == data["t3Facts"].get("writer"),
+                        "writer reconciliation mismatch")
+        elif kind == "dispatch-intent":
             request = data["clientRequestId"]
             require(request not in intents, "duplicate dispatch request")
             require(data["reviewBase"] == work["reviewBase"], "dispatch review base mismatch")
@@ -283,11 +384,10 @@ def list_work(local_dir, repo):
 
 @boundary
 def append_event(local_dir, repo, work_id, kind, data, *, writer, checkout=None):
-    require(kind not in DEFERRED, "transition requires RC-1c")
     schema.validate_event_data(kind, data)
     identity, path = location(local_dir, repo, work_id)
     loaded = read_work(path, identity, work_id)
-    require(writer == loaded["work"]["writer"], "writer identity mismatch")
+    require(writer == loaded["effectiveWork"]["writer"], "writer identity mismatch")
     require(checkout is None or kind == "dispatch-intent", "checkout requires dispatch intent")
     if kind == "dispatch-intent":
         for old in loaded["events"]:
@@ -317,12 +417,156 @@ def record_routing_input(local_dir, repo, work_id, *, task, context, policy_dige
     return {"inputRef": event["seq"], "inputDigest": digest, "policyDigest": policy_digest}
 
 
+@boundary
+def snapshot(local_dir, repo, work_id, *, through_seq=None):
+    loaded = load_work(local_dir, repo, work_id)
+    return checkpoint(loaded["work"], loaded["events"], through_seq)
+
+
+def uncertain_items(events):
+    items, tasks = {}, {}
+    for event in events:
+        kind, data = event["kind"], event["data"]
+        if kind in {"dispatch-intent", "op-intent"}:
+            category = "dispatch" if kind == "dispatch-intent" else "operation"
+            key = data["clientRequestId"] if category == "dispatch" else data["opId"]
+            items[category, key] = {"kind": category, "ref": event["seq"], "intent": event,
+                                    "confirmation": None, "observations": []}
+        elif kind == "dispatch-confirmed":
+            key = data["clientRequestId"]
+            tasks[data["taskId"]] = key
+            items["dispatch", key]["confirmation"] = event
+        elif kind == "result":
+            items.pop(("dispatch", tasks[data["taskId"]]), None)
+        elif kind == "op-result":
+            key = ("operation", data["opId"])
+            summary = data.get("statusSummary") or {}
+            if data["outcome"] != "unknown" and not (summary.get("childStarted") and summary.get("childStatus") is None):
+                items.pop(key, None)
+            else:
+                # A later uncertain observation must not disappear behind an earlier result.
+                intent = events[data["intentRef"] - 1]
+                item = items.setdefault(key, {"kind": "operation", "ref": intent["seq"], "intent": intent,
+                                               "confirmation": None, "observations": []})
+                item["observations"].append(event)
+        elif kind == "reconciliation" and data["item"]["kind"] in {"dispatch", "operation"}:
+            category, ref = data["item"]["kind"], data["item"]["ref"]
+            for key, item in list(items.items()):
+                if key[0] == category and ref in (key[1], item["ref"]):
+                    item["observations"].append(event)
+                    if category == "dispatch" and data["outcome"] == "stopped-and-preserved":
+                        del items[key]
+    return list(items.values())
+
+
+def temporary_info(info):
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink in {1, 2})
+
+
+def dead_pid(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError as error:
+        return error.errno == errno.ESRCH
+    except (OverflowError, ValueError):
+        pass
+    return False
+
+
+def scan_temporaries(fd, prefix, repair):
+    entries = []
+    for name in sorted(os.listdir(fd)):
+        match = jsonio.TEMP_NAME.fullmatch(name)
+        if not match:
+            continue
+        entry = {"path": prefix + name, "state": "retained"}
+        handle = None
+        unlinked = False
+        try:
+            initial = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if temporary_info(initial) and dead_pid(int(match[1])):
+                handle = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=fd)
+                info = os.fstat(handle)
+                if temporary_info(info) and (info.st_dev, info.st_ino) == (initial.st_dev, initial.st_ino):
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    final = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if (final.st_dev, final.st_ino) == (info.st_dev, info.st_ino) and temporary_info(final) and dead_pid(int(match[1])):
+                        entry["state"] = "orphan"
+                        if repair:
+                            os.unlink(name, dir_fd=fd)
+                            unlinked = True
+                            os.fsync(fd)
+                            entry["state"] = "removed"
+        except FileNotFoundError:
+            if not unlinked:
+                continue  # Another cooperative writer/repair completed its cleanup.
+            entry["state"] = "error"
+        except (PermissionError, BlockingIOError):
+            if entry["state"] == "orphan":
+                entry["state"] = "error"
+        except OSError:
+            entry["state"] = "error"
+        finally:
+            if handle is not None:
+                os.close(handle)
+        entries.append(entry)
+    return entries
+
+
+@boundary
+def reconcile(local_dir, repo, work_id=None, *, repair=False):
+    identity, parent = location(local_dir, repo)
+    if work_id is not None:
+        location(local_dir, identity, work_id)  # Validate before building a report/path.
+        names = [work_id]
+    else:
+        try:
+            with directory(parent) as fd:
+                names = sorted(os.listdir(fd))
+        except FileNotFoundError:
+            return {"works": [], "damaged": []}
+    works, damaged = [], []
+    for name in names:
+        report = {"workId": name if SEGMENT.fullmatch(name) else None, "uncertain": [], "temporaries": []}
+        invalid = False
+        try:
+            loaded = load_work(local_dir, identity, name)
+            report["uncertain"] = uncertain_items(loaded["events"])
+        except ValueError:
+            invalid = True
+        try:
+            require(report["workId"] is not None, "unsafe work directory")
+            with directory(parent / name) as fd:
+                report["temporaries"].extend(scan_temporaries(fd, "", repair))
+                try:
+                    events_fd = os.open("events", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                except FileNotFoundError:
+                    pass  # Partial creation: scan the root without adopting the work.
+                else:
+                    try:
+                        report["temporaries"].extend(scan_temporaries(events_fd, "events/", repair))
+                    finally:
+                        os.close(events_fd)
+        except (OSError, ValueError):
+            invalid = True
+        if invalid or any(t["state"] == "error" for t in report["temporaries"]):
+            damaged.append({"workId": report["workId"], "error": "invalid or unsupported work records"})
+        works.append(report)
+    return {"works": works, "damaged": damaged}
+
+
 def command(args):
     try:
         common = (args.local_dir, args.repo)
         action = args.record_action
         if action == "list":
             result = list_work(*common)
+            return cli.Outcome(result, 2 if result["damaged"] else 0)
+        if action == "snapshot":
+            return snapshot(*common, args.work, through_seq=args.through_seq)
+        if action in {"reconcile", "repair"}:
+            result = reconcile(*common, args.work, repair=action == "repair")
             return cli.Outcome(result, 2 if result["damaged"] else 0)
         if action == "show":
             return load_work(*common, args.work)
@@ -337,11 +581,14 @@ def command(args):
 
 
 def register(registry):
-    for group, action in (("work", "new"), ("work", "show"), ("work", "list"), ("event", "add")):
+    for group, action in (("work", "new"), ("work", "show"), ("work", "list"),
+                          ("work", "snapshot"), ("work", "reconcile"), ("work", "repair"), ("event", "add")):
         parser = registry.group(group).add_parser(action)
         parser.add_argument("--repo", required=True)
         if action != "list":
-            parser.add_argument("--work", required=True)
+            parser.add_argument("--work", required=action not in {"reconcile", "repair"})
+        if action == "snapshot":
+            parser.add_argument("--through-seq", type=int)
         if action in {"new", "add"}:
             parser.add_argument("--file", required=True)
             parser.add_argument("--writer", required=True)
