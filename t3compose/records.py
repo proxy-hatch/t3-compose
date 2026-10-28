@@ -42,9 +42,22 @@ def git(checkout, *arguments):
                        capture_output=True, text=True).stdout.strip()
 
 
+def canonical_identity(raw):
+    parts = raw.split("/")
+    require(all(SEGMENT.fullmatch(p) for p in parts), "invalid repository identity")
+    require((len(parts) == 2 and parts[0] == "synthetic") or
+            (len(parts) == 3 and parts[0] != "synthetic" and
+             ("." in parts[0] or parts[0] == "localhost")), "invalid repository identity")
+    return "/".join([parts[0].lower(), *parts[1:]])
+
+
 @boundary
 def normalize_repository(repo):
     raw = os.fspath(repo)
+    try:
+        return canonical_identity(raw)
+    except RecordError:
+        pass  # Canonical identities take precedence over ambiguous relative paths.
     if Path(raw).is_dir():
         raw = git(Path(raw).resolve(), "config", "--get", "remote.origin.url")
     if "://" in raw:
@@ -52,17 +65,12 @@ def normalize_repository(repo):
         require(url.scheme in {"https", "ssh"} and url.hostname and not url.query
                 and not url.fragment and url.password is None and url.port is None,
                 "invalid repository identity")
-        raw = url.hostname.lower() + "/" + url.path.removeprefix("/")
+        raw = url.hostname.lower() + "/" + url.path.removeprefix("/").removesuffix(".git")
     elif re.fullmatch(r"[^/@:]+@[^/:]+:.+", raw):
         host, path = raw.split("@", 1)[1].split(":", 1)
         raw = host.lower() + "/" + path
-    raw = raw.removesuffix(".git")
-    parts = raw.split("/")
-    require(all(SEGMENT.fullmatch(p) for p in parts), "invalid repository identity")
-    require((len(parts) == 2 and parts[0] == "synthetic") or
-            (len(parts) == 3 and parts[0] != "synthetic" and
-             ("." in parts[0] or parts[0] == "localhost")), "invalid repository identity")
-    return "/".join([parts[0].lower(), *parts[1:]])
+        raw = raw.removesuffix(".git")
+    return canonical_identity(raw)
 
 
 @contextmanager
@@ -76,9 +84,9 @@ def directory(path, *, create=False):
             if create:
                 try:
                     os.mkdir(part, 0o700, dir_fd=fd)
-                    os.fsync(fd)
                 except FileExistsError:
                     pass
+                os.fsync(fd)  # EEXIST may follow another creator's failed sync.
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child

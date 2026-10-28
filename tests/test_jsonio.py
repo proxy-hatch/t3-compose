@@ -113,6 +113,11 @@ class OfflineAtomicJSON(OfflineTestCase):
         for method in (jsonio.atomic_create, jsonio.atomic_replace):
             path.unlink(missing_ok=True)
             order, real_sync, real_link, real_replace = [], os.fsync, os.link, os.replace
+            real_lock = fcntl.flock
+            def lock(fd, flags):
+                if isinstance(fd, int) and flags == fcntl.LOCK_EX:
+                    self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o600)
+                return real_lock(fd, flags)
             def sync(fd):
                 order.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
                 return real_sync(fd)
@@ -126,9 +131,13 @@ class OfflineAtomicJSON(OfflineTestCase):
                         fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 order.append("publish")
                 return (real_link if method == jsonio.atomic_create else real_replace)(src, dst, **kw)
-            with patch.object(os, "fsync", sync), patch.object(os, "link", publish), \
-                    patch.object(os, "replace", publish):
-                method(path, {"z": "é", "a": 1})
+            previous = os.umask(0o277)
+            try:
+                with patch.object(os, "fsync", sync), patch.object(os, "link", publish), \
+                        patch.object(os, "replace", publish), patch.object(fcntl, "flock", lock):
+                    method(path, {"z": "é", "a": 1})
+            finally:
+                self.assertEqual(os.umask(previous), 0o277)
             self.assertEqual(order, ["file", "publish", "directory", "directory"])
             self.assertEqual(path.read_bytes(), b'{"a":1,"z":"\xc3\xa9"}')
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
@@ -163,8 +172,12 @@ class OfflineAtomicJSON(OfflineTestCase):
                         if (step == "open" and str(args[0]).startswith(".t3c-tmp-")) or (step != "open" and calls == which):
                             raise OSError("synthetic injected failure")
                         return original(*args, **kwargs)
-                    with patch.object(os, symbol, fail), self.assertRaises(OSError):
-                        (jsonio.atomic_create if exclusive else jsonio.atomic_replace)(target, {"new": True})
+                    previous = os.umask(0o277)
+                    try:
+                        with patch.object(os, symbol, fail), self.assertRaises(OSError):
+                            (jsonio.atomic_create if exclusive else jsonio.atomic_replace)(target, {"new": True})
+                    finally:
+                        self.assertEqual(os.umask(previous), 0o277)
                     if target.exists():
                         self.assertIn(target.read_bytes(), (b'{"old":true}', b'{"new":true}'))
                     elif not exclusive:

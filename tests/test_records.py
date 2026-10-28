@@ -492,6 +492,39 @@ class OfflineRecordStore(OfflineTestCase):
         with self.assertRaises(ValueError):
             self.add("next-action", writer=LEAD_WRITER)
 
+    def test_failed_ancestor_sync_is_not_skipped_on_retry(self):
+        import os
+        local, parent = self.temp / "synthetic-retry-local", self.temp.stat()
+        original, attempts = os.fsync, []
+        def sync(fd):
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) == (parent.st_dev, parent.st_ino):
+                attempts.append(fd)
+                raise OSError("synthetic parent sync failure")
+            return original(fd)
+        with patch.object(os, "fsync", sync):
+            for count in (1, 2):
+                with self.assertRaises(ValueError):
+                    self.r.create_work(local, REPO_ID, "WORK-1", self.work, writer=MANAGER_WRITER)
+                self.assertEqual(len(attempts), count)
+        self.assertEqual(self.r.create_work(local, REPO_ID, "WORK-1", self.work, writer=MANAGER_WRITER)["work"], self.work)
+
+    def test_canonical_git_suffix_identities_round_trip(self):
+        import json
+        for repo in ("https://example.invalid/synthetic-owner/synthetic-repo.git.git", "synthetic/name.git"):
+            identity = self.r.normalize_repository(repo)
+            Path(identity).mkdir(parents=True)
+            self.assertEqual(self.r.normalize_repository(identity), identity)
+            writer = "manager@" + identity
+            work = {**self.work, "repository": identity, "writer": writer}
+            self.r.create_work(self.local, repo, "WORK-1", work, writer=writer)
+            self.assertEqual(self.r.load_work(self.local, identity, "WORK-1")["work"], work)
+            self.assertEqual(self.r.list_work(self.local, repo), {"works": [work], "damaged": []})
+            for action, extra in (("show", ("--work", "WORK-1")), ("list", ())):
+                result = self.command("work", action, "--repo", identity, *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(work, [json.loads(result.stdout)["work"]] if action == "show" else json.loads(result.stdout)["works"])
+
     def test_corruption_isolation_full_history_and_partial_creation(self):
         import json
         event = self.add("next-action")
@@ -852,14 +885,21 @@ except ValueError:
         checkout, _, head = self.git_fixture()
         intent = {**self.payloads["dispatch-intent"], "dispatchingCheckout": str(checkout), "provisionedCommit": head}
         data_file = self.temp / "synthetic-dispatch.json"
-        def add(kind, data, expected):
+        def add(kind, data, expected, extra=()):
             data_file.write_bytes(canonical_json(data))
             result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--writer", MANAGER_WRITER,
-                                  "--kind", kind, "--file", str(data_file))
+                                  "--kind", kind, "--file", str(data_file), *extra)
             self.assertEqual(result.returncode, expected, result.stderr)
             return json.loads(result.stdout) if expected == 0 else None
         first = add("dispatch-intent", intent, 0)
         self.assertEqual(add("dispatch-intent", intent, 0), first)
+        from t3compose import process
+        for target in (checkout, self.temp / "synthetic-missing-checkout"):
+            self.assertEqual(add("dispatch-intent", intent, 0, ("--checkout", str(target))), first)
+        process.run(["git", "-C", str(checkout), "update-ref", "HEAD", head + "^"], check=True, capture_output=True)
+        self.assertEqual(add("dispatch-intent", intent, 0, ("--checkout", str(checkout))), first)
+        add("dispatch-intent", {**intent, "clientRequestId": "synthetic-stale", "round": 2}, 2)
+        process.run(["git", "-C", str(checkout), "update-ref", "HEAD", head], check=True, capture_output=True)
         second = {**intent, "clientRequestId": "synthetic-second", "round": 2}
         add("dispatch-intent", second, 2)
         add("dispatch-confirmed", self.payloads["dispatch-confirmed"], 0)

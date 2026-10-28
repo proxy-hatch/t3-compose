@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
+import threading
 import uuid
 
 MAX_INT_DIGITS = 4300
@@ -82,6 +83,7 @@ def read_json_with_digest(path, max_bytes=16384):
 # Reserved names and inode locks are shared with records recovery (RC-1c).
 # A lock alone cannot prove abandonment during the create-before-lock window.
 TEMP_NAME = re.compile(r"\.t3c-tmp-([1-9][0-9]*)-([0-9a-f]{32})\.tmp")
+_TEMP_CREATION_LOCK = threading.Lock()
 
 
 def atomic_replace(path, value, *, dir_fd=None):
@@ -105,8 +107,13 @@ def _atomic_write(path, value, dir_fd, *, exclusive):
     temp = ".t3c-tmp-{}-{}.tmp".format(os.getpid(), uuid.uuid4().hex)
     fd = None
     try:
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=dir_fd)
+        with _TEMP_CREATION_LOCK:
+            previous_mask = os.umask(0o077)
+            try:
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=dir_fd)
+            finally:
+                os.umask(previous_mask)
         fcntl.flock(fd, fcntl.LOCK_EX)
         os.fchmod(fd, 0o600)
         remaining = memoryview(encoded)

@@ -182,7 +182,8 @@ helper temporaries are ignored, never removed by b. Work list isolates damaged
 work. Each path component below the selected state root is opened without
 following symlinks; files must be regular, private, owned by the current user.
 A new work directory is reserved exclusively; its events directory is durable
-before `work.json` is published. Incomplete creation lacks usable metadata and
+before `work.json` is published. Creation also syncs reused ancestors, since
+a previous creator may have failed before syncing them. Incomplete creation lacks usable metadata and
 cannot be silently adopted by another create. No index file exists.
 
 History rules:
@@ -233,7 +234,9 @@ then temporary cleanup and another directory fsync. An error after publication
 may leave the complete new file; callers must inspect before retrying.
 
 Reserved temporary names are `.t3c-tmp-<positive PID>-<32 lowercase hex>.tmp`.
-The creator holds an exclusive advisory `flock` on the inode through writing,
+Creation briefly serializes a private umask override and restores the prior
+mask even if open fails, so mode is 0600 from first visibility. The creator
+holds an exclusive advisory `flock` on the inode through writing,
 publication and cleanup. Future c repair must require this exact name, regular
 file, current UID, mode 0600, link count 1 or 2, proof the named PID is dead
 (`kill(pid, 0)` yields ESRCH), AND a nonblocking exclusive inode lock, then

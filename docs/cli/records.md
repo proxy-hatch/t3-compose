@@ -5,7 +5,9 @@ Use the [common invocation and global options](../cli.md). All commands use
 `--repo` means a normalized identity (`host/owner/name` or `synthetic/name`),
 an HTTPS/SSH origin URL, or an existing checkout path whose origin is read
 locally. HTTPS and SSH origins normalize to the same identity; host is lowercase.
-No network operation is performed. No state is written into the checkout.
+Canonical identity syntax takes precedence over an ambiguous relative checkout
+path; use `./` or an absolute checkout path to disambiguate. No network operation
+is performed. No state is written into the checkout.
 
 | Command | Required options | Optional options | Exit 0 JSON |
 |---|---|---|---|
@@ -33,7 +35,9 @@ Adding a valid supported event succeeds; malformed payload, incorrect writer,
 bad history reference, duplicate live writer or exclusive sequence collision
 exits 2. Collision never retries at a later sequence. An identical
 `clientRequestId`/brief digest/full payload reuses the old intent without a new
-event; conflicting reuse exits 2. With an intent, the dispatching checkout HEAD
+event; conflicting reuse exits 2. Exact retries ignore `--checkout` and do not
+recheck HEAD, path or start-object existence, even if the checkout changed or is
+missing. For a new intent, the dispatching checkout HEAD
 must equal `provisionedCommit`. `--checkout` additionally requires that exact
 checkout path and an existing `startCommit` Git commit object. Using `--checkout`
 for any other kind exits 2. Git reads use argument lists through `process.run`.
