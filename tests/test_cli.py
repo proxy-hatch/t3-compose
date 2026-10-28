@@ -25,6 +25,50 @@ def _synthetic_version_info(major, minor, micro, releaselevel, serial=0):
 
 
 class OfflineCLI(OfflineTestCase):
+    @contextlib.contextmanager
+    def synthetic_modules(self):
+        import importlib
+        import t3compose
+        from t3compose.cli import MODULES
+        missing = object()
+        saved = {name: getattr(t3compose, name, missing) for name in MODULES}
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            for name in MODULES:
+                sys.modules.pop("t3compose." + name, None)
+                t3compose.__dict__.pop(name, None)
+            importlib.invalidate_caches()
+            try:
+                yield
+            finally:
+                for name, value in saved.items():
+                    t3compose.__dict__.pop(name, None)
+                    if value is not missing:
+                        setattr(t3compose, name, value)
+                importlib.invalidate_caches()
+
+    def test_synthetic_modules_restore_all_cached_modules_after_failure(self):
+        import t3compose
+        from t3compose.cli import MODULES
+        with contextlib.ExitStack() as stack:
+            cached = {"t3compose." + name: SimpleNamespace(name=name) for name in MODULES}
+            stack.enter_context(patch.dict(sys.modules, cached))
+            for name in MODULES:
+                stack.enter_context(patch.object(t3compose, name, cached["t3compose." + name], create=True))
+            for fails in (False, True):
+                try:
+                    with self.synthetic_modules():
+                        for name in MODULES:
+                            self.assertNotIn("t3compose." + name, sys.modules)
+                            self.assertNotIn(name, t3compose.__dict__)
+                        if fails:
+                            raise RuntimeError("synthetic fixture failure")
+                except RuntimeError:
+                    if not fails:
+                        raise
+                for name in MODULES:
+                    self.assertIs(sys.modules["t3compose." + name], cached["t3compose." + name])
+                    self.assertIs(getattr(t3compose, name), cached["t3compose." + name])
+
     def run_cli(self, *args, flags=("-I", "-S", "-B"), entry=None):
         target = str(entry or ROOT / "bin/t3c")
         return subprocess.run([sys.executable, *flags, str(ROOT / "tests/support.py"), target, *args],
@@ -131,7 +175,7 @@ class OfflineCLI(OfflineTestCase):
         import t3compose
         from t3compose.cli import main
         # Use real imports to distinguish an absent plugin from a broken dependency.
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             def invoke(args):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -161,7 +205,7 @@ class OfflineCLI(OfflineTestCase):
     def test_registry_system_exit_at_import(self):
         import t3compose
         from t3compose.cli import main
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             (self.temp / "evidence.py").write_text("import sys; sys.exit(0)\n")
             sys.modules.pop("t3compose.evidence", None)
             out, err = io.StringIO(), io.StringIO()
@@ -173,7 +217,7 @@ class OfflineCLI(OfflineTestCase):
     def test_registry_system_exit_in_register(self):
         import t3compose
         from t3compose.cli import main
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             (self.temp / "evidence.py").write_text("import sys\ndef register(registry):\n    sys.exit(0)\n")
             sys.modules.pop("t3compose.evidence", None)
             out, err = io.StringIO(), io.StringIO()
@@ -195,7 +239,7 @@ class OfflineCLI(OfflineTestCase):
             "        return {'local': str(args.local_dir)}\n"
             "    p.set_defaults(handler=run)\n")
         self.assertEqual({int(code) for code in ExitCode}, {0, 1, 2, 3, 4, 5, 75})
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             for code in (0, 1, 2, 3, 4, 5, 75):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -237,7 +281,7 @@ class OfflineCLI(OfflineTestCase):
                     return Outcome({"verified": False, "gaps": ["missing-review"]}, args.code)
                 p.set_defaults(handler=check)
             """))
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             for code in (0, 1, 2, 3, 4, 5, 75):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -278,7 +322,7 @@ class OfflineCLI(OfflineTestCase):
                 p = registry.group("heavy").add_parser("run")
                 p.set_defaults(handler=lambda args: PassThrough(7))
             """))
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             for raw, expected in ((0, 0), (17, 17), (-15, 143)):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -315,7 +359,7 @@ class OfflineCLI(OfflineTestCase):
                     "child_argv": args.child_argv,
                 })
             """))
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             def invoke(args):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -371,7 +415,7 @@ class OfflineCLI(OfflineTestCase):
     def test_no_abbreviations_and_registration_validation_and_command_names(self):
         import t3compose
         from t3compose.cli import CommandError, build_parser, command_names, main
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             self.assertEqual(command_names(), (("version",),))
             parser = build_parser()
             self.assertIs(parser.allow_abbrev, False)
@@ -467,7 +511,7 @@ class OfflineCLI(OfflineTestCase):
         from t3compose.cli import main
         (self.temp / "config.py").write_text(source)
         out, err = io.StringIO(), io.StringIO()
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             sys.modules.pop("t3compose.config", None)
             importlib.invalidate_caches()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -667,7 +711,7 @@ class OfflineCLI(OfflineTestCase):
                 raise KeyError("synthetic-private-sentinel-98765")
             """))
 
-        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+        with self.synthetic_modules():
             def invoke(args):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
