@@ -1,7 +1,12 @@
-"""Offline guard; not a security boundary for arbitrary child programs."""
+"""An allowlist for offline test hygiene, not a security boundary.
+
+Tests that start another program must allow it explicitly. Python children
+run only through the absolute path of this guard's bootstrap.
+"""
 import os
 from pathlib import Path
 import runpy
+import shutil
 import socket
 import subprocess
 import sys
@@ -30,93 +35,113 @@ def refuse(*args, **kwargs):
 
 
 def is_python_interpreter(program):
+    path = Path(os.fsdecode(program))
+    return (path.name.lower().startswith(("python", "pypy")) or
+            path.name.lower() in {"jython", "ipy"} or
+            path == Path(sys.executable).resolve())
+
+
+def resolve_program(program, cwd=None, env=None, search_path=True):
+    """Resolve the file the launch API will execute, including child cwd/PATH."""
     try:
-        prog_path = Path(os.fsdecode(program))
-        base = prog_path.name
-    except Exception:
-        return False
-    if base in ("python", "python3"):
-        return True
-    if base.startswith("python3.") and base[len("python3."):].isdigit():
-        return True
-    try:
-        if prog_path.resolve() == Path(sys.executable).resolve():
-            return True
-    except Exception:
-        pass
-    return False
+        program = os.fsdecode(program)
+        if not program:
+            refuse()
+        directory = Path(os.fsdecode(cwd)).resolve() if cwd is not None else Path.cwd()
+        if search_path and not os.path.dirname(program):
+            path = os.pathsep.join(str(directory / entry) for entry in os.get_exec_path(env))
+            program = shutil.which(program, path=path)
+            if program is None:
+                refuse()
+        return (directory / program).resolve()
+    except (TypeError, ValueError, OSError, RuntimeError):
+        refuse()
 
 
 def is_bootstrap(path_str):
     try:
         p = Path(os.fsdecode(path_str))
-        if p.resolve() == BOOTSTRAP_PATH:
-            return True
-        if not p.is_absolute() and (ROOT / p).resolve() == BOOTSTRAP_PATH:
-            return True
-    except Exception:
-        pass
-    return False
+        return p.is_absolute() and p.resolve() == BOOTSTRAP_PATH
+    except (TypeError, ValueError, OSError, RuntimeError):
+        return False
 
 
-def check_program(args, executable=None, shell=False):
+def check_program(args, allowed_programs, executable=None, shell=False,
+                  cwd=None, env=None, search_path=True):
     if shell or isinstance(args, (str, bytes)) or args is None:
         refuse()
     try:
         argv = [os.fsdecode(arg) for arg in args]
-    except Exception:
+    except (TypeError, ValueError):
         refuse()
     if executable is not None:
         try:
             program = os.fsdecode(executable)
-        except Exception:
+        except (TypeError, ValueError):
             refuse()
     elif argv:
         program = argv[0]
     else:
         refuse()
 
-    if Path(program).name in FORBIDDEN:
+    resolved = resolve_program(program, cwd=cwd, env=env, search_path=search_path)
+    if Path(program).name in FORBIDDEN or resolved.name in FORBIDDEN:
         refuse()
     for arg in argv:
         if Path(arg).name in FORBIDDEN:
             refuse()
 
-    if is_python_interpreter(program):
-        options_and_rest = argv[1:] if (argv and is_python_interpreter(argv[0])) else argv
+    if resolved == Path(sys.executable).resolve():
+        # Python always discards argv[0], even with an explicit executable.
+        options_and_rest = argv[1:]
         idx = 0
         while idx < len(options_and_rest) and options_and_rest[idx] in ALLOWED_PYTHON_OPTIONS:
             idx += 1
-        if idx >= len(options_and_rest):
+        if idx + 1 >= len(options_and_rest) or not is_bootstrap(options_and_rest[idx]):
             refuse()
-        if options_and_rest[idx].startswith("-"):
-            refuse()
-        if not is_bootstrap(options_and_rest[idx]):
-            refuse()
+        return
+    if (Path(program).name == "env" or resolved.name == "env" or
+            is_python_interpreter(program) or is_python_interpreter(resolved) or
+            resolved not in allowed_programs):
+        refuse()
 
 
-def guarded_popen(args, *rest, **kwargs):
+def guarded_popen(allowed_programs, args, *rest, **kwargs):
     executable = kwargs.get("executable")
     if executable is None and len(rest) >= 2:
         executable = rest[1]
     shell = kwargs.get("shell", False)
-    if not shell and len(rest) >= 7:
-        shell = rest[6]
-    check_program(args, executable=executable, shell=shell)
+    if not shell and len(rest) >= 8:
+        shell = rest[7]
+    cwd = kwargs.get("cwd", rest[8] if len(rest) >= 9 else None)
+    env = kwargs.get("env", rest[9] if len(rest) >= 10 else None)
+    check_program(args, allowed_programs, executable=executable, shell=shell, cwd=cwd, env=env)
     return _original_popen(args, *rest, **kwargs)
 
 
-def guarded_posix_spawn(path, argv, *rest, **kwargs):
-    check_program(argv, executable=path, shell=False)
+def guarded_posix_spawn(allowed_programs, path, argv, *rest, **kwargs):
+    # posix_spawn takes a file path; it does not search PATH.
+    check_program(argv, allowed_programs, executable=path, search_path=False)
     return _original_posix_spawn(path, argv, *rest, **kwargs)
 
 
-def guarded_posix_spawnp(path, argv, *rest, **kwargs):
-    check_program(argv, executable=path, shell=False)
+def guarded_posix_spawnp(allowed_programs, path, argv, *rest, **kwargs):
+    # posix_spawnp searches the parent's PATH, not the supplied child environment.
+    check_program(argv, allowed_programs, executable=path)
     return _original_posix_spawnp(path, argv, *rest, **kwargs)
 
 
 def install_guard(enter_context=None):
+    allowed_programs = {resolve_program("git")}
+
+    def allow_program(program):
+        resolved = resolve_program(program)
+        if (Path(os.fsdecode(program)).name in FORBIDDEN | {"env"} or
+                resolved.name in FORBIDDEN | {"env"} or
+                is_python_interpreter(program) or is_python_interpreter(resolved)):
+            refuse()
+        allowed_programs.add(resolved)
+
     def apply_patch(target_or_obj, attr=None, new=None):
         if attr is None:
             p = patch(target_or_obj, new)
@@ -146,18 +171,26 @@ def install_guard(enter_context=None):
             apply_patch(os, name, refuse)
 
     if hasattr(os, "posix_spawn"):
-        apply_patch(os, "posix_spawn", guarded_posix_spawn)
+        apply_patch(os, "posix_spawn", lambda *args, **kwargs:
+                    guarded_posix_spawn(allowed_programs, *args, **kwargs))
     if hasattr(os, "posix_spawnp"):
-        apply_patch(os, "posix_spawnp", guarded_posix_spawnp)
+        apply_patch(os, "posix_spawnp", lambda *args, **kwargs:
+                    guarded_posix_spawnp(allowed_programs, *args, **kwargs))
 
-    apply_patch(subprocess, "Popen", guarded_popen)
+    apply_patch(subprocess, "Popen", lambda *args, **kwargs:
+                guarded_popen(allowed_programs, *args, **kwargs))
+    return allow_program
 
 
 class OfflineTestCase(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.temp = Path(self.enterContextCompat(tempfile.TemporaryDirectory(dir=ROOT)))
-        install_guard(self.enterContextCompat)
+        self._allow_program = install_guard(self.enterContextCompat)
+
+    def allow_program(self, program):
+        """Allow a real program for this test's duration, except launchers and Python."""
+        self._allow_program(program)
 
     def enterContextCompat(self, context):
         """TestCase.enterContext for the supported Python 3.9 interpreter."""

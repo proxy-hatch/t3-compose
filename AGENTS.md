@@ -8,6 +8,8 @@ Every test class derives from the offline guard in `tests/support.py` and is
 named `Offline…`, or `Simulated…` when it injects quota responses. Only the
 Engineering manager runs `live/` checks; offline and simulated tests do not
 count as live passes.
+Tests that start another program must allow it through the guard;
+Python children run only through the guard's bootstrap.
 
 Keep this package separate from rapid-ship. Apply a managed repository's rules
 when assigning work there. Do not copy its product code, backlog or guardrails
