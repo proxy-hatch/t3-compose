@@ -147,6 +147,425 @@ class OfflineCLI(OfflineTestCase):
                     self.assertEqual(out.getvalue(), "")
                     self.assertIn("check refused", err.getvalue())
 
+    def test_outcome_nonzero_structured_data_and_invalid_codes(self):
+        import t3compose
+        from t3compose.cli import CommandError, ExitCode, Outcome, PassThrough, main
+        for bad_code in (True, False, 6, 70, -1, "1", None):
+            with self.subTest(bad_outcome_code=bad_code), self.assertRaises(ValueError):
+                Outcome({"ok": False}, bad_code)
+        for bad_err_code in (0, ExitCode.SUCCESS, True, False, 6, 70, -1, "2", None):
+            with self.subTest(bad_error_code=bad_err_code), self.assertRaises(ValueError):
+                CommandError("public message", bad_err_code)
+        for bad_status in (True, False, 256, -128, -200, "0", None):
+            with self.subTest(bad_passthrough=bad_status), self.assertRaises(ValueError):
+                PassThrough(bad_status)
+        self.assertEqual(PassThrough(0).status, 0)
+        self.assertEqual(PassThrough(19).status, 19)
+        self.assertEqual(PassThrough(-15).status, 143)
+        self.assertEqual(PassThrough(-9).status, 137)
+
+        (self.temp / "evidence.py").write_text(textwrap.dedent("""\
+            import sys
+            from t3compose.cli import ExitCode, Outcome
+            def register(registry):
+                p = registry.group("evidence").add_parser("check")
+                p.add_argument("code", type=int)
+                def check(args):
+                    if args.code == 99:
+                        return Outcome({"bad": float("nan")}, ExitCode.CHECK_FAILED)
+                    print("public warning on stderr", file=sys.stderr)
+                    return Outcome({"verified": False, "gaps": ["missing-review"]}, args.code)
+                p.set_defaults(handler=check)
+            """))
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            for code in (0, 1, 2, 3, 4, 5, 75):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    status = main(["evidence", "check", str(code)])
+                self.assertEqual(status, code)
+                self.assertEqual(json.loads(out.getvalue()),
+                                 {"verified": False, "gaps": ["missing-review"]})
+                self.assertEqual(err.getvalue(), "public warning on stderr\n")
+
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                status = main(["--text", "evidence", "check", "4"])
+            self.assertEqual(status, 4)
+            self.assertEqual(out.getvalue(), 'verified: false\ngaps: ["missing-review"]\n')
+
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                status = main(["evidence", "check", "99"])
+            self.assertEqual(status, 2)
+            self.assertEqual(out.getvalue(), "")
+            self.assertIn("ValueError", err.getvalue())
+
+    def test_passthrough_restricted_to_publish_run(self):
+        import t3compose
+        from t3compose.cli import main
+        (self.temp / "token_run.py").write_text(textwrap.dedent("""\
+            from t3compose.cli import PassThrough
+            def register(registry):
+                p = registry.group("publish").add_parser("run")
+                p.add_argument("status", type=int)
+                p.set_defaults(handler=lambda args: PassThrough(args.status))
+                other = registry.group("publish").add_parser("check")
+                other.set_defaults(handler=lambda args: PassThrough(0))
+            """))
+        (self.temp / "heavy.py").write_text(textwrap.dedent("""\
+            from t3compose.cli import PassThrough
+            def register(registry):
+                p = registry.group("heavy").add_parser("run")
+                p.set_defaults(handler=lambda args: PassThrough(7))
+            """))
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            for raw, expected in ((0, 0), (17, 17), (-15, 143)):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    status = main(["publish", "run", str(raw)])
+                self.assertEqual((status, out.getvalue(), err.getvalue()), (expected, "", ""))
+
+            for bad_cmd in (["publish", "check"], ["heavy", "run"]):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    status = main(bad_cmd)
+                self.assertEqual(status, 2)
+                self.assertEqual(out.getvalue(), "")
+                self.assertNotEqual(err.getvalue(), "")
+
+    def test_global_text_and_local_dir_isolation_from_leaf_options(self):
+        import t3compose
+        from t3compose.cli import main
+        (self.temp / "privacy.py").write_text(textwrap.dedent("""\
+            import argparse
+            def register(registry):
+                p = registry.group("privacy").add_parser("check")
+                p.add_argument("--text", action="append", default=None)
+                p.add_argument("--label", default="default")
+                p.set_defaults(handler=lambda args: {
+                    "leaf_text": args.text,
+                    "label": args.label,
+                    "local": str(args.local_dir),
+                })
+                r = registry.group("publish").add_parser("exec")
+                r.add_argument("--status-file", required=True)
+                r.add_argument("child_argv", nargs=argparse.REMAINDER)
+                r.set_defaults(handler=lambda args: {
+                    "status_file": args.status_file,
+                    "child_argv": args.child_argv,
+                })
+            """))
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            def invoke(args):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    try:
+                        code = main(args)
+                    except SystemExit as exc:
+                        code = exc.code
+                return code, out.getvalue(), err.getvalue()
+
+            # Leaf --text does not enable global text mode.
+            code, out, err = invoke(["privacy", "check", "--text", "title=/tmp/t"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(json.loads(out)["leaf_text"], ["title=/tmp/t"])
+
+            # Leaf default None for --text does not clear global --text.
+            code, out, err = invoke(["--text", "privacy", "check"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(out.startswith("leaf_text: null\n"))
+
+            # Option value equal to "--text" does not switch output or help to text mode.
+            code, out, err = invoke(["privacy", "check", "--label=--text"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(json.loads(out)["label"], "--text")
+
+            code, out, err = invoke(["privacy", "check", "--label=--text", "--help"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertIn("usage: t3c privacy check", json.loads(out)["help"])
+
+            # Leaf "--text" followed by "--help" stays JSON help when root --text was not given.
+            code, out, err = invoke(["privacy", "check", "--text", "title=/tmp/t", "--help"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertIn("usage: t3c privacy check", json.loads(out)["help"])
+
+            # Root --text before command makes subcommand help plain text.
+            code, out, err = invoke(["--text", "version", "--help"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(out.startswith("usage: t3c version"))
+
+            # Global --text after a command that does not declare --text fails as invalid arguments.
+            code, out, err = invoke(["version", "--text"])
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn("invalid arguments for t3c; use --help", err)
+
+            # argparse.REMAINDER retains leading "--" and preserves "--text" in child argv.
+            code, out, err = invoke(["publish", "exec", "--status-file", "/tmp/s",
+                                     "--", "git", "commit", "-m", "--text"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(json.loads(out), {
+                "status_file": "/tmp/s",
+                "child_argv": ["--", "git", "commit", "-m", "--text"],
+            })
+
+    def test_no_abbreviations_and_registration_validation_and_command_names(self):
+        import t3compose
+        from t3compose.cli import CommandError, build_parser, command_names, main
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            self.assertEqual(command_names(), (("version",),))
+            parser = build_parser()
+            self.assertIs(parser.allow_abbrev, False)
+
+            (self.temp / "routing.py").write_text(textwrap.dedent("""\
+                def register(registry):
+                    g = registry.group("route")
+                    g.add_parser("select").set_defaults(handler=lambda args: {})
+                    g.add_parser("input").set_defaults(handler=lambda args: {})
+                """))
+            (self.temp / "jev.py").write_text(textwrap.dedent("""\
+                def register(registry):
+                    g = registry.group("route")
+                    p = g.add_parser("classify")
+                    p.add_argument("--work", required=True)
+                    p.set_defaults(handler=lambda args: {"work": args.work})
+                """))
+            self.assertEqual(command_names(), (
+                ("route", "classify"),
+                ("route", "input"),
+                ("route", "select"),
+                ("version",),
+            ))
+
+            # Abbreviations are rejected at root, group and leaf levels.
+            for bad_args, expected_prog in (
+                (["--tex", "version"], "t3c"),
+                (["--local-di", str(self.temp), "version"], "t3c"),
+                (["route", "classify", "--wor", "W1"], "t3c route classify"),
+            ):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(bad_args)
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertIn("invalid arguments for " + expected_prog + "; use --help", err.getvalue())
+                self.assertNotIn("W1", err.getvalue())
+
+            # Invalid registrations fail deterministically across Python versions.
+            bad_modules = (
+                # Duplicate leaf in shared group across modules
+                "def register(registry):\n"
+                "    registry.group('route').add_parser('select').set_defaults(handler=lambda a: {})\n",
+                # Group colliding with version
+                "def register(registry):\n"
+                "    registry.group('version').add_parser('sub').set_defaults(handler=lambda a: {})\n",
+                # Root leaf colliding with version
+                "def register(registry):\n"
+                "    registry.commands.add_parser('version').set_defaults(handler=lambda a: {})\n",
+                # Root leaf colliding with existing group
+                "def register(registry):\n"
+                "    registry.commands.add_parser('route').set_defaults(handler=lambda a: {})\n",
+                # Group colliding with root leaf
+                "def register(registry):\n"
+                "    registry.commands.add_parser('solo').set_defaults(handler=lambda a: {})\n"
+                "    registry.group('solo').add_parser('sub').set_defaults(handler=lambda a: {})\n",
+                # Missing handler on leaf
+                "def register(registry):\n"
+                "    registry.group('route').add_parser('broken')\n",
+                # Noncallable handler on leaf
+                "def register(registry):\n"
+                "    registry.group('route').add_parser('broken').set_defaults(handler='not-callable')\n",
+                # Reserved destination local_dir
+                "def register(registry):\n"
+                "    p = registry.group('route').add_parser('broken')\n"
+                "    p.add_argument('--local-dir')\n"
+                "    p.set_defaults(handler=lambda a: {})\n",
+                # Reserved default local_dir
+                "def register(registry):\n"
+                "    p = registry.group('route').add_parser('broken')\n"
+                "    p.set_defaults(local_dir='/tmp', handler=lambda a: {})\n",
+                # Reserved prefix t3c_ in argument dest
+                "def register(registry):\n"
+                "    p = registry.group('route').add_parser('broken')\n"
+                "    p.add_argument('--t3c-secret')\n"
+                "    p.set_defaults(handler=lambda a: {})\n",
+                # Reserved prefix t3c_ in set_defaults
+                "def register(registry):\n"
+                "    p = registry.group('route').add_parser('broken')\n"
+                "    p.set_defaults(t3c_text=True, handler=lambda a: {})\n",
+            )
+            for idx, source in enumerate(bad_modules):
+                with self.subTest(bad_module_index=idx):
+                    (self.temp / "briefs.py").write_text(source)
+                    sys.modules.pop("t3compose.briefs", None)
+                    with self.assertRaises(CommandError) as ctx:
+                        command_names()
+                    self.assertEqual(ctx.exception.code, 2)
+                    self.assertIn("cannot load command module: briefs", str(ctx.exception))
+
+    def test_helper_info_preserves_git_index_and_version_failure_is_sanitized(self):
+        from t3compose import cli
+        from t3compose.cli import helper_info, main
+
+        repo = self.temp / "scratch-repo"
+        repo.mkdir()
+        git_env = {
+            **os.environ,
+            "GIT_CEILING_DIRECTORIES": str(self.temp),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_AUTHOR_NAME": "Synthetic Tester",
+            "GIT_AUTHOR_EMAIL": "synthetic@example.invalid",
+            "GIT_COMMITTER_NAME": "Synthetic Tester",
+            "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
+        }
+        subprocess.run(["git", "init", str(repo)], check=True, env=git_env,
+                       capture_output=True, text=True)
+        tracked = repo / "tracked.txt"
+        tracked.write_text("clean content\n")
+        subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True,
+                       env=git_env, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True,
+                       env=git_env, capture_output=True, text=True)
+        expected_head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                       check=True, env=git_env,
+                                       capture_output=True, text=True).stdout.strip()
+
+        # Touch tracked file's mtime without changing content so a non-read-only status
+        # would refresh and replace .git/index.
+        index_path = repo / ".git/index"
+        stat_before = index_path.stat()
+        bytes_before = index_path.read_bytes()
+        os.utime(tracked, (stat_before.st_atime + 60, stat_before.st_mtime + 60))
+
+        with patch.object(cli, "ROOT", repo), patch.dict(os.environ, git_env, clear=True):
+            info = helper_info()
+            self.assertEqual(info, {
+                "root": str(repo),
+                "commit": expected_head,
+                "dirty": False,
+                "python": sys.version.split()[0],
+            })
+            stat_after = index_path.stat()
+            self.assertEqual(stat_after.st_ino, stat_before.st_ino)
+            self.assertEqual(stat_after.st_mtime_ns, stat_before.st_mtime_ns)
+            self.assertEqual(index_path.read_bytes(), bytes_before)
+
+            # Untracked file makes dirty True while still not rewriting .git/index.
+            (repo / "untracked.txt").write_text("untracked\n")
+            self.assertIs(helper_info()["dirty"], True)
+            self.assertEqual(index_path.stat().st_ino, stat_before.st_ino)
+
+            # When Git fails inside version/helper_info, main sanitizes the error,
+            # names the command path and exception class, and suppresses stderr/cmd details.
+            not_a_repo = self.temp / "not-a-repo-synthetic-secret"
+            not_a_repo.mkdir()
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(cli, "ROOT", not_a_repo), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["version"])
+            self.assertEqual(code, 2)
+            self.assertEqual(out.getvalue(), "")
+            self.assertEqual(
+                err.getvalue(),
+                "t3c version: command failed (CalledProcessError); check local inputs and helper installation\n",
+            )
+            self.assertNotIn("not-a-repo-synthetic-secret", err.getvalue())
+
+    def test_unexpected_exception_encoding_text_modes_and_local_dir_resolution(self):
+        import t3compose
+        from t3compose.cli import main
+        from t3compose.paths import local_dir
+
+        (self.temp / "config.py").write_text(textwrap.dedent("""\
+            from t3compose.cli import ExitCode, Outcome
+            def register(registry):
+                g = registry.group("sample")
+                g.add_parser("boom").set_defaults(handler=boom)
+                g.add_parser("bad-json").set_defaults(handler=lambda a: {"bad": object()})
+                g.add_parser("bad-surrogate").set_defaults(handler=lambda a: {"s": "\\ud800"})
+                g.add_parser("newlines").set_defaults(handler=lambda a: Outcome({
+                    "note": "line1\\nverified: True",
+                    "nested": {"k": "v\\n2"},
+                    "ok": False,
+                }, ExitCode.CHECK_FAILED))
+                g.add_parser("list-data").set_defaults(handler=lambda a: ["a", "b\\nc", 1])
+                g.add_parser("none-data").set_defaults(handler=lambda a: None)
+                p = g.add_parser("local")
+                p.add_argument("secret_arg", nargs="?", default="unused")
+                p.set_defaults(handler=lambda a: {"local": str(a.local_dir)})
+
+            def boom(args):
+                raise KeyError("synthetic-private-sentinel-98765")
+            """))
+
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            def invoke(args):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = main(args)
+                return code, out.getvalue(), err.getvalue()
+
+            # Unexpected handler exception names declared command path and exception class,
+            # never the exception value or raw argv.
+            code, out, err = invoke(["sample", "boom"])
+            self.assertEqual((code, out), (2, ""))
+            self.assertEqual(
+                err,
+                "t3c sample boom: command failed (KeyError); check local inputs and helper installation\n",
+            )
+            self.assertNotIn("synthetic-private-sentinel-98765", err)
+
+            # Unencodable return value and lone surrogate produce no partial stdout.
+            for leaf, exc_name in (("bad-json", "TypeError"), ("bad-surrogate", "UnicodeEncodeError")):
+                for prefix in ([], ["--text"]):
+                    code, out, err = invoke([*prefix, "sample", leaf])
+                    self.assertEqual((code, out), (2, ""))
+                    self.assertEqual(
+                        err,
+                        f"t3c sample {leaf}: command failed ({exc_name}); "
+                        "check local inputs and helper installation\n",
+                    )
+
+            # Text mode escapes embedded newlines in dictionary values so lines cannot be forged.
+            code, out, err = invoke(["--text", "sample", "newlines"])
+            self.assertEqual((code, err), (1, ""))
+            self.assertEqual(
+                out.splitlines(),
+                [
+                    'note: "line1\\nverified: True"',
+                    'nested: {"k":"v\\n2"}',
+                    "ok: false",
+                ],
+            )
+            self.assertNotIn("verified: True", out.splitlines())
+
+            # Non-dict text mode prints one canonical JSON representation.
+            code, out, err = invoke(["--text", "sample", "list-data"])
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(out, '["a","b\\nc",1]\n')
+
+            # None returns JSON null in both JSON and text modes.
+            for prefix in ([], ["--text"]):
+                code, out, err = invoke([*prefix, "sample", "none-data"])
+                self.assertEqual((code, out, err), (0, "null\n", ""))
+
+            # Relative and symlinked --local-dir overrides resolve through cwd and symlinks.
+            real_local = (self.temp / "real-local").resolve()
+            real_local.mkdir()
+            link_local = self.temp / "link-local"
+            link_local.symlink_to(real_local)
+            subdir = self.temp / "work-cwd"
+            subdir.mkdir()
+
+            old_cwd = Path.cwd() if "Path" in dir() else os.getcwd()
+            try:
+                os.chdir(subdir)
+                code, out, err = invoke(["--local-dir", "../link-local", "sample", "local"])
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(json.loads(out), {"local": str(real_local)})
+            self.assertEqual(local_dir(), ROOT / ".local")
+
 
 class OfflineGuard(OfflineTestCase):
     def assert_launch_refused(self, launch, marker):

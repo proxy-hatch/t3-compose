@@ -1,9 +1,11 @@
 # t3c CLI
 
-This spec describes the helper implemented by HS-1. The only command is
-`version`. Help is also available. The helper uses Python's standard library.
-The [implementation plan](superpowers/plans/2026-10-27-t3-compose-implementation.md#hs-1-helper-skeleton-and-offline-harness)
-defines HS-1's scope. The [testing spec](testing.md) describes its offline guard.
+This spec describes the helper implemented by HS-1. The only built-in command
+is `version`. Help is also available. The helper uses Python's standard
+library. The
+[implementation plan](superpowers/plans/2026-10-27-t3-compose-implementation.md#hs-1-helper-skeleton-and-offline-harness)
+defines HS-1's scope. The [testing spec](testing.md) describes its offline
+guard.
 
 ## Invocation and root
 
@@ -34,85 +36,158 @@ It imports `t3compose.cli.main` and exits with its result. A symlink to the
 entry point uses the target checkout. The caller's working directory does not
 select the checkout.
 
-## Options and help
+## Options, parsing and help
 
-The parser's program name is `t3c`. A command is required. Global options
-precede the command:
+The root parser's program name is `t3c`. A command is required. Every parser
+disables option abbreviation (`allow_abbrev=False`). Global options precede the
+command:
 
-| Option | Default | Effect |
-|---|---|---|
-| `--text` | false | Print successful data as text instead of JSON. |
-| `--local-dir PATH` | `<root>/.local` | Pass a resolved `Path` as `args.local_dir`. This option supports tests. |
-| `-h`, `--help` | not requested | Print help for the selected parser and exit 0. |
+| Option | Destination | Default | Effect |
+|---|---|---|---|
+| `--text` | `t3c_text` | `False` | Print structured output or help as text instead of JSON. |
+| `--local-dir PATH` | `t3c_local_dir` | `<root>/.local` | Resolve an override path and expose the selected directory on `args.local_dir`. |
+| `-h`, `--help` | help action | not requested | Print help for the selected parser and exit 0. |
 
-`--local-dir` does not create a directory or change the helper root. Relative
-overrides resolve from the caller's working directory. Symlinks are resolved.
-`version` accepts this global option but does not use the local directory.
+Global options use reserved destinations so module options cannot collide with
+them:
 
-The root parser and the `version` parser have help. These invocations succeed:
+- `t3c_text` stores the root `--text` flag (`bool`, default `False`).
+- `t3c_local_dir` stores the `--local-dir` `Path` (`t3compose.paths.local_dir()`,
+  or `local_dir(override)` when supplied).
+- `t3c_command` stores the selected root command or group name.
+- `t3c_<group>_command` stores the selected leaf name in group `<group>`.
+- `t3c_path` stores the command-path tuple (`tuple` of strings, such as
+  `("version",)` or `("sample", "run")`).
+- `local_dir` is assigned on the parsed `argparse.Namespace` after parsing
+  from `args.t3c_local_dir`.
+
+Command modules must not register an argument destination or `set_defaults` key
+named `local_dir` or starting with `t3c_`. Registry-owned selector and metadata
+defaults are the only exception. A leaf command may declare its own `--text`
+option (for example with destination `text`) or child-argument destination
+(such as `child_argv`), and leaf defaults cannot overwrite global state.
+
+`--local-dir` does not create a directory or change the helper root. Explicit
+overrides resolve relative to the caller's working directory and resolve
+symlinks (`Path(override).resolve()`). The default `ROOT / ".local"` is
+already absolute because `ROOT` is resolved, without an extra `resolve()` call
+on `.local` itself. Handlers take local state paths only from `args.local_dir`.
+`version` accepts `--local-dir` as a global option but does not read `.local`.
+
+The root parser, group parsers and leaf parsers have help. These invocations
+succeed:
 
 ```sh
 python3 -I -S <root>/bin/t3c --help
 python3 -I -S <root>/bin/t3c version --help
 python3 -I -S <root>/bin/t3c --text --help
+python3 -I -S <root>/bin/t3c --text version --help
 ```
 
 Help normally has the form `{"help":"<argparse help text>"}` on stdout.
-Newlines inside the help string are JSON escapes. Text mode prints the help
-text directly. Help mode is chosen by the presence of the exact token
-`--text` anywhere in the argument list before parsing. This pre-scan also
-sets the mode of subparsers. It does not make global options valid after a
-command in ordinary command execution. Modules load before arguments are
-parsed, so a broken module can prevent help as well as `version`.
+Newlines inside the help string are JSON escapes. When the root `--text` global
+option is parsed before the command, help prints the plain argparse help text
+directly. There is no `--text` token pre-scan: only the actual parsed root
+`--text` option selects text mode, including for subcommand help. A leaf
+`--text` option or an option value equal to `"--text"` does not change the
+helper's output mode. Passing global `--text` after the command name is invalid
+unless that leaf command separately declares `--text`. Modules load before
+arguments are parsed, so a broken module fails `--help` as well as `version`.
 
-## Output and errors
+## Results, output and errors
 
-A successful handler's return value is the entire JSON value on stdout.
-There is no envelope. The helper uses `canonical_json`, decodes its bytes as
-UTF-8, and prints one trailing newline. Object keys are sorted. JSON booleans
-are `true` and `false`.
+Handlers return or raise one of four forms:
 
-With `--text`, a dictionary becomes one `key: value` line per item in its
-insertion order. Values use Python's string conversion, including `True` and
-`False`. Any other return value uses `str(data)`. The canonical JSON encoding
-still runs first, so text mode also requires JSON-encodable data.
+| Form | Meaning | Stdout | Stderr | Exit code |
+|---|---|---|---|---|
+| Plain JSON-compatible data | Success with data. | One JSON value (or text rendering with global `--text`). | Public warnings only, if any. | `ExitCode.SUCCESS` (`0`). |
+| `Outcome(data, code=ExitCode.SUCCESS)` | Structured result with an explicit listed `ExitCode` (`0`, `1`, `2`, `3`, `4`, `5` or `75`). | Same rendering as plain data. | Public warnings only, if any. | `int(outcome.code)`. |
+| `CommandError(message, code=ExitCode.INVALID_INPUT)` | Message-only expected failure with a listed nonzero `ExitCode`. | Empty. | `message`. | `int(error.code)`. |
+| `PassThrough(status)` | Child streams already passed through unchanged; valid only for `("publish", "run")`. | Wrapper prints nothing. | Wrapper prints nothing. | Normalized `status` (`0`..`255`). |
 
-Diagnostics go to stderr. Handled failures print no result on stdout. The
-parser replaces its normal argument error with `invalid arguments; use --help`.
-It does not echo supplied argument values. Unexpected exceptions caught by
-`main` produce `command failed; check local inputs and helper installation`
-and exit 2. This includes Git failures in `version` and output encoding errors.
-Raw exception details and tracebacks are not printed for these handled failures.
+`Outcome(data, code=ExitCode.SUCCESS)` validates `code` against `ExitCode` and
+rejects booleans and unlisted integers with `ValueError`. A handler returning
+`None` produces JSON `null` (and `null` in text mode). `Outcome` and plain
+returns validate and encode the result with `canonical_json` before printing, so
+unencodable data fails before anything is written to stdout.
 
-The output contract excludes secrets from both streams. A `CommandError`
-message must contain public text, never raw input or a backend exception.
-`main` prints that message verbatim; it is not a general secret filter.
-Root paths are intentional output in `version` and the invocation refusal.
+With default JSON output, the helper decodes `canonical_json(data)` as UTF-8
+and prints one trailing newline. There is no wrapper envelope. Object keys are
+sorted, and JSON booleans are `true` and `false`.
+
+With global `--text`, a `dict` result prints one `key: <json-value>` line per
+item in the dictionary's insertion order, where each value is encoded with
+`canonical_json(value).decode("utf-8")`. Because strings and nested values are
+JSON-encoded, embedded newlines are escaped as `\n` and cannot forge output
+lines. An empty dictionary prints an empty line (`""` followed by the trailing
+newline from `print`). Any non-`dict` value (such as a list, string, number,
+boolean or `None`) prints its single `canonical_json(data).decode("utf-8")`
+line. Plain returns and `Outcome` share this exact rendering path.
+
+`CommandError(message, code=ExitCode.INVALID_INPUT)` requires a listed nonzero
+`ExitCode` (`1`, `2`, `3`, `4`, `5` or `75`); it rejects `0` (`ExitCode.SUCCESS`),
+booleans and unknown codes with `ValueError`. Its message must be public
+diagnostic text, never supplied argument values, file contents, secrets or
+raw backend exception messages.
+
+`PassThrough(status)` represents a child process whose stdout and stderr were
+already streamed directly. It rejects booleans and requires an integer status:
+negative values `-signal` (with `1 <= signal <= 127`) normalize to
+`128 + signal`, and nonnegative values must be in `0..255`; other values or
+types raise `ValueError`. `main` accepts `PassThrough` only when the executed
+command's declared path is `("publish", "run")`, and returns the normalized
+integer status without writing to stdout or stderr. If any other command returns
+`PassThrough`, `main` treats it as an unexpected helper failure (exit 2 with
+empty stdout and the sanitized unexpected-failure diagnostic on stderr). Later
+command specs define `publish run` (including its required `--status-file`
+contract and token revocation) and `heavy run` (which returns structured JSON
+summaries rather than `PassThrough`); HS-1 only provides the `cli` result type
+and dispatch rule.
+
+Registered handlers must never call `sys.exit` or write to stdout directly.
+Handlers may write safe public warnings to stderr (for example when a cleanup
+step after a child process fails). Outside module loading, `main` does not
+catch `SystemExit` or `KeyboardInterrupt`.
+
+Diagnostics go to stderr, and handled failures write nothing to stdout:
+
+- **Parse errors**: `Parser.error` raises `CommandError` with exit 2 and
+  `invalid arguments for <prog>; use --help`, where `<prog>` is the parser's
+  declared public program path (such as `t3c`, `t3c version` or
+  `t3c sample run`). It never echoes raw supplied argument values.
+- **Unexpected helper failures**: Any uncaught `Exception` during argument
+  parsing, handler execution or output encoding is caught by `main`, which
+  prints `<command-path>: command failed (<ExceptionClass>); check local inputs and helper installation`
+  to stderr and returns `ExitCode.INVALID_INPUT` (`2`). `<command-path>` comes
+  from the parser or registry declarations (such as `t3c version` or
+  `t3c sample run`, or `t3c` when no subcommand was selected), never from raw
+  `argv` values. `<ExceptionClass>` is `type(error).__name__`. Neither
+  `str(error)`, `repr(error)`, exception arguments nor tracebacks are printed.
 
 ## Exit codes
 
 | Code | Enum member | Meaning | Emitted by HS-1 commands today |
 |---|---|---|---|
 | 0 | `SUCCESS` | Success. | Successful `version`; argparse help also exits 0. |
-| 1 | `CHECK_FAILED` | Check failed: blocked or not verified. | No. |
-| 2 | `INVALID_INPUT` | Invalid input or records. | Invocation refusal, parser errors, module load errors and caught unexpected exceptions. |
-| 3 | `INVALID_CONFIG` | Invalid config; routing is blocked. | No. |
-| 4 | `JUDGMENT_NEEDED` | Engineering manager judgment needed. | No. |
-| 5 | `REPORT` | Report to Shawn. | No. |
-| 75 | `BUSY` | Busy. | No. |
+| 1 | `CHECK_FAILED` | Check failed: blocked or not verified. | No (supported via `Outcome` and `CommandError`). |
+| 2 | `INVALID_INPUT` | Invalid input, records or unexpected helper failure. | Invocation refusal, parser errors, module load errors and caught unexpected exceptions. |
+| 3 | `INVALID_CONFIG` | Invalid config; routing is blocked. | No (supported via `Outcome` and `CommandError`). |
+| 4 | `JUDGMENT_NEEDED` | Engineering manager judgment needed. | No (supported via `Outcome` and `CommandError`). |
+| 5 | `REPORT` | Report to Shawn. | No (supported via `Outcome` and `CommandError`). |
+| 75 | `BUSY` | Busy. | No (supported via `Outcome` and `CommandError`). |
 
-`CommandError(message, code=ExitCode.INVALID_INPUT)` converts its code through
-`ExitCode`. Registered handlers can use any listed code. The tests inject a
-command to exercise them; HS-1 does not implement those later command behaviors.
+Only `publish run` may exit with an arbitrary child status (`0`..`255`) via
+`PassThrough`. All other commands exit with a listed `ExitCode`.
 
-## version
+## version and helper_info
 
 ```sh
 python3 -I -S <root>/bin/t3c version
 ```
 
-`version` has no command-specific options other than help. Its JSON has exactly
-these fields, in this serialized order:
+`t3compose.cli.helper_info()` returns a new dictionary with the helper's
+checkout and interpreter facts, and `version(args)` delegates directly to
+`helper_info()`. Its JSON has exactly these fields, in this serialized order:
 
 ```json
 {"commit":"<HEAD SHA>","dirty":false,"python":"<Python version>","root":"<resolved checkout root>"}
@@ -121,15 +196,20 @@ these fields, in this serialized order:
 | Field | Type | Computation |
 |---|---|---|
 | `commit` | string | Stripped stdout from `git -C ROOT rev-parse HEAD`. |
-| `dirty` | boolean | Whether stripped stdout from `git -C ROOT status --porcelain` is nonempty. Untracked files can make it true. |
+| `dirty` | boolean | Whether stripped stdout from `git -C ROOT --no-optional-locks status --porcelain` is nonempty. Untracked files make it true; tracked-only cleanliness checks in later commands are separate. |
 | `python` | string | `platform.python_version()` for the running interpreter. |
 | `root` | string | `str(t3compose.paths.ROOT)`. |
 
-Git is found through PATH. Both subprocess calls require success and capture
-stdout and stderr as text. Captured Git diagnostics are not forwarded.
-The text result uses the handler's order: `root`, `commit`, `dirty`, `python`.
+Git is found through PATH. Both subprocess calls require success (`check=True`)
+and capture stdout and stderr as text. Passing `--no-optional-locks` keeps
+`status` read-only so checking `version` or `helper_info()` does not refresh or
+rewrite `.git/index`. Captured Git diagnostics are not forwarded; a Git failure
+raises `CalledProcessError`, which `main` sanitizes as an unexpected helper
+failure (`t3c version: command failed (CalledProcessError); ...`, exit 2).
+The text result uses the dictionary insertion order: `root`, `commit`, `dirty`,
+`python`.
 
-## Command modules
+## Command modules, parser construction and command listing
 
 `t3compose.cli.MODULES` fixes this load order:
 
@@ -138,43 +218,77 @@ config, records, evidence, jev, routing, quota, privacy, pullrequest,
 github_app, token_run, publish, heavy, briefs, skill_install
 ```
 
-The registry first installs the built-in `version` command. For each listed
-name it looks for `t3compose.<name>` with `importlib.util.find_spec`. A `None`
-result skips that module. These optional modules are absent at this head.
-A found module is imported and its `register(registry)` is called once per
-registry load. Python's import cache still applies.
+`build_parser(text_output=False)` constructs the root `Parser`, registers the
+built-in `version` command, creates the `Registry`, loads all present modules
+from `MODULES`, validates every registered group and leaf parser, and returns
+the root `Parser`. `command_names()` uses the same construction/registration
+path and returns a sorted tuple of command-path tuples for all executable leaf
+commands, such as `(("sample", "run"), ("version",))`. It includes executable
+leaves only, never group parsers or help, and never scrapes help text.
 
-Any `Exception` or `SystemExit` during lookup, import or registration becomes
-`cannot load command module: <name>` and exit 2. A missing dependency, syntax
-error, missing `register`, or failed registration is an error, not an absent
-module. Exception details are suppressed. `KeyboardInterrupt` propagates;
-neither the loader nor `main` catches it. Outside module loading, `main` also
-does not catch `SystemExit`; argparse uses it for help.
+For each module name in `MODULES`, `Registry.load()` checks
+`importlib.util.find_spec("t3compose." + name)`. A `None` result skips that
+module. Found modules are imported and their `register(registry)` function is
+called once per parser build. Module imports and `register(registry)` must be
+cheap, deterministic, compatible with Python 3.9+, and free of side effects:
+they must not read configuration or state files, start subprocesses, write
+files or perform network/external calls. Every invocation (including `version`
+and `--help`) loads all present modules.
 
-`registry.commands` is the root's required subparser collection. It stores the
-selected name in `args.command`. `registry.group(name)` creates a root command
-group on first use and returns its required subparser collection. Later calls
-with the same name return that same collection. The selected leaf name goes
-in `args.<name>_command`. This lets separate modules extend one group.
+`Registry` enforces deterministic registration checks across Python 3.9 and
+later interpreters:
 
-Each leaf parser sets its handler:
+- Duplicate root command names, duplicate leaf names within a group, a group
+  colliding with `version` (or an existing leaf), or a root leaf colliding with
+  an existing group are rejected.
+- Every leaf parser must set a callable `handler` default (`callable(handler)`).
+  Missing or noncallable handlers are rejected when the registry validates
+  registration.
+- No root, group or leaf parser may register an argument destination or
+  `set_defaults` key named `local_dir` or prefixed with `t3c_` (other than the
+  registry's own `t3c_*` selectors and metadata).
+
+Any `Exception` or `SystemExit` during module lookup, import, `register` or
+registration validation becomes `CommandError("cannot load command module: <name>")`
+(exit 2). Exception details are suppressed. `KeyboardInterrupt` propagates.
+
+Shared groups allow multiple modules to add leaves under one root group name:
 
 ```python
 def register(registry):
-    parser = registry.group("sample").add_parser("show")
-    parser.set_defaults(handler=show)
-
-def show(args):
-    return {"status": "ready"}
+    parser = registry.group("route").add_parser("select")
+    parser.add_argument("--work", required=True)
+    parser.set_defaults(handler=select_route)
 ```
 
-`main(argv=None)` takes `sys.argv[1:]` by default, or a supplied argument
-sequence. It parses once, calls `args.handler(args)`, prints the returned data,
-and returns `ExitCode.SUCCESS`. A handler returns JSON-compatible data on
-success. It raises `CommandError` with a public message and a listed exit code
-for an expected failure. Modules must honor the output contract above.
-Each command module documents its own commands, options, output and exit
-codes in `docs/cli/<module>.md`; this file keeps what every command shares.
+Calling `registry.group("route")` returns the shared subparser collection for
+`route`, creating the group on first use. Calling `registry.commands.add_parser(name)`
+adds a top-level leaf command.
+
+When a command accepts a child command line after `--` (such as
+`t3c publish run ... -- CMD [ARGS...]` or `t3c heavy run ... -- CMD [ARGS...]`),
+the leaf parser can capture the child arguments with `argparse.REMAINDER` into a
+non-reserved destination such as `child_argv`:
+
+```python
+def register(registry):
+    parser = registry.group("publish").add_parser("run")
+    parser.add_argument("--status-file", required=True)
+    parser.add_argument("child_argv", nargs=argparse.REMAINDER)
+    parser.set_defaults(handler=run_with_token)
+```
+
+`argparse.REMAINDER` preserves all remaining tokens without losing `--text` or
+option-like child flags, and it retains the leading `"--"` token at index 0 of
+`args.child_argv` when `"--"` is supplied. The command module is responsible for
+requiring and stripping that leading `"--"` separator before launching the
+child command.
+
+Shared core files (`t3compose/cli.py`, `t3compose/jsonio.py`,
+`t3compose/paths.py`, `t3compose/process.py` and `tests/support.py`) and the
+`MODULES` tuple are modified only when a Task brief explicitly assigns that
+edit. Each command module documents its own commands, options, output and exit
+codes in `docs/cli/<module>.md`; this file specifies what all commands share.
 
 ## Paths and JSON utilities
 
@@ -189,20 +303,34 @@ It refers to the helper's real checkout, independent of the caller's directory.
 characters remain literal UTF-8. NaN and infinities are refused. Values that
 cannot be JSON-serialized or UTF-8-encoded raise the encoder's exception.
 
-`file_digest(path)` returns the lowercase SHA-256 hex digest of the file's raw
-bytes. It reads in 65,536-byte blocks. It does not parse or canonicalize JSON.
-File access errors propagate.
+`file_digest(path)` returns the bare lowercase SHA-256 hex digest of the file's
+raw bytes. It reads in 65,536-byte blocks. It does not parse or canonicalize
+JSON. File access errors propagate.
 
-`read_json(path, max_bytes=16384)` reads at most `max_bytes + 1` bytes in binary
-mode. The default limit is 16 KiB. Exactly the limit is allowed. It decodes
-UTF-8, parses JSON, checks that the result can be canonically encoded, and
-returns the parsed value. It does not require an object or validate a schema.
+`read_json_with_digest(path, max_bytes=16384)` opens `path` once in binary mode,
+reads at most `max_bytes + 1` bytes, validates and parses the JSON payload, and
+returns `(parsed_value, "sha256:<lowercase hex>")`. The digest is computed over
+the exact raw bytes read from that single open, not over re-encoded canonical
+JSON, so formatting and whitespace differences produce different digests and a
+file replaced after the read cannot mismatch the validated value.
+
+`read_json(path, max_bytes=16384)` shares the same bounded single-read and
+validation implementation and returns only `parsed_value`. The default limit for
+both functions is 16 KiB (`16384` bytes), and a file of exactly `max_bytes`
+bytes is allowed. Neither function requires a top-level JSON object or validates
+a higher-level schema.
+
+To ensure deterministic behavior across Python 3.9 and Python 3.14+ without
+changing the process-wide Python integer string conversion limit, both JSON read
+functions reject any JSON integer token whose decimal digit count (excluding an
+optional leading `-` sign) exceeds 4,300 digits before converting it to `int`.
 
 | Rejection | Result |
 |---|---|
 | Negative limit | `ValueError("invalid JSON read limit")`, before opening the file. |
 | More bytes than the limit | `ValueError("JSON read limit exceeded")`, before parsing. |
 | Invalid UTF-8 or malformed JSON, including empty input and trailing non-whitespace data | `ValueError("invalid JSON data")`. |
+| Integer token with more than 4,300 decimal digits (sign excluded) | `ValueError("invalid JSON data")`, before `int` conversion. |
 | Duplicate object key at any depth | `ValueError("invalid JSON data")`. |
 | `NaN`, `Infinity` or `-Infinity` | `ValueError("invalid JSON data")`. |
 | A decoded float that is not finite, including `1e400` or `-1e400` | `ValueError("invalid JSON data")`. |
@@ -210,5 +338,5 @@ returns the parsed value. It does not require an object or validate a schema.
 
 The parse and encoding failures above suppress their underlying exception
 details. File open and read errors propagate as `OSError`. Other failures,
-such as invalid limit types or recursion limits, are not normalized by this
-function. These utilities perform no persistence writes.
+such as invalid limit types or recursion limits, are not normalized by these
+functions. These utilities perform no persistence writes.
