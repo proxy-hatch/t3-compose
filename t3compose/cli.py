@@ -10,9 +10,9 @@ from enum import IntEnum
 import importlib
 import importlib.util
 import platform
-import subprocess
 import sys
 
+from . import process
 from .jsonio import canonical_json
 from .paths import ROOT, local_dir
 
@@ -212,8 +212,8 @@ class Registry:
 
 def helper_info():
     def git(*arguments):
-        return subprocess.run(["git", "-C", str(ROOT), *arguments], check=True,
-                              capture_output=True, text=True).stdout.strip()
+        return process.run(["git", "-C", str(ROOT), *arguments], check=True,
+                           capture_output=True, text=True).stdout.strip()
     return {
         "root": str(ROOT),
         "commit": git("rev-parse", "HEAD"),

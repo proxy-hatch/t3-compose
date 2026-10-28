@@ -71,7 +71,9 @@ option (for example with destination `text`) or child-argument destination
 overrides resolve relative to the caller's working directory and resolve
 symlinks (`Path(override).resolve()`). The default `ROOT / ".local"` is
 already absolute because `ROOT` is resolved, without an extra `resolve()` call
-on `.local` itself. Handlers take local state paths only from `args.local_dir`.
+on `.local` itself. In offline test contexts, the default is a temporary
+state directory instead (see [paths](#paths-and-json-utilities)). Handlers take
+local state paths only from `args.local_dir`.
 `version` accepts `--local-dir` as a global option but does not read `.local`.
 
 The root parser, group parsers and leaf parsers have help. These invocations
@@ -200,12 +202,12 @@ checkout and interpreter facts, and `version(args)` delegates directly to
 | `python` | string | `platform.python_version()` for the running interpreter. |
 | `root` | string | `str(t3compose.paths.ROOT)`. |
 
-Git is found through PATH. Both subprocess calls require success (`check=True`)
-and capture stdout and stderr as text. Passing `--no-optional-locks` keeps
+Git is found through PATH. Both reads call `process.run` through the module,
+require success (`check=True`) and capture stdout and stderr as text. Passing `--no-optional-locks` keeps
 `status` read-only so checking `version` or `helper_info()` does not refresh or
 rewrite `.git/index`. Captured Git diagnostics are not forwarded; a Git failure
-raises `CalledProcessError`, which `main` sanitizes as an unexpected helper
-failure (`t3c version: command failed (CalledProcessError); ...`, exit 2).
+raises `ProcessError`, which `main` sanitizes as an unexpected helper
+failure (`t3c version: command failed (ProcessError); ...`, exit 2).
 The text result uses the dictionary insertion order: `root`, `commit`, `dirty`,
 `python`.
 
@@ -290,11 +292,42 @@ Shared core files (`t3compose/cli.py`, `t3compose/jsonio.py`,
 edit. Each command module documents its own commands, options, output and exit
 codes in `docs/cli/<module>.md`; this file specifies what all commands share.
 
+## Process API
+
+`t3compose.process.run(argv, **kwargs) -> subprocess.CompletedProcess` is the
+shared standard-library launch seam. `argv` must be a nonempty list of
+filesystem arguments. Strings, bytes, other containers, empty lists and shell
+execution are refused before launch. It forwards normal `subprocess.run`
+controls including `check`, `capture_output`, `text`, `input`, `cwd`, `env`
+and `timeout`; `shell=False` is accepted. No shell is used. Modules call
+`process.run` through the module, not a captured function import.
+
+`ProcessError(kind, returncode=None)` carries a public kind and optional child
+return code. The wrapper uses `invalid-command`, `exit`, `not-found`,
+`timeout`, `os-error` and `invalid-options`. Its message and representation
+contain no argv, environment, captured output or backend exception message;
+underlying exception display is suppressed. A nonzero child with `check=True`
+raises kind `exit`; with `check=False` its `CompletedProcess` is returned.
+Missing executables, timeouts, other OS errors and invalid subprocess options
+are sanitized. Successful captured stdout and stderr are returned unchanged,
+never automatically logged. Callers remain responsible for handling those
+values privately and for public diagnostics. Guard `AssertionError` refusals
+are not converted into process failures.
+
+`helper_command(*args)` constructs, without launching:
+`[sys.executable, '-I', '-S', '-B', str(ROOT / 'bin/t3c'), *args]`.
+It preserves the real helper root and current interpreter. Call it through the
+`process` module so tests can substitute the guarded bootstrap form; see the
+[testing spec](testing.md#process-fakes-and-helper-relaunches). This seam adds
+no agent runtime, publication command or heavy-check executor.
+
 ## Paths and JSON utilities
 
 `t3compose.paths.ROOT` is `Path(__file__).resolve().parents[1]` for `paths.py`.
 It refers to the helper's real checkout, independent of the caller's directory.
-`local_dir()` returns `ROOT / ".local"`. `local_dir(override)` returns
+`local_dir()` normally returns `ROOT / ".local"`; the offline harness sets
+`paths._default_local_dir` to a temporary `Path` for its context only. There
+is no production environment-variable override. `local_dir(override)` returns
 `Path(override).resolve()`. These functions only compute paths.
 
 `t3compose.jsonio.canonical_json(value)` returns UTF-8 bytes. It uses

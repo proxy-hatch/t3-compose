@@ -1,10 +1,12 @@
 """An allowlist for offline test hygiene, not a security boundary.
 
-Tests that start another program must allow it explicitly. Python children
-run only through the absolute path of this guard's bootstrap. The guard does
+Tests that start another program must allow it explicitly. On supported launch
+interfaces, Python children run through the absolute path of this guard's
+bootstrap. The guard does
 not see what an allowed program starts, and a bootstrap child takes its
 default git from its own PATH.
 """
+from contextlib import contextmanager, ExitStack
 import os
 from pathlib import Path
 import runpy
@@ -143,7 +145,7 @@ def check_program(args, allowed_programs, executable=None, shell=False,
         refuse()
 
 
-def guarded_popen(allowed_programs, args, *rest, **kwargs):
+def guarded_popen(allowed_programs, baseline, args, *rest, **kwargs):
     executable = kwargs.get("executable")
     if executable is None and len(rest) >= 2:
         executable = rest[1]
@@ -152,23 +154,30 @@ def guarded_popen(allowed_programs, args, *rest, **kwargs):
         shell = rest[7]
     cwd = kwargs.get("cwd", rest[8] if len(rest) >= 9 else None)
     env = kwargs.get("env", rest[9] if len(rest) >= 10 else None)
+    if env is not None:
+        env = {**baseline, **env}
+        if len(rest) >= 10:
+            rest = (*rest[:9], env, *rest[10:])
+        else:
+            kwargs["env"] = env
     check_program(args, allowed_programs, executable=executable, shell=shell, cwd=cwd, env=env)
     return _original_popen(args, *rest, **kwargs)
 
 
-def guarded_posix_spawn(allowed_programs, path, argv, *rest, **kwargs):
+def guarded_posix_spawn(allowed_programs, baseline, path, argv, env, **kwargs):
     # posix_spawn takes a file path; it does not search PATH.
     check_program(argv, allowed_programs, executable=path, search_path=False)
-    return _original_posix_spawn(path, argv, *rest, **kwargs)
+    return _original_posix_spawn(path, argv, {**baseline, **env}, **kwargs)
 
 
-def guarded_posix_spawnp(allowed_programs, path, argv, *rest, **kwargs):
+def guarded_posix_spawnp(allowed_programs, baseline, path, argv, env, **kwargs):
     # posix_spawnp searches the parent's PATH, not the supplied child environment.
     check_program(argv, allowed_programs, executable=path)
-    return _original_posix_spawnp(path, argv, *rest, **kwargs)
+    return _original_posix_spawnp(path, argv, {**baseline, **env}, **kwargs)
 
 
-def install_guard(enter_context=None):
+def install_guard(enter_context=None, baseline=None):
+    baseline = {} if baseline is None else baseline
     allowed_programs = AllowedPrograms()
 
     def allow_program(program):
@@ -210,21 +219,72 @@ def install_guard(enter_context=None):
 
     if hasattr(os, "posix_spawn"):
         apply_patch(os, "posix_spawn", lambda *args, **kwargs:
-                    guarded_posix_spawn(allowed_programs, *args, **kwargs))
+                    guarded_posix_spawn(allowed_programs, baseline, *args, **kwargs))
     if hasattr(os, "posix_spawnp"):
         apply_patch(os, "posix_spawnp", lambda *args, **kwargs:
-                    guarded_posix_spawnp(allowed_programs, *args, **kwargs))
+                    guarded_posix_spawnp(allowed_programs, baseline, *args, **kwargs))
 
     apply_patch(subprocess, "Popen", lambda *args, **kwargs:
-                guarded_popen(allowed_programs, *args, **kwargs))
+                guarded_popen(allowed_programs, baseline, *args, **kwargs))
     return allow_program
 
 
+class FakeRunner:
+    """Basename-keyed in-process fixtures; no fallback to a real executable."""
+    def __init__(self, fixtures):
+        self.fixtures = dict(fixtures)
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), dict(kwargs)))
+        fixture = self.fixtures.get(Path(os.fsdecode(argv[0])).name)
+        if fixture is None:
+            raise AssertionError("unconfigured process fixture")
+        return fixture(argv, **kwargs)
+
+
+def guarded_helper_command(*args):
+    """Test substitution for process.helper_command, with a fresh child guard."""
+    return [sys.executable, "-I", "-S", "-B", str(BOOTSTRAP_PATH),
+            str(ROOT / "bin/t3c"), *args]
+
+
+@contextmanager
+def offline_context():
+    """One good-faith test/child sandbox; restore cwd before removing its tree."""
+    from t3compose import paths
+
+    with ExitStack() as stack:
+        # Use the system temporary root, not a caller-controlled TMPDIR or cwd.
+        temp = Path(stack.enter_context(tempfile.TemporaryDirectory(dir="/tmp"))).resolve()
+        home, xdg, work = (temp / name for name in ("home", "xdg-config", "work"))
+        for directory in (home, xdg, work):
+            directory.mkdir()
+        global_config = temp / "empty-git-config"
+        global_config.write_text("")
+        baseline = {
+            "HOME": str(home), "XDG_CONFIG_HOME": str(xdg),
+            "GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file",
+            "GIT_CEILING_DIRECTORIES": str(temp),
+        }
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("GIT_") and key not in
+                       {"SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"}}
+        environment.update(baseline)
+        stack.enter_context(patch.dict(os.environ, environment, clear=True))
+        previous_cwd = Path.cwd()
+        stack.callback(os.chdir, previous_cwd)
+        os.chdir(work)
+        stack.enter_context(patch.object(paths, "_default_local_dir", temp / ".local"))
+        allow = install_guard(stack.enter_context, baseline)
+        yield temp, allow
+
+
 class OfflineTestCase(unittest.TestCase):
-    def setUp(self):
-        super().setUp()
-        self.temp = Path(self.enterContextCompat(tempfile.TemporaryDirectory(dir=ROOT)))
-        self._allow_program = install_guard(self.enterContextCompat)
+    def run(self, result=None):
+        with offline_context() as (self.temp, self._allow_program):
+            return super().run(result)
 
     def allow_program(self, program):
         """Allow a program for this test; never a blocked name, env or Python."""
@@ -240,7 +300,8 @@ class OfflineTestCase(unittest.TestCase):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(2)
-    install_guard()
-    target = sys.argv[1]
+    target = str(Path(sys.argv[1]).resolve())
+    sys.path.insert(0, str(ROOT))
     sys.argv = [target, *sys.argv[2:]]
-    runpy.run_path(target, run_name="__main__")
+    with offline_context():
+        runpy.run_path(target, run_name="__main__")

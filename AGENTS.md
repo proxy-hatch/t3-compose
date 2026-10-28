@@ -10,8 +10,11 @@ Every test class derives from the offline guard in `tests/support.py` and is
 named `Offline…`, or `Simulated…` when it injects quota responses. Only the
 Engineering manager runs `live/` checks; offline and simulated tests do not
 count as live passes.
-Tests that start another program must allow it through the guard;
-Python children run only through the guard's bootstrap.
+Tests that start another program must allow it through the guard.
+For the supported launch interfaces (`subprocess.Popen`, `os.posix_spawn` and
+`os.posix_spawnp`), the guard accepts Python only through its bootstrap.
+Tests must use that form for Python children; other process-creation mechanisms
+are outside the guard's guarantee (see the testing spec).
 
 Keep this package separate from rapid-ship. Apply a managed repository's rules
 when assigning work there. Do not copy its product code, backlog or guardrails

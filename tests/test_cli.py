@@ -30,7 +30,7 @@ class OfflineCLI(OfflineTestCase):
         head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                               check=True, capture_output=True, text=True).stdout.strip()
         self.assertEqual(data["commit"], head)
-        self.assertIs(data["dirty"], True)  # This test's temporary directory is untracked.
+        self.assertIsInstance(data["dirty"], bool)
         self.assertEqual(data["python"], sys.version.split()[0])
         self.assertEqual(result.stderr, "")
 
@@ -466,7 +466,7 @@ class OfflineCLI(OfflineTestCase):
             self.assertEqual(out.getvalue(), "")
             self.assertEqual(
                 err.getvalue(),
-                "t3c version: command failed (CalledProcessError); check local inputs and helper installation\n",
+                "t3c version: command failed (ProcessError); check local inputs and helper installation\n",
             )
             self.assertNotIn("not-a-repo-synthetic-secret", err.getvalue())
 
@@ -564,7 +564,7 @@ class OfflineCLI(OfflineTestCase):
                 os.chdir(old_cwd)
             self.assertEqual((code, err), (0, ""))
             self.assertEqual(json.loads(out), {"local": str(real_local)})
-            self.assertEqual(local_dir(), ROOT / ".local")
+            self.assertEqual(local_dir(), self.temp / ".local")
 
 
 class OfflineGuard(OfflineTestCase):
@@ -620,13 +620,17 @@ class OfflineGuard(OfflineTestCase):
         self.assertEqual((result.returncode, result.stdout), (0, "synthetic\n"))
 
         # A new test case's guard does not inherit this test's extra program.
-        other = OfflineTestCase()
-        try:
-            other.setUp()
-            with self.assertRaisesRegex(AssertionError, "offline guard"):
-                subprocess.run(["/bin/echo", "synthetic"])
-        finally:
-            other.doCleanups()
+        import unittest
+        class OfflineOther(OfflineTestCase):
+            def test_refusal(self):
+                with self.assertRaisesRegex(AssertionError, "offline guard"):
+                    subprocess.run(["/bin/echo", "synthetic"])
+        result = unittest.TestResult()
+        OfflineOther("test_refusal").run(result)
+        self.assertEqual((result.errors, result.failures), ([], []))
+        # The nested context restores this test's allowance.
+        self.assertEqual(subprocess.run(["/bin/echo", "outer"], capture_output=True,
+                                        text=True).stdout, "outer\n")
 
     def test_allowance_refuses_blocked_names_env_and_python(self):
         for name in ("security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish",
@@ -720,6 +724,8 @@ class OfflineGuard(OfflineTestCase):
             from pathlib import Path
             import subprocess
             import sys
+            import socket
+            import urllib.request
             import unittest
             check = unittest.TestCase()
             marker = Path({str(marker)!r})
@@ -734,6 +740,16 @@ class OfflineGuard(OfflineTestCase):
                 lambda: subprocess.run(['/usr/bin/env', {str(gh)!r}]),
                 lambda: os.posix_spawnp('env', ['env', sys.executable, '-c', payload], os.environ),
             ]
+            # Network/name-lookup refusals also remain installed in grandchildren.
+            launches.extend([
+                socket.socket,
+                lambda: socket.getaddrinfo('example.invalid', 443),
+                lambda: socket.gethostbyname('example.invalid'),
+                lambda: socket.gethostbyname_ex('example.invalid'),
+                lambda: socket.gethostbyaddr('192.0.2.1'),
+                lambda: socket.getnameinfo(('192.0.2.1', 443), 0),
+                lambda: urllib.request.urlopen('data:text/plain,synthetic'),
+            ])
             for launch in launches:
                 with check.assertRaisesRegex(AssertionError, 'offline guard'):
                     result = launch()
@@ -762,6 +778,9 @@ class OfflineGuard(OfflineTestCase):
                      lambda: socket.create_connection(("example.invalid", 443)),
                      lambda: socket.getaddrinfo("example.invalid", 443),
                      lambda: socket.gethostbyname("example.invalid"),
+                     lambda: socket.gethostbyname_ex("example.invalid"),
+                     lambda: socket.gethostbyaddr("192.0.2.1"),
+                     lambda: socket.getnameinfo(("192.0.2.1", 443), 0),
                      lambda: urllib.request.urlopen("https://example.invalid"),
                      lambda: urllib.request.build_opener().open("https://example.invalid")):
             with self.assertRaisesRegex(AssertionError, "offline guard"):
