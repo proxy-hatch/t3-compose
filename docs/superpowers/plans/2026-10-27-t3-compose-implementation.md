@@ -1,6 +1,6 @@
 # t3-compose implementation plan
 
-Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–17
+Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–18
 and shared contracts CD-1 to CD-4. It follows the design revision in pull request
 #1 at `906fdb0` and the owner decisions recorded below. The revision takes effect
 when Shawn approves and merges its pull request. Implementation and live
@@ -88,9 +88,15 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   parallel share no file. HS-1 establishes `cli.py`, `jsonio.py`, `paths.py`,
   `process.py` and `tests/support.py`. Later changes to these shared files,
   including appending to `cli.py`'s `MODULES`, require explicit owned-path edits
-  in a manager-assigned brief. RC-1 retains its assigned `jsonio.py` changes.
-  Each command module has its own spec file. Tasks with overlapping assigned
-  shared-file edits run sequentially.
+  in a manager-assigned brief. Across the sequential records-store split
+  ([decision 18](#decisions)), `RC-1a` owns the initial `docs/records.md`,
+  `t3compose/schema.py` and `tests/test_schema.py`; `RC-1b` retains the assigned
+  `jsonio.py` and `tests/test_jsonio.py` changes, creates `t3compose/records.py`,
+  `docs/cli/records.md` and `tests/test_records.py`, and extends
+  `docs/records.md`; and `RC-1c` extends `t3compose/records.py`,
+  `docs/records.md`, `docs/cli/records.md` and `tests/test_records.py` and
+  creates `tests/test_reconcile.py`. Each command module has its own spec file.
+  Tasks with overlapping assigned shared-file edits run sequentially.
 - **Tests.** After `PY="$(uv python find 3.15)"`, confirm a final 3.15.x release
   before taking evidence. `SUITE` means
   `"$PY" -I -S -B -m unittest discover -s tests -t . -v`, run from the repository
@@ -124,9 +130,10 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   round tiers. DOC-1 aligns the design with these owner decisions
   ([decisions 1, 5 and 6](#decisions)). Tuning the tiers is outside this plan
   ([decision 8](#decisions)).
-- **Records.** Until RC-1 is installed, the manager keeps its manual dispatch
-  log in `.local/`. From then on it records through the helper. The manual log
-  stays as history and is not migrated.
+- **Records.** Until the records store is installed through RC-1c (after RC-1a
+  and RC-1b), the manager keeps its manual dispatch log in `.local/`. From then
+  on it records through the helper. The manual log stays as history and is not
+  migrated.
 - **Review and delivery.** The current assigned lead personally reviews the
   exact final head with requirements, design, interfaces, final diff, callers,
   tests and evidence in context; no separate Reviewer reviews that head.
@@ -170,7 +177,7 @@ contract reports it; the manager decides.
 | `tests/` | offline suite | each Task |
 | `live/` | live checks | JV-1, RT-1, RP-1 |
 | `skill/SKILL.md`, `skill/templates/` | manager skill and brief templates | SK-1, BT-1, PH-1, FL-1 |
-| `docs/` | `docs/cli.md` and `docs/testing.md`; `docs/cli/<module>.md`, one per command module; configuration, record, restart and pilot contracts | HS-1; each Task that adds commands; CF-1, RC-1, PH-1, RP-1, FL-1 |
+| `docs/` | `docs/cli.md` and `docs/testing.md`; `docs/cli/<module>.md`, one per command module; configuration, record, restart and pilot contracts | HS-1; each Task that adds commands; CF-1, RC-1a, RC-1b, RC-1c, PH-1, RP-1, FL-1 |
 | `pilot/` | synthetic router examples | RP-1 |
 
 ### Commands
@@ -182,8 +189,8 @@ CPython 3.15 interpreter as above. This applies to briefs and skill commands too
 |---|---|---|
 | `t3c version` | root, commit, dirty flag, Python version | HS-1 |
 | `t3c config check` | validate the routing config and quota state; print the digest | CF-1 |
-| `t3c work new`, `show`, `list`, `snapshot`, `reconcile`, `repair` | work records | RC-1 |
-| `t3c event add` | append one validated event | RC-1 |
+| `t3c work new`, `show`, `list`, `snapshot`, `reconcile`, `repair` | work records (`new`, `show`, `list`), checkpoints, reconciliation and repair (`snapshot`, `reconcile`, `repair`) | RC-1b (`new`, `show`, `list`), RC-1c (`snapshot`, `reconcile`, `repair`) |
+| `t3c event add` | append one validated event | RC-1b |
 | `t3c evidence check` | `verified`, or the gaps, for one head | EV-1 |
 | `t3c route classify` | one bounded Jev request | JV-1 |
 | `t3c route input`, `judge`, `select` | routing input; manager judgment; final tier and selection | RT-1 |
@@ -236,7 +243,7 @@ the child's status through.
 
 Global option names are reserved in `docs/cli.md`; `Registry` rejects module
 collisions. PV-1b uses `--text-file LABEL=FILE`, leaving global `--text` intact.
-`--repo` is contextual: an identity or checkout path in RC-1, JV-1, RT-1 and
+`--repo` is contextual: an identity or checkout path in RC-1b, RC-1c, JV-1, RT-1 and
 EV-1; `OWNER/NAME` for `pr verify`. Each module spec documents its meaning.
 
 HS-1 supplies these shared interfaces:
@@ -338,7 +345,7 @@ Its digest covers that whole canonical JSON object.
 The routing-policy digest covers classification instructions, criteria and rule
 version, risk facts and floors, the configured Jev model, confidence threshold,
 retry limit and uncertainty rule. CF-1 computes it from validated config. JV-1
-and RT-1 use RC-1's common input recorder; judgments have the same freshness
+and RT-1 use RC-1b's common input recorder (once RC-1c completes the records store); judgments have the same freshness
 contract as classifications. Selection names the current input and policy
 explicitly and also records the whole config digest for model preferences.
 
@@ -482,7 +489,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   dirty flag and Python version. `jsonio` provides canonical JSON, file digests
   and size-capped reads. Imports/register have no side effects, registry
   collisions with reserved global options fail, and handlers use `args.local_dir`.
-  Atomic persistence and crash recovery belong to RC-1.
+  Atomic persistence and crash recovery belong to RC-1b and RC-1c.
 - **Acceptance.**
   1. After setup `uv python pin 3.15 --global` and
      `PY="$(uv python find 3.15)"`, `"$PY" -I -S <root>/bin/t3c version` works
@@ -665,8 +672,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
      his instruction, and that a change applies to the next dispatch only.
 - **Offline tests.** `SUITE -p 'test_config.py'`, then `SUITE`.
 - **Depends on.** HS-1 / PR4 and DOC-1 / PR3, both merged. Stage 1 uses
-  the merged plan, including CD-4 for RC-1.
-- **Parallel with.** RC-1, PV-1a.
+  the merged plan, including CD-4 for RC-1a, RC-1b and RC-1c.
+- **Parallel with.** RC-1a, RC-1b, RC-1c (sequential across the three RC-1 Tasks), PV-1a.
 - **Risk facts and tier.** Shared interface change (JV-1 and RT-1 read this
   contract) → the medium tier. Schema validation is bounded and fully
   testable; RT-1 enforces role exclusions. Reviewer: medium.
@@ -676,42 +683,149 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 
 ### RC-1 Records store
 
-- **Objective.** Store work records as [Record format](#record-format) defines:
-  append-only, atomic, validated, with one writer, history and recovery from
-  interrupted writes.
+Under [decision 18](#decisions), the records store ships as three sequential
+pull-request Tasks under one Feature lead—[RC-1a](#rc-1a-record-schema-contract-foundation),
+[RC-1b](#rc-1b-durable-store-core-history-and-workevent-commands) and
+[RC-1c](#rc-1c-checkpoints-reconciliation-and-repair)—each at most 1,200 changed
+lines, with no size waiver and no fourth aggregate implementation Task or pull
+request. Together they store work records as [Record format](#record-format)
+defines: append-only, atomic, validated, with one writer, history and recovery
+from interrupted writes ([Sources of truth and local records][d-records];
+[Manager threads and bases][d-bases]; [Work cycle][d-cycle], steps 3 and 5;
+[Taking over existing Claude work][d-takeover]).
+
+Exclusive sequential file ownership across the three Tasks:
+
+- `RC-1a` creates `t3compose/schema.py`, `tests/test_schema.py` and the schema
+  contract portion of `docs/records.md`. It adds no usable store and registers
+  no CLI commands.
+- `RC-1b` modifies `t3compose/jsonio.py` and `tests/test_jsonio.py` (atomic
+  replace and exclusive create), creates `t3compose/records.py`,
+  `docs/cli/records.md` and `tests/test_records.py`, and extends
+  `docs/records.md` for the durable store core, history, common routing-input
+  recorder, and `t3c work new`, `t3c work show`, `t3c work list` and
+  `t3c event add`.
+- `RC-1c` extends `t3compose/records.py`, `docs/records.md`,
+  `docs/cli/records.md` and `tests/test_records.py`, and creates
+  `tests/test_reconcile.py` for `t3c work snapshot`, `t3c work reconcile` and
+  `t3c work repair`, prefix checkpoint verification, `restart`, `handoff` and
+  `writer-transfer` enforcement, and orphan-temporary crash recovery.
+
+Every Task that depends on the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
+`HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for `RC-1c` (`RC-1a` alone
+provides only the schema contract and clears no downstream Task). The complete
+ten-item RC-1 acceptance contract holds across the three Tasks and on the
+combined result after `RC-1c`.
+
+### RC-1a Record schema contract foundation
+
+- **Objective.** Define and validate the `work.json` and event schemas as data,
+  keeping all required fields and CD-4 record contracts from
+  [Record format](#record-format) explicit, and document the schema mapping in
+  `docs/records.md`, without adding a usable store or CLI commands.
+- **Design.** [Sources of truth and local records][d-records];
+  [Manager threads and bases][d-bases] (the three commits);
+  [Feature lead options][d-leads] and [Accepted review policy][d-review]
+  (CD-4 review sequence references, reviewer forms, lead assignments and
+  finding keys).
+- **Files.** Create `t3compose/schema.py` (event kinds and record schemas as
+  data), `tests/test_schema.py` and `docs/records.md` (schema part and
+  design-to-field mapping). Exclusive ownership of these files during RC-1a;
+  `t3compose/records.py`, `docs/cli/records.md` and `t3compose/jsonio.py` are
+  not touched.
+- **Interfaces.**
+  - Pure schema data definitions and validation functions in
+    `t3compose/schema.py` for `work.json`, the event envelope, every event kind
+    in [Record format](#record-format), repository identities
+    (`<host>/<owner>/<name>` and `synthetic/<name>`), writer identifiers
+    (`manager@<identity>` and `lead:<WORK-ID>@<identity>`), full 40-character
+    commit SHAs, explicit `{"unknown": "<what is unresolved>"}` values (never
+    omitted fields), checkpoint shapes and finding dispositions.
+  - No usable store and no CLI commands (`t3compose/records.py` remains absent,
+    so `t3compose/cli.py` continues to skip `records`).
+- **Rules.**
+  - Every `work.json` field and every event kind's required `data` fields in
+    [Record format](#record-format) are validated strictly; missing required
+    fields, unknown keys or wrong types fail validation.
+  - CD-4 schema rules are enforced on event data: `reviewer` is either
+    `{"kind": "task", "taskId": "<T3 task>"}` or
+    `{"kind": "lead", "thread": "<lead thread>"}` (never with a fabricated
+    `taskId`); `evidence` (path and digest) is required for a lead review and
+    optional for a task review; every review reference in `finding-disposition`
+    is an integer `review` event sequence number, and findings key on
+    `(review reference, finding ID)`; `lead-assignment` requires `thread`,
+    manager `assigned-by`, `date` and `reason`; `check` sources include manager,
+    Feature lead, Reviewer, assigned Session and Worker (with Worker-only claims
+    distinguished from verified sources).
+- **Acceptance.**
+  1. Each event kind's required fields and `work.json`'s required fields have a
+     passing and a failing test in `tests/test_schema.py` (RC-1 acceptance item
+     1).
+  2. CD-4 schema validation covers both `reviewer` forms, rejects a fabricated
+     lead `taskId`, requires lead `evidence` path and digest, validates integer
+     review sequence references and `(review reference, finding ID)` keys,
+     rejects a `lead-assignment` `assigned-by` other than the manager, and
+     validates `check` sources and finding dispositions (schema parts of RC-1
+     acceptance items 8 and 9).
+  3. `docs/records.md` maps each record item in the design to a field (RC-1
+     acceptance item 7, schema part).
+  4. No store module or CLI command is added; `SUITE` passes with `records`
+     still skipped by `cli.py`.
+- **Offline tests.** `SUITE -p 'test_schema.py'`, then `SUITE`. Fixtures use
+  synthetic task IDs and paths.
+- **Depends on.** HS-1 / PR4 and DOC-1 / PR3, both merged. Stage 1 uses the
+  merged plan, including CD-4. RC-1a's code may merge before the decision-18
+  documentation follow-up pull request merges, so it has no dependency on that
+  documentation follow-up's merge.
+- **Parallel with.** CF-1, PV-1a. Cannot run beside RC-1b or RC-1c.
+- **Risk facts and tier.** Shared schema contract foundation (no persistence,
+  concurrency or crash recovery) → the medium tier. Reviewer: medium, never agy.
+- **Review focus.** Exact field and type coverage for `work.json` and every
+  event kind in [Record format](#record-format); CD-4 reviewer, finding-key and
+  lead-assignment schema rules; design-to-field mapping in `docs/records.md`.
+- **Size.** About 800–1,100 lines, tests and documentation included (at most
+  1,200 lines; decision 18).
+
+### RC-1b Durable store core, history and work/event commands
+
+- **Objective.** Add atomic file persistence and exclusive event creation to
+  `jsonio.py`, implement the durable records store core, history and cross-event
+  invariants in `t3compose/records.py`, provide the common routing-input
+  recorder, and expose `t3c work new`, `t3c work show`, `t3c work list` and
+  `t3c event add`.
 - **Design.** [Sources of truth and local records][d-records];
   [Manager threads and bases][d-bases] (the three commits);
   [Work cycle][d-cycle], steps 3 and 5;
-  [Taking over existing Claude work][d-takeover] (reconcile before acting).
-- **Files.** Create `t3compose/records.py`, `t3compose/schema.py` (event kinds
-  as data), `docs/records.md`, `tests/test_records.py` and
-  `tests/test_reconcile.py`. Modify `t3compose/jsonio.py` and
-  `tests/test_jsonio.py` to add atomic replace and exclusive create.
-  Create `docs/cli/records.md`.
+  [Accepted review policy][d-review] (CD-4 review provenance, finding keys and
+  lead history).
+- **Files.** Modify `t3compose/jsonio.py` and `tests/test_jsonio.py` to add
+  atomic replace and exclusive create. Create `t3compose/records.py`,
+  `docs/cli/records.md` and `tests/test_records.py`. Modify `docs/records.md`
+  to add the store layout, atomic write protocol, history and core command
+  rules. Exclusive ownership of these files after RC-1a merges.
 - **Interfaces.**
   - `t3c work new --repo REPO --work ID --file WORK.json --writer W`
   - `t3c event add --repo REPO --work ID --kind KIND --file DATA.json --writer W [--checkout PATH]`
-  - `t3c work show|list|snapshot|reconcile|repair --repo REPO [--work ID] [--through-seq N]`
-    (`--through-seq` is for `snapshot` only).
-  - `REPO` is an identity or a checkout path. `snapshot` prints a checkpoint:
-    the last sequence and the canonical digest of `work.json` and its event
-    prefix. `--through-seq` recomputes an earlier checkpoint. `reconcile` lists
-    uncertain items: intents without confirmation, confirmed dispatches without
-    a completed result or a stopped-and-preserved reconciliation, operation
-    intents without results, and orphaned temporary
-    files. `repair` prints and then removes orphaned temporary files; it never
-    changes an event. `helperCommit` comes from `t3compose.cli.helper_info()`;
-    no separate Git-reader interface is invented. `--repo` means an identity
-    or checkout path in this module, as its command spec states.
+  - `t3c work show|list --repo REPO [--work ID]` (`--work` is required for
+    `show` and omitted for `list`).
+  - Common routing-input recorder in `t3compose/records.py` (used by JV-1 and
+    RT-1) that validates the 16 KiB cap, computes the canonical input digest,
+    and appends a `routing-input` event with the routing-policy digest.
+  - `REPO` (`--repo`) is an identity or a checkout path, as `docs/cli/records.md`
+    states. `helperCommit` comes from `t3compose.cli.helper_info()`; no separate
+    Git-reader interface is invented. Subprocesses (`git`) run through
+    `t3compose.process`. Handlers use `args.local_dir` and CD-2's closed exit
+    set (`0` and `2`).
 - **Rules.**
+  - Every data file the store writes is written atomically (a temporary file in
+    the same directory, fsync, then rename for `work.json` or exclusive link for
+    `<seq>.json`, then a directory fsync), with mode `0600`.
   - An event goes to a temporary file, is synced, then is linked to
     `<seq>.json` by exclusive create; its kind is inside the file. An existing
     destination means another writer owns that sequence, and the command exits
-    2 without replacing the event or retrying at a later sequence.
-  - The writer must equal the record's current writer. A `writer-transfer`
-    needs a reconciliation showing the old writer stopped, its children were
-    reconciled and its artifacts preserved. It also needs a checkpoint of the
-    prefix before the transfer; uncertain liveness blocks transfer.
+    2 without replacing the event or retrying at a later sequence. No command
+    edits or deletes an event.
+  - The writer must equal the record's current writer.
   - In a Worker's `dispatch-intent`, read the dispatching checkout's actual
     HEAD at dispatch for the provisioned commit; never assume it lags origin.
     The three commits are full SHAs and the review base equals the record's. Round 1 starts at the review base. A later
@@ -730,14 +844,106 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     commit. A branch name is informational only ([finding F8][d-findings]).
   - CD-4 validates both `reviewer` forms from [Record format](#record-format),
     their base/head/verdict/findings and uniform event-sequence references.
-    Task reviews retain native dispatch/result provenance; lead reviews have
-    no `taskId` and require evidence path plus digest. Only the manager records
-    a `lead-assignment`; its latest event identifies the current lead. Single
-    writer/transfer invariants remain. `withdrawn` requires the review author.
-    `check` sources include Feature lead without accepting Worker claims.
+    Task reviews retain native dispatch/result provenance (`dispatch-intent`,
+    `dispatch-confirmed` and `result` with matching `taskId`); lead reviews have
+    no `taskId`, require evidence path plus digest, and must come from the
+    current lead named by the latest manager-only `lead-assignment` event.
+    Repeated finding IDs in separate review rounds remain distinct under
+    `(review reference, finding ID)`, and a `finding-disposition` with a missing
+    or wrong review reference or unknown finding ID is refused. `withdrawn`
+    requires the review author. `check` sources include Feature lead without
+    accepting Worker claims.
+  - `routing-classification` and `routing-judgment` must reference an existing
+    `routing-input` event with matching input and policy digests.
   - An invalid record makes commands on that work exit 2. Other work stays
     usable.
 - **Acceptance.**
+  1. Each event kind's required fields and store rules have passing and failing
+     tests through the store API and CLI (RC-1 acceptance item 1).
+  2. A failure injected at each atomic-write step leaves the old or new file,
+     never a partial one; written data has mode 0600 (RC-1 acceptance item 2,
+     atomic-write part).
+  3. Race two writers using the current writer identity to append different
+     kinds at the same sequence on one record. Exactly one `<seq>.json` is
+     created with the winning kind inside; one writer wins and the other exits
+     2 without overwriting it or appending at a later sequence (RC-1 acceptance
+     item 3).
+  4. A second writer is refused for both unconfirmed and confirmed-but-running
+     dispatches, and for reconciliations with unknown liveness or unpreserved
+     work. Only a completed result or a stopped-and-preserved reconciliation
+     clears it (RC-1 acceptance item 4, duplicate-writer refusal part).
+  5. No command edits or deletes an event (RC-1 acceptance item 6).
+  6. `docs/records.md` and `docs/cli/records.md` document the store layout,
+     persistence and `work new`, `work show`, `work list` and `event add`
+     commands (RC-1 acceptance item 7, store core part).
+  7. Repeated finding IDs in separate review rounds remain distinct; a
+     disposition with a missing or wrong review reference is refused (RC-1
+     acceptance item 8).
+  8. Both review forms pass with valid provenance; fabricated lead `taskId`,
+     missing lead evidence, invalid reviewer forms and a `lead-assignment` by
+     anyone other than the manager fail, and current-lead history, author-only
+     withdrawal and the Feature lead check source are covered (RC-1 acceptance
+     item 9, core provenance part).
+  9. Classifications and judgments must reference an existing routing input
+     with matching input and policy digests (RC-1 acceptance item 10).
+- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_schema.py'`,
+  `SUITE -p 'test_records.py'`, then `SUITE`. Fixtures use synthetic task IDs
+  and paths.
+- **Depends on.** RC-1a, merged. Cannot run beside RC-1a or RC-1c.
+- **Parallel with.** CF-1, PV-1a.
+- **Risk facts and tier.** Subtle invariants (atomic persistence, the
+  exclusive-create writer race, duplicate-dispatch refusal, cross-event review
+  provenance) → the challenging tier. Reviewer: challenging.
+- **Review focus.** Fsync order and mode 0600; the exclusive-create race;
+  the duplicate-dispatch block and three-commit checks; CD-4 task and lead
+  review provenance, finding keys and routing-input digest matching.
+- **Size.** About 900–1,200 lines, tests and documentation included (at most
+  1,200 lines; decision 18).
+
+### RC-1c Checkpoints, reconciliation and repair
+
+- **Objective.** Complete the records store with `t3c work snapshot`,
+  `t3c work reconcile` and `t3c work repair`, prefix checkpoint verification,
+  `restart`, `handoff` and `writer-transfer` invariants, and recovery from
+  interrupted writes and orphaned temporary files.
+- **Design.** [Sources of truth and local records][d-records] (ownership
+  transfer and interrupted-write recovery); [Work cycle][d-cycle], steps 1 and
+  5; [Taking over existing Claude work][d-takeover] (reconcile before acting);
+  [Pilot and validation][d-pilot] (deliberate context restarts).
+- **Files.** Modify `t3compose/records.py`, `docs/records.md`,
+  `docs/cli/records.md` and `tests/test_records.py`. Create
+  `tests/test_reconcile.py`. Exclusive ownership of these files after RC-1b
+  merges.
+- **Interfaces.**
+  - `t3c work snapshot|reconcile|repair --repo REPO [--work ID] [--through-seq N]`
+    (`--through-seq` is for `snapshot` only; `--work` is required for
+    `snapshot` and optional for `reconcile` and `repair`).
+  - `REPO` is an identity or a checkout path. `snapshot` prints a checkpoint:
+    the last sequence and the canonical digest of `work.json` and its event
+    prefix. `--through-seq` recomputes an earlier checkpoint. `reconcile` lists
+    uncertain items: intents without confirmation, confirmed dispatches without
+    a completed result or a stopped-and-preserved reconciliation, operation
+    intents without results, and orphaned temporary files. `repair` prints and
+    then removes orphaned temporary files; it never changes an event.
+- **Rules.**
+  - A checkpoint holds the last sequence and the digest of `work.json` plus the
+    ordered event prefix through that sequence, before the checkpoint-bearing
+    event. Verification recomputes that prefix, not the current snapshot.
+    `handoff`, `restart` and `writer-transfer` events never hash themselves, and
+    appending them verifies their checkpoint against the existing prefix (plus
+    the `before`-event reference on an `after`-phase `restart`).
+  - The writer must equal the record's current writer. A `writer-transfer`
+    needs a reconciliation showing the old writer stopped, its children were
+    reconciled and its artifacts preserved. It also needs a checkpoint of the
+    prefix before the transfer; uncertain liveness or unpreserved work blocks
+    transfer. Only the manager records a `lead-assignment`; assignment or
+    reassignment across writer transfers obeys the single-writer and
+    reconciled-transfer rules.
+  - `repair` removes only orphaned temporary files left by interrupted writes;
+    it never modifies or unlinks `work.json` or any `<seq>.json` event file.
+- **Acceptance.**
+  All ten original RC-1 acceptance items must hold on the combined result after
+  RC-1c:
   1. Each event kind's required fields have a passing and a failing test.
   2. A failure injected at each atomic-write step leaves the old or new file,
      never a partial one; written data has mode 0600. Test an interrupted write
@@ -768,19 +974,22 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
      and the Feature lead check source.
   10. Classifications and judgments must reference an existing routing input
       with matching input and policy digests.
-- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_records.py'`,
-  `SUITE -p 'test_reconcile.py'`, then `SUITE`. Fixtures use synthetic task
-  IDs and paths.
-- **Depends on.** HS-1 / PR4 and DOC-1 / PR3, both merged. Stage 1 uses
-  the merged plan, including CD-4 for RC-1.
+- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_schema.py'`,
+  `SUITE -p 'test_records.py'`, `SUITE -p 'test_reconcile.py'`, then `SUITE`.
+  Fixtures use synthetic task IDs and paths.
+- **Depends on.** RC-1b, merged. Cannot run beside RC-1a or RC-1b. Every
+  downstream dependent of the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
+  `HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for RC-1c.
 - **Parallel with.** CF-1, PV-1a.
-- **Risk facts and tier.** Subtle invariants (recovery, data loss,
-  concurrency) → the challenging tier. Reviewer: challenging.
-- **Review focus.** Crash windows and fsync order; the exclusive-create race;
-  the duplicate-dispatch block; writer checks.
-- **Size.** About 1,200 lines, including the persistence tests moved from
-  HS-1. If it grows past 1,200, checkpoint and reconciliation commands move to
-  a challenging follow-up Task, which JV-1, RT-1, SK-1 and PH-1 then depend on.
+- **Risk facts and tier.** Subtle invariants (recovery, crash windows, prefix
+  checkpoints, reconciled writer transfer) → the challenging tier. Reviewer:
+  challenging.
+- **Review focus.** Crash windows before and after event link; `reconcile` and
+  `repair` handling of orphaned temporary files without touching events; prefix
+  checkpoint verification across `restart`, `handoff` and `writer-transfer`;
+  reconciled writer-transfer and manager-only lead assignment invariants.
+- **Size.** About 650–850 lines, tests and documentation included (at most
+  1,200 lines; decision 18).
 
 ### PV-1a Identifier-list loader and matcher
 
@@ -803,8 +1012,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `grep -E`, a list edited between calls, and output that reveals no match.
 - **Offline tests.** `SUITE -p 'test_identifier_list.py'`, then `SUITE`.
 - **Depends on.** HS-1 / PR4 and DOC-1 / PR3, both merged. Stage 1 uses
-  the merged plan, including CD-4 for RC-1.
-- **Parallel with.** CF-1, RC-1.
+  the merged plan, including CD-4 for RC-1a, RC-1b and RC-1c.
+- **Parallel with.** CF-1, RC-1a, RC-1b, RC-1c (sequential across the three RC-1 Tasks).
 - **Risk facts and tier.** Bounded loading and matching → the medium tier.
   PV-1b and JV-1 enforce their publication and external-request gates.
   Reviewer: medium.
@@ -824,7 +1033,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Create `docs/cli/routing.md` and `docs/cli/quota.md`.
 - **Interfaces.**
   - `t3c route input --repo REPO --work ID --input TASK.json` records the
-    common input with RC-1 and prints its reference, input digest and policy digest.
+    common input with RC-1b's recorder and prints its reference, input digest and policy digest.
   - `t3c route judge --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST --domain D --difficulty X --reason TEXT`
   - `t3c route select --repo REPO --work ID --role worker|reviewer|feature-lead|text-helper --input-ref SEQ --policy-digest DIGEST --round first|corrections --review-scope code|document|corrections-delta --catalog FILE --catalog-read-at TIME [--escalate]`
     prints the provider instance, model and options for `delegate_task`. Exits
@@ -937,7 +1146,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as unavailable.
 - **Offline tests.** `SUITE -p 'test_routing.py'`, `SUITE -p 'test_quota.py'`,
   then `SUITE`.
-- **Depends on.** CF-1, RC-1.
+- **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b).
 - **Parallel with.** JV-1; L1 and L2 as their prerequisites finish.
 - **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
   Reviewer) and subtle invariants (one fallback, exhaustion order) →
@@ -984,7 +1193,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     most `maxContextRetries`), then manager judgment. Mixed or unclear work goes
     to the manager directly. API errors and malformed answers go to manager
     judgment. No path selects a model.
-  - Before the request, RC-1's input recorder appends the canonical
+  - Before the request, RC-1b's input recorder appends the canonical
     `routing-input`, with the current routing-policy digest. A retry's context
     is part of a new input and digest. The `routing-classification` event
     references that input and policy, and stores every field in
@@ -998,7 +1207,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `live/jev_contract.py` makes one synthetic call and checks the contract that
   the design records; the manager runs it after review (L2).
 - **Offline tests.** `SUITE -p 'test_jev.py'`, then `SUITE`.
-- **Depends on.** CF-1, RC-1, PV-1a.
+- **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), PV-1a.
 - **Parallel with.** RT-1; L1 and L3 as their prerequisites finish.
 - **Risk facts and tier.** Security boundary (a credential and an external
   service) → the challenging tier. Reviewer: challenging.
@@ -1078,10 +1287,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   missing lead evidence, and require an independent task final review when no
   lead exists. Delivery readiness neither grants nor blocks Task verification.
 - **Offline tests.** `SUITE -p 'test_evidence.py'`, then `SUITE`.
-- **Depends on.** RC-1.
+- **Depends on.** RC-1c (after RC-1a and RC-1b).
 - **Parallel with.** RP-1, PV-1b, BT-1, HC-1, GA-1 to GA-3.
-- **Risk facts and tier.** None of the floor facts: bounded logic over RC-1's
-  schema → the medium tier. It compares records and is fully testable;
+- **Risk facts and tier.** None of the floor facts: bounded logic over the
+  records store and RC-1a's schema → the medium tier. It compares records and is fully testable;
   PB-1 enforces the publication gate. Reviewer: medium.
 - **Review focus.** Every path to `verified`; that Worker claims never count;
   exact base and head matching.
@@ -1202,7 +1411,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   placeholders, inline instructions, the agy rules and digests. Every rule
   listed above appears in its template.
 - **Offline tests.** `SUITE -p 'test_briefs.py'`, then `SUITE`.
-- **Depends on.** HS-1, RC-1 (atomic data writes).
+- **Depends on.** HS-1, RC-1c (complete records store and atomic data writes, after RC-1a and RC-1b).
 - **Parallel with.** RP-1, EV-1, PV-1b, HC-1, GA-1 to GA-3.
 - **Risk facts and tier.** Shared interface change (every Assignment uses these
   briefs) → the medium tier. Reviewer: medium.
@@ -1262,7 +1471,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   stale metadata, each refusal, log capture, the summary's fields and CD-2's
   exit mapping, including child 0 with a changed tree and arbitrary child exits.
 - **Offline tests.** `SUITE -p 'test_heavy.py'`, then `SUITE`.
-- **Depends on.** HS-1, RC-1 (atomic data writes).
+- **Depends on.** HS-1, RC-1c (complete records store and atomic data writes, after RC-1a and RC-1b).
 - **Parallel with.** RP-1, EV-1, PV-1b, BT-1, GA-1 to GA-3.
 - **Risk facts and tier.** Subtle invariants (concurrency) → the challenging tier, although the Task is small. Reviewer: challenging.
 - **Review focus.** Lock lifetime; descriptor inheritance; the main-checkout
@@ -1500,7 +1709,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   no-lead publication without bypassing CD-4. The first pull request after
   PB-1 is installed is published through it (L5).
 - **Offline tests.** `SUITE -p 'test_publish.py'`, then `SUITE`.
-- **Depends on.** RC-1, EV-1, PV-1b, GA-3.
+- **Depends on.** RC-1c (after RC-1a and RC-1b), EV-1, PV-1b, GA-3.
 - **Parallel with.** RP-1.
 - **Risk facts and tier.** Security and guardrail boundaries (the publication
   identity and privacy) → the challenging tier. Reviewer: challenging.
@@ -1602,7 +1811,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   CD-2's data-on-nonzero exits, required publish status file, heavy summary and
   shared-module ownership. Installation is L6.
 - **Offline tests.** `SUITE -p 'test_skill.py'`, then `SUITE`.
-- **Depends on.** CF-1, RC-1, EV-1, JV-1, RT-1, PV-1b, GA-1, GA-2, GA-3, PB-1,
+- **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), EV-1, JV-1, RT-1, PV-1b, GA-1, GA-2, GA-3, PB-1,
   HC-1, BT-1, and L7's result.
 - **Parallel with.** RP-1.
 - **Risk facts and tier.** Shared interface change (it names every command).
@@ -1667,13 +1876,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     exception grants no earlier helper-router access to rapid-ship work.
 - **Acceptance.** The files hold no private identifier. Every pilot criterion
   in the design maps to a checklist step. The restart procedure cites L7's
-  result and uses RC-1's tested checkpoint contract for both restart phases,
+  result and uses RC-1c's tested checkpoint contract for both restart phases,
   handoff and writer transfer. `tests/test_pilot_docs.py` renders the kickoff
   template with `t3c brief render` and checks that every `t3c` command the documents name
   exists. If L7 found no way to clear the conversation while keeping the
   thread, PH-1 records the gap and the manager asks Shawn before the handoff.
 - **Offline tests.** `SUITE -p 'test_pilot_docs.py'`, then `SUITE`.
-- **Depends on.** SK-1 and L7.
+- **Depends on.** RC-1c (after RC-1a and RC-1b), SK-1 and L7.
 - **Parallel with.** RP-1 if it is still running.
 - **Risk facts and tier.** None: the Task writes procedures and a template, not
   recovery code; L7 supplies the live evidence → the medium tier.
@@ -1839,28 +2048,36 @@ Shawn authorized the scratch thread and manual clear for L7 ([decision 3](#decis
 | Stage | Tasks that may run in parallel | Waits for |
 |---|---|---|
 | 0 | HS-1, DOC-1; L7 independently | this plan's merge; L7 has owner authorization |
-| 1 | CF-1, RC-1, PV-1a | both DOC-1 / PR3 and HS-1 / PR4 merged; use the merged plan and CD-4 |
-| 2 | RT-1, JV-1; L1 to L3 as ready | RT-1: CF-1, RC-1. JV-1: CF-1, RC-1, PV-1a. L1: CF-1. L2: JV-1, L1. L3: RT-1, L1 |
-| 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1. EV-1: RC-1. PV-1b: PV-1a. BT-1, HC-1: HS-1, RC-1. GA-1: HS-1 |
+| 1 | CF-1, PV-1a, and sequential RC-1a → RC-1b → RC-1c | CF-1, PV-1a, RC-1a: both DOC-1 / PR3 and HS-1 / PR4 merged (use the merged plan and CD-4; RC-1a adds no dependency on the decision-18 docs follow-up). RC-1b: RC-1a. RC-1c: RC-1b |
+| 2 | RT-1, JV-1; L1 to L3 as ready | Stage 2 waits for all three RC-1 Tasks (RC-1a, RC-1b, RC-1c). RT-1: CF-1, RC-1c. JV-1: CF-1, RC-1c, PV-1a. L1: CF-1. L2: JV-1, L1. L3: RT-1, L1 |
+| 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1. EV-1: RC-1c. PV-1b: PV-1a. BT-1, HC-1: HS-1, RC-1c. GA-1: HS-1 |
 | 3a | GA-2, then GA-3; other stage-3 Tasks may continue | GA-2: GA-1. GA-3: GA-2 |
-| 4 | PB-1; RP-1 may still run | RC-1, EV-1, PV-1b, GA-3 |
-| 5 | SK-1; RP-1 may still run | all helper and template Tasks, and L7; RP-1 need not finish |
-| 6 | PH-1 | SK-1, L7 |
+| 4 | PB-1; RP-1 may still run | RC-1c, EV-1, PV-1b, GA-3 |
+| 5 | SK-1; RP-1 may still run | all helper and template Tasks (including RC-1c), and L7; RP-1 need not finish |
+| 6 | PH-1 | RC-1c, SK-1, L7 |
 | 7 | gated handoff, then pilot (L9) | Tasks through PH-1; L1 to L7; Shawn's go-ahead |
 | later | FL-1, then FL-2 | the first pilot; FL-2 also waits for L10 |
 
 Routing comes first, as Shawn requested on 2026-10-27. Stage 1 starts only
 when both PR3 (DOC-1) and PR4 (HS-1) have merged; CD-4 record work uses the
-merged plan. Dispatch CF-1, RC-1 and PV-1a first, then RT-1 as soon as CF-1
-and RC-1 finish; JV-1 also needs PV-1a. L1 follows CF-1; L2 follows JV-1 and L1; L3 follows RT-1 and L1.
-The router goes live once JV-1, RT-1 and L1 to L3 pass, before publication
-and the skill. L7 is independent of the helper and can run while the routing
-path is built.
+merged plan. Under [decision 18](#decisions), the records store ships as three
+sequential Tasks under one Feature lead: RC-1a, then RC-1b, then RC-1c (RC-1a's
+code may merge before the decision-18 documentation follow-up merges, so no
+DOC-2 follow-up merge gate is added). Dispatch CF-1, RC-1a and PV-1a first,
+then RC-1b once RC-1a merges, and RC-1c once RC-1b merges. Stage 2 waits for
+all three RC-1 Tasks (`RC-1a`, `RC-1b` and `RC-1c`): dispatch RT-1 as soon as
+CF-1 and RC-1c finish; JV-1 also needs PV-1a. L1 follows CF-1; L2 follows JV-1
+and L1; L3 follows RT-1 and L1. The router goes live once JV-1, RT-1 and L1 to
+L3 pass, before publication and the skill. L7 is independent of the helper and
+can run while the routing path is built.
 
-The Stage 1 two-merge gate is mandatory. Other stages give dispatch priority,
-not extra dependencies. EV-1, PV-1b, BT-1, HC-1 and GA-1 may start earlier once their listed dependencies finish
-if that does not delay routing. Each parallel group has exclusive file
-ownership. The post-routing chain is GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1;
+The Stage 1 two-merge gate is mandatory, and Stage 2 waits for all three RC-1
+Tasks through RC-1c. Other stages give dispatch priority, not extra
+dependencies. EV-1, PV-1b, BT-1, HC-1 and GA-1 may start earlier once their
+listed dependencies finish if that does not delay routing (EV-1, BT-1 and HC-1
+wait for RC-1c; PV-1b waits for PV-1a; GA-1 waits for HS-1). Each parallel
+group has exclusive file ownership; RC-1a, RC-1b and RC-1c share the records
+paths sequentially and never run in parallel with one another. The post-routing chain is GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1;
 EV-1, the privacy checks, templates and lock run beside the token Tasks.
 The manager chooses concurrency from capacity and Shawn's direction. DOC-1's
 exact-text carve-outs and FL-2 name easy-tier work.
@@ -1896,28 +2113,28 @@ step's reviews leave to this plan.
 | 10 | The in-flight restart | Procedure decided; mechanism open until L7. L7 tests the ways to clear the conversation while keeping the thread; PH-1 writes the procedure. If no way exists, the manager asks Shawn before the handoff. | L7, PH-1 |
 | 11 | A message-only rewrite after a privacy match | Decided. A rewritten commit is a new commit, so the design's rule applies ([Work cycle][d-cycle], step 7). The manager confirms that the trees are identical, the required checks rerun on the new head, and a scoped re-review covers it (independent for earlier heads or an unled final head; current lead for a led final head, under decision 13). Keeping the earlier review would relax the design; only Shawn can make that change. | BT-1, SK-1 |
 | 12 | The token step's second-review findings and usage rules | Decided. GA-2 adds V1 (forward SIGTERM and SIGHUP to the child, then revoke) and V3 (build the sanitized environment, removing `GIT_CONFIG`, before both preflight and execution). GA-3 adds V2 (refuse `trace2.envVars` and a false-like `http.sslVerify`), and the usage rules become checks: `publish run` refuses `git -C`, `git -c` and a shell as the command, and PB-1 runs it from the repository directory with explicit `--head` and `--base`. SK-1 carries the Keychain rule: Allow, not Always Allow. If the interim step stays in use for long, a Worker Assignment may add V1 to V3 to it first. | GA-2, GA-3, PB-1, SK-1 |
-| 13 | T3 may fast-forward the owner's checkout after merge | Decided. Read the provisioned HEAD at each dispatch; never assume the checkout lags origin. After a merge, the manager may run `git pull --ff-only` on clean `main` only when T3 has not already fast-forwarded it ([decision 2](#decisions)). | RC-1, BT-1, SK-1; DOC-1 records it |
+| 13 | T3 may fast-forward the owner's checkout after merge | Decided. Read the provisioned HEAD at each dispatch; never assume the checkout lags origin. After a merge, the manager may run `git pull --ff-only` on clean `main` only when T3 has not already fast-forwarded it ([decision 2](#decisions)). | RC-1b, BT-1, SK-1; DOC-1 records it |
 | 14 | GitHub-generated squash trailers | Decided by Shawn on 2026-10-28 ([decision 7](#decisions)): accept them. They may carry the owner's commit email; agents never write it. They sit on the base branch, normally outside the review ranges that privacy checks cover; a match in a squash commit that a branch update brings into a range goes to Shawn. | DOC-1 records it; PV-1b |
 
 ## Coverage
 
 | Requirement | Design | Tasks |
 |---|---|---|
-| Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1, EV-1, JV-1 |
+| Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1a, RC-1b, RC-1c, EV-1, JV-1 |
 | Validated config schema and its digest; medium Worker-only pool preferences and endpoints under decision 12 | [Routing and personal configuration][d-routing] | CF-1 |
 | Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, model-aware pool walking, per-account quota and skipped-account reasons under decision 12, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
 | Medium Worker choices under decisions 9 and 12: owner-controlled placement, role limits, live catalog and GLM billing | [Routing and personal configuration][d-routing] | DOC-1, CF-1, RT-1, L11 |
-| Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1, EV-1 |
+| Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1a, RC-1b, RC-1c, EV-1 |
 | Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
 | Worker and Reviewer brief templates | [Work cycle][d-cycle]; [Manager threads and bases][d-bases] | BT-1 |
 | Manager skill and user-level installation | [Scope][d-scope] | SK-1 |
-| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record validation and uncertain dispatch in RC-1; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
+| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record schema validation in RC-1a, store validation and duplicate-dispatch refusal in RC-1b, and uncertain-dispatch reconciliation and recovery in RC-1c; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
 | The test command in `AGENTS.md` | [t3-compose repository workflow][d-workflow] | HS-1 |
-| Lead final-head review, own-Task publication, lead reporting limits and manager delivery timing; review sequence references, lead assignments/provenance/evidence and distinct finding keys (decisions 13 and 17, CD-4) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
+| Lead final-head review, own-Task publication, lead reporting limits and manager delivery timing; review sequence references, lead assignments/provenance/evidence and distinct finding keys (decisions 13 and 17, CD-4) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1a, RC-1b, RC-1c, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
 | Stable uv-pinned CPython 3.15, final-release floor, one interpreter and isolated commands (decision 14, CD-3) | [Sources of truth and local records][d-records] | DOC-1, HS-1, BT-1, SK-1; manager delivery checks |
 | Structured nonzero CLI data, sanitized errors, publish status file, heavy JSON summary, reserved options and injectable shared process interfaces/ownership (decision 15, CD-2) | [Sources of truth and local records][d-records]; [Checks and publication][d-publication] | DOC-1, HS-1 and every later command Task; GA-2/3, PB-1, HC-1, PV-1b |
-| Temporary private prose setup, no rapid-ship work by t3-compose agents, formal L9 gates unchanged; Stage 1 after PR3 and PR4 merge (decisions 15/16) | [Taking over existing Claude work][d-takeover]; [Pilot and validation][d-pilot] | DOC-1, CF-1, RC-1, PV-1a, PH-1, SK-1 |
+| Temporary private prose setup, no rapid-ship work by t3-compose agents, formal L9 gates unchanged; Stage 1 after PR3 and PR4 merge; records store split into three sequential Tasks and Stage 2 gated on all three (decisions 15, 16 and 18) | [Taking over existing Claude work][d-takeover]; [Pilot and validation][d-pilot]; [Sources of truth and local records][d-records] | DOC-1, CF-1, RC-1a, RC-1b, RC-1c, PV-1a, PH-1, SK-1 |
 | Feature leads after the first pilot | [Feature lead options][d-leads] | FL-1, FL-2 |
 | Pilot handoff, both restarts, synthetic router pilots | [Pilot and validation][d-pilot]; [Taking over existing Claude work][d-takeover] | PH-1, RP-1, L7 |
 
@@ -2100,7 +2317,10 @@ Shawn added these decisions on 2026-10-28:
     for helper commit metadata. Imports/register stay side-effect-free and
     handlers use `args.local_dir`. The manager withdrew the separate follow-up
     docs Task: DOC-1 includes CD-2 section 6 now. Stage 1 (CF-1/RC-1/PV-1a)
-    starts only after both PR3 and PR4 merge, using the merged plan and CD-4.
+    starts only after both PR3 and PR4 merge, using the merged plan and CD-4
+    (decision 18 splits aggregate RC-1 into sequential RC-1a, RC-1b and RC-1c,
+    with `jsonio` and `cli.helper_info()` in RC-1b and all RC-1 dependents and
+    Stage 2 waiting for RC-1c).
 16. **Temporary prose setup, 2026-10-28.** Shawn said: "we have the design down. While waiting for t3c impl, create a prose prompt for this manager/feature lead/worker setup with multi-model in t3 code, so we can temporarily unblock rapid-ship dev"
     This dated exception supersedes the hold in re-home decision 2 and Taking
     over existing Claude work only for a separate rapid-ship-bound manager's
@@ -2122,6 +2342,34 @@ Shawn added these decisions on 2026-10-28:
     prerequisites and integration evidence. There is no extra manager pre-merge
     readiness approval or repeated final-head review; the manager still owns
     overall delivery, and delivery readiness remains separate from EV-1.
+18. **Three sequential records-store Tasks, 2026-10-28.** Shawn was asked:
+    "RC-1 (the records store) will be about 2,200–2,800 lines, more than twice the plan's 1,200-line limit per PR. How should it ship?"
+    Shawn chose the option: "Three PRs in sequence (Recommended)", with the
+    supplied option text:
+    "Each stays under the limit: (1) the record schema, about 800–1,100 lines; (2) the durable store, history and the work and event commands, about 900–1,200; (3) checkpoint, reconcile and repair, about 650–850. … Stage 2 waits for all three"
+    (rejecting "One PR, size exception"; no size waiver is granted).
+    RC-1 splits into three sequential pull-request Tasks under one Feature lead,
+    each at most 1,200 changed lines: RC-1a (record schema contract foundation
+    in `docs/records.md`, `t3compose/schema.py` and `tests/test_schema.py`,
+    with no usable store or commands; medium tier, about 800–1,100 lines;
+    depends on merged HS-1 / PR4 and DOC-1 / PR3, runs in parallel with CF-1
+    and PV-1a, and adds no dependency on this documentation follow-up's merge),
+    RC-1b (durable store core and history, `jsonio.py` and `tests/test_jsonio.py`
+    additions, `t3compose/records.py`, `docs/cli/records.md`,
+    `tests/test_records.py`, `docs/records.md` updates, the common routing-input
+    recorder, dispatch provenance and duplicate-writer refusal, CD-4 reviews and
+    findings, the exclusive-create writer race, and `work new`, `show`, `list`
+    and `event add`; challenging tier, about 900–1,200 lines; depends on RC-1a
+    and cannot run beside it), and RC-1c (`work snapshot`, `reconcile` and
+    `repair`, prefix checkpoint verification, `restart`, `handoff` and
+    `writer-transfer` enforcement, and orphan-temporary crash recovery in
+    `t3compose/records.py`, `docs/records.md`, `docs/cli/records.md`,
+    `tests/test_records.py` and `tests/test_reconcile.py`; challenging tier,
+    about 650–850 lines; depends on RC-1b and cannot run beside it). The full
+    original RC-1 record contract and all ten acceptance items hold across the
+    three Tasks and on the combined result after RC-1c. Every Task that
+    depended on RC-1 (RT-1, JV-1, EV-1, BT-1, HC-1, PB-1, SK-1 and PH-1) waits
+    for RC-1c, and Stage 2 waits for all three.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
