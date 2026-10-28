@@ -395,8 +395,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   - Record [decision 7](#decisions) in the t3-compose privacy rule. The
     `Co-authored-by` trailers that GitHub generates on a squash commit when
     Shawn merges may carry his commit email, which F7 found already public.
-    Agents never write it. The trailers sit only on the base branch, outside
-    the review ranges that privacy checks cover (item 14).
+    Agents never write it. The trailers sit on the base branch, normally
+    outside the review ranges that privacy checks cover. A match in a squash
+    commit that a branch update brings into a range goes to Shawn (item 14).
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -613,10 +614,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   - First-round Worker tier: the higher of the difficulty and every declared
     fact's floor. The Corrections rule below replaces that first-round floor
     calculation for enumerated Corrections.
-    `--escalate` sets it one step above the highest Worker tier already
-    recorded for the same round kind on the Task; escalation from challenging
-    exits 4. Easy first-round work goes to the agy pool only when no floor
-    applies.
+    `--escalate` sets it to the higher of the tier the round would get without
+    escalation and one step above the highest Worker tier already recorded for
+    the same round kind on the Task. It exits 4 when that recorded tier is
+    challenging or no round of that kind is recorded. Easy first-round work
+    goes to the agy pool only when no floor applies.
   - Corrections with enumerated findings use `roundTiers.corrections`
     (initially easy, so the agy pool), even when a floor set the first round's
     tier ([decision 6](#decisions)); a brief that adds unresolved work is
@@ -651,8 +653,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   named stale input or policy; a non-primary fallback; a fallback at the wrong
   tier or ineligible for the role; the first-review, document, Corrections
   and scoped re-review tiers; Corrections after a floored first round; an
-  escalated Corrections round; and changed `roundTiers` values.
-  `Simulated…` tests inject
+  escalated Corrections round, including one after `roundTiers.corrections`
+  rises and one with no recorded Corrections round; and changed `roundTiers`
+  values. `Simulated…` tests inject
   quota observations to show rotation in order, wrap-around, reset evidence and
   all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
   (L3).
@@ -815,8 +818,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     removed still blocks, because a push publishes every commit. `*.lock`
     files are skipped, as in the manual check. Author and committer fields are
     not checked ([finding F7][d-findings]). GitHub's squash trailers
-    ([decision 7](#decisions)) sit only on the base branch, outside a Task's
-    review range, so the check makes no exception for them.
+    ([decision 7](#decisions)) sit on the base branch, normally outside a
+    Task's review range, so the check makes no exception for them. If a branch
+    update brings a squash commit into the range, a match there goes to Shawn.
   - Output names the field, commit, file and list line number, never matched
     text. A match blocks publication until Corrections or Shawn resolves it.
   - `pr verify` reads the pull request through the GitHub API, read-only. It
@@ -1462,7 +1466,7 @@ step's reviews leave to this plan.
 | 11 | A message-only rewrite after a privacy match | Decided. A rewritten commit is a new commit, so the design's rule applies ([Work cycle][d-cycle], step 7). The manager confirms that the trees are identical, the required checks rerun on the new head, and a scoped re-review covers it. Keeping the earlier review would relax the design; only Shawn can make that change. | BT-1, SK-1 |
 | 12 | The token step's second-review findings and usage rules | Decided. GA-2 adds V1 (forward SIGTERM and SIGHUP to the child, then revoke) and V3 (build the sanitized environment, removing `GIT_CONFIG`, before both preflight and execution). GA-3 adds V2 (refuse `trace2.envVars` and a false-like `http.sslVerify`), and the usage rules become checks: `publish run` refuses `git -C`, `git -c` and a shell as the command, and PB-1 runs it from the repository directory with explicit `--head` and `--base`. SK-1 carries the Keychain rule: Allow, not Always Allow. If the interim step stays in use for long, a Worker Assignment may add V1 to V3 to it first. | GA-2, GA-3, PB-1, SK-1 |
 | 13 | T3 may fast-forward the owner's checkout after merge | Decided. Read the provisioned HEAD at each dispatch; never assume the checkout lags origin. After a merge, the manager may run `git pull --ff-only` on clean `main` only when T3 has not already fast-forwarded it ([decision 2](#decisions)). | RC-1, BT-1, SK-1; DOC-1 records it |
-| 14 | GitHub-generated squash trailers | Decided by Shawn on 2026-10-28 ([decision 7](#decisions)): accept them. They may carry the owner's commit email; agents never write it. They sit only on the base branch, outside the review ranges that privacy checks cover. | DOC-1 records it; PV-1b |
+| 14 | GitHub-generated squash trailers | Decided by Shawn on 2026-10-28 ([decision 7](#decisions)): accept them. They may carry the owner's commit email; agents never write it. They sit on the base branch, normally outside the review ranges that privacy checks cover; a match in a squash commit that a branch update brings into a range goes to Shawn. | DOC-1 records it; PV-1b |
 
 ## Coverage
 
