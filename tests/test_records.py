@@ -1006,9 +1006,28 @@ class OfflineReviewHistory(OfflineTestCase):
         self.add("finding-disposition", {**disposition, "findingId": "minor", "disposition": "declined", "reason": "style"})
         for state in ("resolved-outside-tree", "disputed"):
             self.add("finding-disposition", {**disposition, "disposition": state})
+        unresolved = {"answer": {"unknown": "pending"}, "decidedBy": {"unknown": "pending"}, "date": {"unknown": "pending"}}
+        for mutation in ({"decidedBy": "worker:synthetic-worker"}, {"decidedBy": MANAGER_WRITER},
+                         {"decidedBy": "lead:synthetic-lead"}, unresolved):
+            decision = self.add("decision", {**self.payloads["decision"], **mutation})
+            refused = {**disposition, "disposition": "owner-decided", "evidence": {"decisionRef": decision["seq"]}}
+            with self.assertRaises(ValueError):
+                self.add("finding-disposition", refused)
+            file = self.temp / "synthetic-owner-decision.json"
+            file.write_bytes(canonical_json(refused))
+            result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--kind", "finding-disposition",
+                                  "--writer", MANAGER_WRITER, "--file", str(file))
+            self.assertEqual((result.returncode, result.stdout), (2, ""))
         decision = self.add("decision")
-        self.add("finding-disposition", {**disposition, "disposition": "owner-decided",
+        owner = self.add("finding-disposition", {**disposition, "disposition": "owner-decided",
                                          "evidence": {"decisionRef": decision["seq"]}})
+        file.write_bytes(canonical_json(owner["data"]))
+        result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--kind", "finding-disposition",
+                              "--writer", MANAGER_WRITER, "--file", str(file))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for mutation in ({"decidedBy": "worker:synthetic-worker"}, unresolved):
+            self.refuses_replay(decision, {"data": {**decision["data"], **mutation}})
+        self.refuses_replay(owner, {"data": {**owner["data"], "evidence": {"decisionRef": owner["seq"] + 1}}})
         second = self.add("review", self.reviewer(2))
         self.add("finding-disposition", {**disposition, "disposition": "rejected-by-second-review",
                                          "evidence": {"reviewRef": second["seq"]}})

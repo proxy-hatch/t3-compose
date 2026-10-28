@@ -198,6 +198,10 @@ History rules:
   and `worktreePath` (matching the confirmation when known). These are recorded
   coordinator observations, not a live T3 query. Unknown/other outcomes do not
   clear. Unsupported preservation claims are refused, never trusted by label.
+  Any later non-preservation dispatch observation revokes clearance, including
+  after a result; replacement writers and transfers remain blocked until fresh
+  valid preservation or a completed result resolves it. Both intent sequence and
+  request-ID references identify the same dispatch.
 - Classifications/judgments/selections join existing routing input with exact
   input/policy digests; selection's classification/judgment must name the same
   input and digests. Retry context references an existing classification.
@@ -295,7 +299,12 @@ and a reason. Fixed requires its full commit SHA and evidence. Evidence must be
 concrete nonempty text or a concrete nonempty mapping, without nested unknowns.
 For `rejected-by-second-review`, use `{reviewRef: <later task review sequence>}`
 from a distinct independent Reviewer covering the same base/head; for
-`owner-decided`, use `{decisionRef: <resolved decision sequence>}`. Other
+`owner-decided`, use `{decisionRef: <resolved decision sequence>}` whose
+`decidedBy` is exactly `"owner"`, the reserved value for Shawn. The recorder
+quotes Shawn's words in `answer` and identifies where and when he gave them.
+This is recorded provenance, not authentication; writers must follow this rule.
+Other authors remain valid for general decisions but cannot supply owner
+disposition authority. Other
 mappings/text record the artifact or explanation; these are assertions, not EV-1
 acceptance. No disposition overwrites an earlier attempt or review.
 
@@ -308,7 +317,11 @@ Uncertain entries have `kind`, `ref` (intent sequence), `intent`, `confirmation`
 Dispatch entries remain until completed result or valid preservation, never just
 confirmation. Operation entries remain without a concrete result; `unknown`
 outcomes and a started child with unknown status remain uncertain regardless of
-an outcome label. Results retain confirmation evidence for caller inspection.
+an outcome label. Retained intents, confirmations and observations allow later
+unknown/in-flight reconciliations to reopen resolved items, by sequence or ID;
+a subsequent concrete operation result clears its uncertainty again. Operation
+reconciliations with unknown native/artifact facts also reopen the item.
+Results retain confirmation evidence for caller inspection.
 The helper never polls T3/Git to resolve an uncertain item. Callers inspect native
 request/task/thread/worktree references and artifacts, then append the facts.
 

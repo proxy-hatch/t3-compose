@@ -228,7 +228,8 @@ def history(work, events):
                 require(isinstance(evidence, dict), "disposition reference required")
                 if disposition == "owner-decided":
                     decision = reference(evidence.get("decisionRef"), "decision")
-                    require(isinstance(decision["answer"], str), "owner decision unresolved")
+                    require(isinstance(decision["answer"], str) and decision["decidedBy"] == "owner",
+                            "resolved owner decision required")
                 else:
                     other = reference(evidence.get("reviewRef"), "review")
                     require(evidence["reviewRef"] > data["reviewRef"] and other["reviewer"]["kind"] == "task"
@@ -288,6 +289,8 @@ def history(work, events):
                             (isinstance(confirmed["worktreePath"], dict) or artifacts["worktreePath"] == confirmed["worktreePath"]),
                             "preservation native provenance mismatch")
                 cleared.add(request)
+            else:
+                cleared.discard(request)
         elif kind == "routing-input":
             if data["context"] and data["context"].get("priorClassificationRef") is not None:
                 reference(data["context"]["priorClassificationRef"], "routing-classification")
@@ -424,7 +427,7 @@ def snapshot(local_dir, repo, work_id, *, through_seq=None):
 
 
 def uncertain_items(events):
-    items, tasks = {}, {}
+    items, tasks, retained = {}, {}, {}
     for event in events:
         kind, data = event["kind"], event["data"]
         if kind in {"dispatch-intent", "op-intent"}:
@@ -432,30 +435,33 @@ def uncertain_items(events):
             key = data["clientRequestId"] if category == "dispatch" else data["opId"]
             items[category, key] = {"kind": category, "ref": event["seq"], "intent": event,
                                     "confirmation": None, "observations": []}
+            retained[category, key] = items[category, key]
         elif kind == "dispatch-confirmed":
             key = data["clientRequestId"]
             tasks[data["taskId"]] = key
-            items["dispatch", key]["confirmation"] = event
+            retained["dispatch", key]["confirmation"] = event
         elif kind == "result":
-            items.pop(("dispatch", tasks[data["taskId"]]), None)
+            key = ("dispatch", tasks[data["taskId"]])
+            retained[key]["observations"].append(event)
+            items.pop(key, None)
         elif kind == "op-result":
             key = ("operation", data["opId"])
             summary = data.get("statusSummary") or {}
+            retained[key]["observations"].append(event)
             if data["outcome"] != "unknown" and not (summary.get("childStarted") and summary.get("childStatus") is None):
                 items.pop(key, None)
             else:
-                # A later uncertain observation must not disappear behind an earlier result.
-                intent = events[data["intentRef"] - 1]
-                item = items.setdefault(key, {"kind": "operation", "ref": intent["seq"], "intent": intent,
-                                               "confirmation": None, "observations": []})
-                item["observations"].append(event)
+                items[key] = retained[key]
         elif kind == "reconciliation" and data["item"]["kind"] in {"dispatch", "operation"}:
             category, ref = data["item"]["kind"], data["item"]["ref"]
-            for key, item in list(items.items()):
+            for key, item in retained.items():
                 if key[0] == category and ref in (key[1], item["ref"]):
                     item["observations"].append(event)
                     if category == "dispatch" and data["outcome"] == "stopped-and-preserved":
-                        del items[key]
+                        items.pop(key, None)
+                    elif (category == "dispatch" or data["outcome"] in {"unknown-liveness", "in-flight"}
+                          or not concrete(data["t3Facts"]) or not concrete(data["gitFacts"])):
+                        items[key] = item
     return list(items.values())
 
 

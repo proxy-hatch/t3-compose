@@ -24,6 +24,14 @@ class OfflineRecovery(OfflineTestCase):
     command = fixtures.OfflineRecordStore.command
     refuses_replay = fixtures.OfflineReviewHistory.refuses_replay
 
+    def cli_event(self, kind, data, expected=0):
+        file = self.temp / "synthetic-correction.json"
+        file.write_bytes(canonical_json(data))
+        result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1",
+                              "--writer", MANAGER_WRITER, "--kind", kind, "--file", str(file))
+        self.assertEqual(result.returncode, expected, result.stderr)
+        return result
+
     def snapshot(self, **kwargs):
         return self.r.snapshot(self.local, REPO_ID, "WORK-1", **kwargs)
 
@@ -139,6 +147,16 @@ class OfflineRecovery(OfflineTestCase):
             self.assertTrue(uncertain[0]["observations"])
         self.add("op-result", data)
         self.assertEqual(self.report()["works"][0]["uncertain"], [])
+        for ref in (op["seq"], op["data"]["opId"]):
+            observation = self.add("reconciliation", {**self.payloads["reconciliation"],
+                "item": {"kind": "operation", "ref": ref}, "outcome": "unknown-liveness"})
+            result = self.command("work", "reconcile", "--repo", REPO_ID, "--work", "WORK-1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(json.loads(result.stdout)["works"][0]["uncertain"]), 1)
+            item = json.loads(result.stdout)["works"][0]["uncertain"][0]
+            self.assertEqual((item["intent"], item["observations"][-1]), (op, observation))
+            self.add("op-result", data)
+            self.assertEqual(self.report()["works"][0]["uncertain"], [])
 
     def temporary(self, folder=None, pid=99999999, nonce="a"):
         file = (folder or self.directory / "events") / f'.t3c-tmp-{pid}-{nonce * 32}.tmp'
@@ -337,6 +355,52 @@ records.append_event(local, "github.com/example-org/example-repo", "WORK-1",
         proof = self.add("reconciliation", data)
         self.assertEqual(self.report()["works"][0]["uncertain"], [])
         self.refuses_replay(proof, {"data": {**data, "gitFacts": {"unknown": "lost artifacts"}}})
+        checkout, _, head = fixtures.OfflineRecordStore.git_fixture(self)
+        replacement = {**self.payloads["dispatch-intent"], "clientRequestId": "synthetic-replacement", "round": 2}
+        for ref, outcome in ((1, "unknown-liveness"), (data["t3Facts"]["clientRequestId"], "in-flight")):
+            observation = self.add("reconciliation", {**data, "item": {"kind": "dispatch", "ref": ref},
+                "outcome": outcome, "t3Facts": {"unknown": "synthetic latest status unavailable"}})
+            result = self.command("work", "reconcile", "--repo", REPO_ID, "--work", "WORK-1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(json.loads(result.stdout)["works"][0]["uncertain"]), 1)
+            item = json.loads(result.stdout)["works"][0]["uncertain"][0]
+            self.assertEqual(item["confirmation"]["data"], self.payloads["dispatch-confirmed"])
+            self.assertIn(proof, item["observations"])
+            self.assertEqual(item["observations"][-1], observation)
+            with self.assertRaises(ValueError):
+                self.add("dispatch-intent", replacement)
+            self.cli_event("dispatch-intent", {**replacement, "dispatchingCheckout": str(checkout), "provisionedCommit": head}, 2)
+            renewed = self.add("reconciliation", data)
+            self.assertEqual(self.report()["works"][0]["uncertain"], [])
+        self.add("dispatch-intent", replacement)
+        self.refuses_replay(renewed, {"data": {**data, "outcome": "unknown-liveness"}})
+
+    def test_later_reviewer_uncertainty_blocks_transfer(self):
+        self.add("lead-assignment")
+        intent = self.add("dispatch-intent", {**self.payloads["dispatch-intent"], "role": "reviewer"})
+        self.add("dispatch-confirmed")
+        data = self.preservation()
+        data["item"] = {"kind": "dispatch", "ref": intent["seq"]}
+        data["t3Facts"].update(clientRequestId=intent["data"]["clientRequestId"], taskId=self.payloads["dispatch-confirmed"]["taskId"])
+        data["gitFacts"]["worktreePath"] = self.payloads["dispatch-confirmed"]["worktreePath"]
+        self.add("reconciliation", data)
+        proof = self.add("reconciliation", self.preservation())
+        for ref in (intent["seq"], intent["data"]["clientRequestId"]):
+            self.add("reconciliation", {**data, "item": {"kind": "dispatch", "ref": ref}, "outcome": "unknown-liveness"})
+            transfer = {"from": MANAGER_WRITER, "to": LEAD_WRITER, "reconciliationRef": proof["seq"], "checkpoint": self.snapshot()}
+            with self.assertRaises(ValueError):
+                self.add("writer-transfer", transfer)
+            self.cli_event("writer-transfer", transfer, 2)
+            self.add("reconciliation", data)
+        transfer["checkpoint"] = self.snapshot()
+        event = self.add("writer-transfer", transfer)
+        self.assertEqual(self.load()["effectiveWork"]["writer"], LEAD_WRITER)
+        self.refuses_replay(event, {"data": {**transfer, "reconciliationRef": intent["seq"]}})
+        replay = copy.deepcopy(self.load()["events"])
+        replay[-2]["data"]["outcome"] = "unknown-liveness"
+        replay[-1]["data"]["checkpoint"] = self.r.checkpoint(self.work, replay[:-1])
+        with self.assertRaises(ValueError):
+            self.r.history(self.work, replay)
 
     def test_repair_sync_failure_retains_events_and_reports_uncertainty(self):
         self.add("next-action")
