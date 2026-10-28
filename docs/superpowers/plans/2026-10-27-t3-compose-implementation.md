@@ -1541,8 +1541,7 @@ Shawn answered the plan's five questions on 2026-10-27:
    decisions; the config supplies the models. Decision 6 replaces the
    Corrections part.
 
-Shawn added three decisions on 2026-10-28, in reply to this plan's pull
-request:
+Shawn added these decisions on 2026-10-28:
 
 6. **Corrections at the easy tier.** Corrections rounds with enumerated
    findings use the easy tier, even when a floor set the first round's tier.
