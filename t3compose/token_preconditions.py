@@ -37,8 +37,15 @@ def _resolved(program, env, cwd):
     return Path(found).resolve() if found else None
 
 
+def _same_file(left, right):
+    try:
+        return left is not None and right is not None and left.samefile(right)
+    except OSError:
+        return False
+
+
 def _command_git(command, env, cwd):
-    supplied = Path(command[0]).name
+    supplied = Path(command[0]).name.casefold()
     if supplied in _SHELLS:
         raise Refusal('shell-command')
     try:
@@ -46,10 +53,11 @@ def _command_git(command, env, cwd):
         path_git = _resolved('git', env, cwd)
     except OSError:
         raise Refusal('git-config') from None
-    if resolved is not None and resolved.name in _SHELLS:
+    if resolved is not None and resolved.name.casefold() in _SHELLS:
         raise Refusal('shell-command')
     is_git = (supplied == 'git' or
-              (resolved is not None and (resolved.name == 'git' or resolved == path_git)))
+              (resolved is not None and resolved.name.casefold() == 'git') or
+              _same_file(resolved, path_git))
     if not is_git:
         return 'git'
     for arg in command[1:]:

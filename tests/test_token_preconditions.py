@@ -246,6 +246,34 @@ class OfflineTokenPreconditions(OfflineTestCase):
                 with self.subTest(program=Path(program).name, args=args[:1]):
                     self.refuse(kind, [program, '--no-pager', *args, 'status'])
 
+    def test_case_variant_commands_refuse_before_mint(self):
+        for program in ('SH', 'BaSh', 'zSh', '/bin/SH', '/bin/BaSh', '/bin/zSh'):
+            with self.subTest(program=program):
+                self.refuse('shell-command', [program, '-c', SECRET])
+        alias = Path.cwd() / 'case-git-alias'
+        alias.symlink_to(Path(self.git).with_name('GiT'))
+        programs = ['GIT', str(Path(self.git).with_name('GIT')), str(alias)]
+        for program in programs:
+            for args, kind in [(['-C', '.'], 'git-directory'),
+                               (['-C.'], 'git-directory'),
+                               (['-c', 'http.sslVerify=false'], 'git-config-option'),
+                               (['-chttp.sslVerify=false'], 'git-config-option')]:
+                with self.subTest(program=program, args=args[:1]):
+                    self.refuse(kind, [program, '--no-pager', *args, 'status'])
+
+    def test_git_file_identity_is_not_lexical_path_equality(self):
+        bindir = Path.cwd() / 'identity-bin'
+        bindir.mkdir()
+        target, alias = bindir / 'git', bindir / 'inert-git-alias'
+        target.write_text('inert fixture; never execute')
+        target.chmod(0o700)
+        alias.hardlink_to(target)
+        self.assertNotEqual(alias.resolve(), target.resolve())
+        self.assertTrue(alias.samefile(target))
+        with patch.dict(os.environ, {'PATH': str(bindir)}):
+            self.refuse('git-directory', [str(alias), '-C.', 'status'])
+            self.refuse('git-config-option', [str(alias), '-chttp.sslVerify=false', 'status'])
+
     def test_relative_path_resolution_uses_captured_cwd(self):
         bindir = Path.cwd() / 'bin'
         bindir.mkdir()

@@ -236,8 +236,11 @@ Matches in comments also refuse. An absent file or unrelated machine passes.
 The helper does not parse or expose credentials.
 
 Command detection resolves PATH relative to the captured cwd and follows
-symlinks. It recognizes `git` by supplied/resolved basename or by identity with
-the resolved PATH Git. Shell names are `sh`, `bash`, `rbash`, `zsh`, `dash`,
+symlinks. Supplied and resolved basenames are conservatively case-folded, even
+on case-sensitive filesystems: `SH` is a shell and `GIT` is Git. Git is recognized
+by those basenames or actual file identity with the resolved PATH Git, including
+hard links; lexical path equality is not required. Shell names are `sh`, `bash`,
+`rbash`, `zsh`, `dash`,
 `ash`, `ksh`, `ksh93`, `mksh`, `pdksh`, `csh`, `tcsh`, `fish` and `yash`.
 Git scanning stops at the first subcommand: `git commit -c` is not global `-c`.
 The allowed global flags are `-p`/`--paginate`, `-P`/`--no-pager`,
