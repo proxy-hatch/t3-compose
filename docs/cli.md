@@ -62,8 +62,11 @@ them:
   from `args.t3c_local_dir`.
 
 Command modules must not register an argument destination or `set_defaults` key
-named `local_dir` or starting with `t3c_`. Registry-owned selector and metadata
-defaults are the only exception. A leaf command may declare its own `--text`
+named `local_dir` or starting with `t3c_`. Registry-owned actions are identified
+by identity, and registry-owned metadata defaults are recorded separately.
+`set_defaults` rejects reserved keys even when a module uses the same value.
+Argument actions also must not target `handler`; callable `handler` defaults
+remain the required way to register leaves. A leaf may declare its own `--text`
 option (for example with destination `text`) or child-argument destination
 (such as `child_argv`), and leaf defaults cannot overwrite global state.
 
@@ -118,10 +121,12 @@ and prints one trailing newline. There is no wrapper envelope. Object keys are
 sorted, and JSON booleans are `true` and `false`.
 
 With global `--text`, a `dict` result prints one `key: <json-value>` line per
-item in the dictionary's insertion order, where each value is encoded with
-`canonical_json(value).decode("utf-8")`. Because strings and nested values are
-JSON-encoded, embedded newlines are escaped as `\n` and cannot forge output
-lines. An empty dictionary prints an empty line (`""` followed by the trailing
+item in insertion order. Keys use `json.dumps(str(key), ensure_ascii=True)`
+without its surrounding quotes; control characters, quotes, backslashes and
+non-ASCII characters are escaped. Simple labels such as `root` stay readable.
+Values use `canonical_json(value).decode("utf-8")`. Escaped keys and values
+cannot insert extra physical output lines. An empty dictionary prints an empty
+line (`""` followed by the trailing
 newline from `print`). Any non-`dict` value (such as a list, string, number,
 boolean or `None`) prints its single `canonical_json(data).decode("utf-8")`
 line. Plain returns and `Outcome` share this exact rendering path.
@@ -242,13 +247,18 @@ later interpreters:
 
 - Duplicate root command names, duplicate leaf names within a group, a group
   colliding with `version` (or an existing leaf), or a root leaf colliding with
-  an existing group are rejected.
+  an existing group are rejected. Command aliases are not supported: passing
+  the `aliases` keyword to `add_parser` is rejected at root and group levels.
+  Each executable parser has exactly one canonical command path.
 - Every leaf parser must set a callable `handler` default (`callable(handler)`).
   Missing or noncallable handlers are rejected when the registry validates
   registration.
 - No root, group or leaf parser may register an argument destination or
-  `set_defaults` key named `local_dir` or prefixed with `t3c_` (other than the
-  registry's own `t3c_*` selectors and metadata).
+  `set_defaults` key named `local_dir` or prefixed with `t3c_`. Only recorded
+  registry-owned action objects and metadata defaults are exempt; matching a
+  reserved name does not grant an exemption. Argument actions targeting
+  `handler` are rejected at every level, while callable handler defaults are
+  supported.
 
 Any `Exception` or `SystemExit` during module lookup, import, `register` or
 registration validation becomes `CommandError("cannot load command module: <name>")`
@@ -291,6 +301,15 @@ Shared core files (`t3compose/cli.py`, `t3compose/jsonio.py`,
 `MODULES` tuple are modified only when a Task brief explicitly assigns that
 edit. Each command module documents its own commands, options, output and exit
 codes in `docs/cli/<module>.md`; this file specifies what all commands share.
+
+## Shared option contracts for later modules
+
+The future publication privacy command uses `--text-file LABEL=FILE` for text
+inputs, leaving global `--text` as output mode. `--repo` is contextual: work,
+event, routing and evidence commands use a repository identity or checkout
+path; `pr verify` uses GitHub `OWNER/NAME`. Each module spec defines its
+command's interpretation. These are extension contracts, not commands that
+HS-1 implements.
 
 ## Process API
 

@@ -401,6 +401,88 @@ class OfflineCLI(OfflineTestCase):
                     self.assertEqual(ctx.exception.code, 2)
                     self.assertIn("cannot load command module: briefs", str(ctx.exception))
 
+    def _invoke_corrections_module(self, source, argv):
+        import importlib
+        import t3compose
+        from t3compose.cli import main
+        (self.temp / "config.py").write_text(source)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(t3compose, "__path__", [str(self.temp)]), patch.dict(sys.modules):
+            sys.modules.pop("t3compose.config", None)
+            importlib.invalidate_caches()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_corrections_reserved_registration_at_every_level(self):
+        cases = (
+            ("registry.parser.set_defaults(t3c_text=True)", ""),
+            ("registry.parser.set_defaults(t3c_local_dir='synthetic-redirect')", ""),
+            ("registry.parser.add_argument('--collision', dest='t3c_text')", ""),
+            ("registry.parser.add_argument('--collision', dest='t3c_local_dir')", ""),
+            ("registry.parser.add_argument('--collision', dest='t3c_command')", ""),
+            ("", "registry.commands.choices['sample'].add_argument('--collision', dest='t3c_sample_command')"),
+            ("", "registry.commands.choices['sample'].set_defaults(t3c_path=('other',))"),
+            ("", "p.set_defaults(t3c_path=('other',))"),
+            ("registry.parser.add_argument('--handler')", ""),
+            ("", "registry.commands.choices['sample'].add_argument('--handler')"),
+            ("", "p.add_argument('--handler')"),
+        )
+        for before, after in cases:
+            source = ("def register(registry):\n" +
+                      ("    " + before + "\n" if before else "") +
+                      "    p = registry.group('sample').add_parser('show')\n" +
+                      ("    " + after + "\n" if after else "") +
+                      "    p.set_defaults(handler=lambda args: {'ok': True})\n")
+            with self.subTest(before=before, after=after):
+                code, out, err = self._invoke_corrections_module(source, ['sample', 'show'])
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn('cannot load command module: config', err)
+                self.assertNotIn('synthetic-redirect', err)
+        # Ordinary module defaults and callable handlers remain supported.
+        code, out, err = self._invoke_corrections_module(
+            "def register(registry):\n"
+            "    p = registry.group('sample').add_parser('show')\n"
+            "    p.set_defaults(label='synthetic', handler=lambda a: {'label': a.label})\n",
+            ['sample', 'show'])
+        self.assertEqual((code, json.loads(out), err), (0, {'label': 'synthetic'}, ''))
+
+    def test_corrections_aliases_are_rejected_without_changing_canonical_paths(self):
+        cases = (
+            ("def register(registry):\n"
+             "    p = registry.commands.add_parser('other', aliases=['version'])\n"
+             "    p.set_defaults(handler=lambda a: {'replaced': True})\n", ['version']),
+            ("def register(registry):\n"
+             "    p = registry.commands.add_parser('other', aliases=['alternate'])\n"
+             "    p.set_defaults(handler=lambda a: {})\n", ['other']),
+            ("from t3compose.cli import PassThrough\n"
+             "def register(registry):\n"
+             "    p = registry.group('publish').add_parser('run', aliases=['execute'])\n"
+             "    p.set_defaults(handler=lambda a: PassThrough(7))\n", ['publish', 'run']),
+        )
+        for source, argv in cases:
+            with self.subTest(argv=argv):
+                code, out, err = self._invoke_corrections_module(source, argv)
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn('cannot load command module: config', err)
+        source = ("from t3compose.cli import PassThrough\n"
+                  "def register(registry):\n"
+                  "    p = registry.group('publish').add_parser('run')\n"
+                  "    p.set_defaults(handler=lambda a: PassThrough(7))\n")
+        self.assertEqual(self._invoke_corrections_module(source, ['publish', 'run']), (7, '', ''))
+
+    def test_corrections_text_keys_cannot_forge_output_lines(self):
+        source = ("def register(registry):\n"
+                  "    p = registry.group('sample').add_parser('show')\n"
+                  "    p.set_defaults(handler=lambda a: {"
+                  "'note\\nverified': 'forged', 'tab\\tkey': 'value', "
+                  "'split\\u2028key': 'separator', 'ok': False})\n")
+        code, out, err = self._invoke_corrections_module(source, ['--text', 'sample', 'show'])
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(out, 'note\\nverified: "forged"\ntab\\tkey: "value"\n'
+                             'split\\u2028key: "separator"\nok: false\n')
+        self.assertEqual(len(out.splitlines()), 4)
+
     def test_helper_info_preserves_git_index_and_version_failure_is_sanitized(self):
         from t3compose import cli
         from t3compose.cli import helper_info, main

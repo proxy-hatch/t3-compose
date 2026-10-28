@@ -9,6 +9,7 @@ import argparse
 from enum import IntEnum
 import importlib
 import importlib.util
+import json
 import platform
 import sys
 
@@ -79,6 +80,8 @@ class _TextFlagAction(argparse.Action):
 
 class _SubparsersAction(argparse._SubParsersAction):
     def add_parser(self, name, **kwargs):
+        if "aliases" in kwargs:
+            raise ValueError("command aliases are not supported")
         if name in self._name_parser_map:
             raise ValueError("duplicate command or group: " + name)
         return super().add_parser(name, **kwargs)
@@ -88,9 +91,25 @@ class Parser(argparse.ArgumentParser):
     def __init__(self, *args, text_output=False, **kwargs):
         self.text_output = bool(text_output)
         self._subparser_actions = []
+        self._owned_actions = []
+        self._owned_defaults = {}
         kwargs["allow_abbrev"] = False
         super().__init__(*args, **kwargs)
         self.register("action", "parsers", _SubparsersAction)
+
+    def _add_owned_argument(self, *args, **kwargs):
+        action = super().add_argument(*args, **kwargs)
+        self._owned_actions.append(action)
+        return action
+
+    def _set_owned_defaults(self, **kwargs):
+        super().set_defaults(**kwargs)
+        self._owned_defaults.update(kwargs)
+
+    def set_defaults(self, **kwargs):
+        if any(_is_reserved_name(key) for key in kwargs):
+            raise ValueError("reserved parser default")
+        super().set_defaults(**kwargs)
 
     def set_text_output(self, enabled):
         self.text_output = bool(enabled)
@@ -119,12 +138,15 @@ def _is_reserved_name(name):
     return isinstance(name, str) and (name == "local_dir" or name.startswith("t3c_"))
 
 
-def _validate_parser_names(parser, allowed_dests, allowed_defaults):
+def _validate_parser_names(parser):
     for action in parser._actions:
-        if _is_reserved_name(action.dest) and action.dest not in allowed_dests:
+        owned = any(action is item for item in parser._owned_actions)
+        if action.dest == "handler" or (_is_reserved_name(action.dest) and not owned):
             raise ValueError("reserved argument destination: " + action.dest)
-    for key in parser._defaults:
-        if _is_reserved_name(key) and key not in allowed_defaults:
+    for key, value in parser._defaults.items():
+        if (_is_reserved_name(key) and
+                (key not in parser._owned_defaults or
+                 value != parser._owned_defaults[key])):
             raise ValueError("reserved default key: " + key)
 
 
@@ -132,6 +154,7 @@ class Registry:
     def __init__(self, parser):
         self.parser = parser
         self.commands = parser.add_subparsers(dest="t3c_command", required=True)
+        parser._owned_actions.append(self.commands)
         self.groups = {}
         self._group_parsers = {}
 
@@ -142,14 +165,11 @@ class Registry:
             selector = "t3c_" + name + "_command"
             self._group_parsers[name] = (group_parser, selector)
             self.groups[name] = group_parser.add_subparsers(dest=selector, required=True)
+            group_parser._owned_actions.append(self.groups[name])
         return self.groups[name]
 
     def validate(self):
-        _validate_parser_names(
-            self.parser,
-            allowed_dests={"t3c_text", "t3c_local_dir", "t3c_command"},
-            allowed_defaults={"t3c_text", "t3c_local_dir"},
-        )
+        _validate_parser_names(self.parser)
         paths = []
         for root_name, subparser in self.commands._name_parser_map.items():
             if root_name in self._group_parsers:
@@ -158,42 +178,30 @@ class Registry:
                     raise ValueError("command collides with group: " + root_name)
                 if "handler" in group_parser._defaults:
                     raise ValueError("group parser cannot define handler: " + root_name)
-                _validate_parser_names(
-                    group_parser,
-                    allowed_dests={selector},
-                    allowed_defaults={"t3c_path"},
-                )
+                _validate_parser_names(group_parser)
                 subparsers_action = self.groups[root_name]
                 if not subparsers_action._name_parser_map:
                     raise ValueError("empty command group: " + root_name)
                 for leaf_name, leaf_parser in subparsers_action._name_parser_map.items():
                     if leaf_parser._subparser_actions:
                         raise ValueError("nested command groups are not supported: " + leaf_name)
-                    _validate_parser_names(
-                        leaf_parser,
-                        allowed_dests=set(),
-                        allowed_defaults={"t3c_path"},
-                    )
+                    _validate_parser_names(leaf_parser)
                     handler = leaf_parser.get_default("handler")
                     if not callable(handler):
                         raise ValueError("missing or noncallable handler for " +
                                          root_name + " " + leaf_name)
                     path = (root_name, leaf_name)
-                    leaf_parser.set_defaults(t3c_path=path)
+                    leaf_parser._set_owned_defaults(t3c_path=path)
                     paths.append(path)
             else:
                 if subparser._subparser_actions:
                     raise ValueError("untracked subparsers on command: " + root_name)
-                _validate_parser_names(
-                    subparser,
-                    allowed_dests=set(),
-                    allowed_defaults={"t3c_path"},
-                )
+                _validate_parser_names(subparser)
                 handler = subparser.get_default("handler")
                 if not callable(handler):
                     raise ValueError("missing or noncallable handler for " + root_name)
                 path = (root_name,)
-                subparser.set_defaults(t3c_path=path)
+                subparser._set_owned_defaults(t3c_path=path)
                 paths.append(path)
         return tuple(sorted(paths))
 
@@ -228,8 +236,10 @@ def version(args):
 
 def _build_parser_and_registry(text_output=False):
     parser = Parser(prog="t3c", text_output=text_output)
-    parser.add_argument("--text", dest="t3c_text", action=_TextFlagAction, root_parser=parser)
-    parser.add_argument("--local-dir", dest="t3c_local_dir", type=local_dir, default=local_dir())
+    parser._add_owned_argument("--text", dest="t3c_text", action=_TextFlagAction,
+                               root_parser=parser)
+    parser._add_owned_argument("--local-dir", dest="t3c_local_dir", type=local_dir,
+                               default=local_dir())
     registry = Registry(parser)
     registry.commands.add_parser("version").set_defaults(handler=version)
     paths = registry.load()
@@ -250,7 +260,8 @@ def _format_output(data, text_mode):
     encoded = canonical_json(data).decode("utf-8")
     if not text_mode or not isinstance(data, dict):
         return encoded
-    return "\n".join("{}: {}".format(key, canonical_json(value).decode("utf-8"))
+    return "\n".join("{}: {}".format(json.dumps(str(key), ensure_ascii=True)[1:-1],
+                                    canonical_json(value).decode("utf-8"))
                      for key, value in data.items())
 
 
