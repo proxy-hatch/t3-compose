@@ -345,6 +345,22 @@ never automatically logged. Callers remain responsible for handling those
 values privately and for public diagnostics. Guard `AssertionError` refusals
 are not converted into process failures.
 
+`t3compose.process.start(argv, **kwargs) -> subprocess.Popen` starts a child
+and returns its real handle without waiting. It uses the same nonempty-list
+and no-shell validation as `run`. It forwards normal `subprocess.Popen`
+controls unchanged, including `env`, `cwd`, `stdin`, `stdout`, `stderr`,
+`pass_fds` and `text`, without adding stream or lifecycle defaults.
+Modules call `process.start` through the module so tests can substitute it.
+
+`start` sanitizes launch failures only: missing executables use `not-found`,
+other OS or permission errors use `os-error`, and type/value option errors use
+`invalid-options`. Invalid commands use `invalid-command`. These `ProcessError`
+diagnostics suppress backend exception display and do not echo arguments or
+environment values; guard `AssertionError` refusals propagate. A nonzero child
+exit is not a start failure. The caller chooses stream policy and owns signal
+handling, waiting, termination and cleanup. Operations on the returned handle,
+including their errors and output, are outside `start`'s sanitation guarantee.
+
 `helper_command(*args)` constructs, without launching:
 `[sys.executable, '-I', '-S', '-B', str(ROOT / 'bin/t3c'), *args]`.
 It preserves the real helper root and current interpreter. Call it through the
