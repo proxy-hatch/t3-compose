@@ -67,6 +67,23 @@ def _warn(message, secrets):
         pass
 
 
+def _unexpected(error):
+    return ('command failed (' + type(error).__name__ +
+            '); check local inputs and helper installation')
+
+
+def _prestart_failure(error, stage):
+    interrupted = isinstance(error, (KeyboardInterrupt, InterruptedError))
+    refusal = 'interrupted' if interrupted else stage
+    expected = (interrupted or
+                (stage == 'invalid-config' and isinstance(error, app.ConfigError)) or
+                (stage == 'mint-failed' and isinstance(error, app.CheckError)) or
+                (stage == 'start-failed' and isinstance(error, process.ProcessError)) or
+                (stage == 'invalid-input' and isinstance(error, (OSError, TypeError, ValueError))) or
+                (stage in ('setup-failed', 'status-failed') and isinstance(error, OSError)))
+    return refusal, _CODES[refusal] if expected else 2, None if expected else _unexpected(error)
+
+
 class _Signals:
     """Non-raising handlers cover mint, launch, wait, revocation and recording."""
     def __init__(self):
@@ -135,7 +152,7 @@ class _Signals:
 def _persist(path, value, secrets, *, started):
     try:
         jsonio.atomic_replace(path, value)
-    except _CAUGHT:
+    except _CAUGHT as error:
         # atomic_replace may have renamed before a directory fsync/cleanup
         # error. Inspect only; never replace a real started result with false.
         try:
@@ -145,8 +162,9 @@ def _persist(path, value, secrets, *, started):
         detail = 'complete record visible; durability uncertain' if published else 'record not confirmed'
         _warn('status recording failed; ' + detail +
               ('; reconcile child outcome before retry' if started else '; no child started'), secrets)
-        return False
-    return True
+        expected = isinstance(error, (OSError, KeyboardInterrupt, InterruptedError))
+        return False, None if expected else _unexpected(error)
+    return True, None
 
 
 def run_command(command, status_file, *, local_dir):
@@ -163,6 +181,7 @@ def run_command(command, status_file, *, local_dir):
     lease = None
     stage = 'invalid-input'
     path = None
+    diagnostics = []
     try:
         path = Path(status_file)
         if os.path.lexists(path):
@@ -207,8 +226,9 @@ def run_command(command, status_file, *, local_dir):
                     result.code = result.child_status
             except _CAUGHT as error:
                 if not result.child_started:
-                    result.refusal = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else stage
-                    result.code = _CODES[result.refusal]
+                    result.refusal, result.code, diagnostic = _prestart_failure(error, stage)
+                    if diagnostic:
+                        diagnostics.append(diagnostic)
                 elif result.child_status is not None:
                     # An unexpected lease cleanup error cannot override the
                     # known child status. TokenLease normally handles these.
@@ -218,15 +238,30 @@ def run_command(command, status_file, *, local_dir):
                     _warn('warning: token revocation failed; expires_at=' + lease.expires_at, secrets)
                 if result.child_started:
                     result.revocation = 'ok' if lease.status == 'ok' else 'failed'
-                _persist(path, result.record(), secrets, started=result.child_started)
-    except _CAUGHT:
+                elif lease is not None and lease.unexpected:
+                    result.code = 2
+                    diagnostics.append(lease.unexpected)
+                _, diagnostic = _persist(path, result.record(), secrets, started=result.child_started)
+                if diagnostic:
+                    if not result.child_started:
+                        result.code = 2
+                    diagnostics.append(diagnostic)
+                for diagnostic in diagnostics:
+                    _warn(diagnostic, secrets)
+    except _CAUGHT as error:
         # Setup/handler failures before launch still have a public refusal;
         # restoration failures after completion keep the known child result.
         if not result.child_started:
-            result.refusal = stage
-            result.code = _CODES[stage]
+            result.refusal, result.code, diagnostic = _prestart_failure(error, stage)
+            if diagnostics:
+                result.code = 2  # A later interruption cannot erase an earlier helper defect.
             if path is not None:
-                _persist(path, result.record(), secrets, started=False)
+                _, persistence_diagnostic = _persist(path, result.record(), secrets, started=False)
+                if persistence_diagnostic:
+                    result.code = 2
+                    _warn(persistence_diagnostic, secrets)
+            if diagnostic:
+                _warn(diagnostic, secrets)
         else:
             _warn('signal restoration failed; child outcome retained', secrets)
     return result

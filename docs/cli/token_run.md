@@ -52,7 +52,15 @@ commands, environment values, keys, JWTs or tokens.
 | Mint failure | 1 | No-start record, refusal `mint-failed`. |
 | Interruption before launch | 1 | No-start record, refusal `interrupted`. |
 | Setup, intent-write or process-start failure | 2 | No-start record, refusal `setup-failed`, `status-failed` or `start-failed`. |
+| Unexpected pre-start helper or cleanup failure | 2 | No-start record with the public stage kind, when persistence is possible. |
 | Revocation failure after child exits | Child's status unchanged | Final started record, revocation `failed`; safe expiry warning on stderr. |
+
+Unexpected pre-start failures emit `t3c publish run: command failed (<class>);
+check local inputs and helper installation`, never exception values. Expected
+config, operational mint, launch and filesystem failures keep the mapped codes
+above. Unexpected no-start revocation or record failures take exit-2 precedence;
+required cleanup and status persistence are attempted first. Once a child has
+exited, its status still wins through every cleanup/recording failure.
 
 The runner uses [atomic_replace](../records.md#atomic-json-apis-and-temporary-ownership)
 for canonical, atomic mode-0600 writes. Immediately before launch it records:

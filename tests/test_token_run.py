@@ -523,6 +523,62 @@ class OfflineTokenRun(OfflineTestCase):
         self.assertEqual(result.refusal, 'mint-failed')
         self.assertEqual(result.code, 1)
 
+    def test_unexpected_prestart_failures_use_cd2_without_changing_status_shapes(self):
+        from t3compose import token_run
+        cases = [(ga, 'load_config', 'invalid-config'),
+                 (ga, 'default_runtime', 'setup-failed'),
+                 (ga, 'mint_token', 'mint-failed'),
+                 (token_run, 'child_environment', 'mint-failed'),
+                 (jsonio, 'atomic_replace', 'status-failed'),
+                 (process, 'start', 'start-failed')]
+        for module, name, refusal in cases:
+            for error_type in (RuntimeError, SystemExit, TypeError, ValueError):
+                with self.subTest(seam=name, error=error_type.__name__):
+                    self.fresh()
+                    original = getattr(module, name)
+                    def broken(*args, **kwargs):
+                        if name == 'atomic_replace' and not args[1]['childStarted']:
+                            return original(*args, **kwargs)
+                        raise error_type(TOKEN)
+                    with patch.object(module, name, broken), contextlib.redirect_stderr(io.StringIO()):
+                        result = token_run.run_command(['/bin/sleep', '0'], self.status,
+                                                       local_dir=self.local)
+                    self.assertEqual(result.code, 2)
+                    self.assertFalse(result.child_started)
+                    self.assertEqual(self.record(), {'childStarted': False, 'refusal': refusal})
+                    self.assertNotIn('start', self.events)
+                    if 'mint' in self.events:
+                        self.assertIn('revoke', self.events)
+                    # Exercise the actual entry separately with a fresh path.
+                    self.fresh()
+                    with patch.object(module, name, broken):
+                        code, err = self.invoke()
+                    self.assertEqual(code, 2)
+                    self.assertIn('t3c publish run: command failed (' + error_type.__name__ + ')', err)
+                    self.assertNotIn(TOKEN, err)
+                    self.assertEqual(self.record(), {'childStarted': False, 'refusal': refusal})
+
+    def test_unexpected_no_start_revocation_and_persistence_failures_use_cd2(self):
+        for surface in ('revoke', 'record'):
+            with self.subTest(surface=surface):
+                self.fresh()
+                self.mint_error = ga.CheckError('expected failure')
+                original = jsonio.atomic_replace
+                def write(*args, **kwargs):
+                    if surface == 'record':
+                        raise RuntimeError(TOKEN)
+                    return original(*args, **kwargs)
+                self.revoke_error = RuntimeError(TOKEN) if surface == 'revoke' else None
+                with patch.object(jsonio, 'atomic_replace', write):
+                    code, err = self.invoke()
+                self.assertEqual(code, 2)
+                self.assertIn('command failed (RuntimeError)', err)
+                self.assertNotIn(TOKEN, err)
+                self.assertEqual(self.events, ['mint', 'revoke'])
+                if surface == 'revoke':
+                    self.assertIn('expires_at=' + EXPIRY, err)
+                    self.assertEqual(self.record(), {'childStarted': False, 'refusal': 'mint-failed'})
+
     def test_real_git_helpers_reset_all_scopes_and_only_answer_github(self):
         from t3compose import token_run
         home = Path(self.env['HOME'])
