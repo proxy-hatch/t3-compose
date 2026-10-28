@@ -1,7 +1,8 @@
 # t3-compose implementation plan
 
 Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–19
-and shared contracts CD-1 to CD-4. It follows the design revision in pull request
+and shared contracts CD-1 to CD-4, with the dated Engineering manager amendments
+below. It follows the design revision in pull request
 #1 at `906fdb0` and the owner decisions recorded below. The revision takes effect
 when its pull request merges. Implementation and live validation remain
 pending.
@@ -85,8 +86,9 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   included, in one Session; 1,200 leaves a margin. A Task that would exceed
   about 1,200 lines splits where its section says. HS-1 / PR #4 alone may
   exceed 1,200 lines, with no second HS Task (decision 15). A port of
-  already-reviewed code (GA-1 to GA-3) may reach about 1,400 lines, because its Reviewer compares it with the
-  reviewed source.
+  already-reviewed code (GA-1 to GA-3) may reach about 1,400 lines, because its
+  Reviewer compares it with the reviewed source. GA-2a and GA-2 instead have the strict 1,200-line cap in
+  the dated Engineering manager decomposition below; neither uses a waiver.
 - **Files.** A Task changes only the files it lists. Tasks that may run in
   parallel share no file. HS-1 establishes `cli.py`, `jsonio.py`, `paths.py`,
   `process.py` and `tests/support.py`. Later changes to these shared files,
@@ -98,7 +100,12 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   and `docs/cli/records.md`, and extends `tests/test_records.py` and
   `docs/records.md`; and `RC-1c` extends `t3compose/records.py`,
   `docs/records.md`, `docs/cli/records.md` and `tests/test_records.py` and
-  creates `tests/test_reconcile.py`. Each command module has its own spec file.
+  creates `tests/test_reconcile.py`. GA-2a explicitly owns the later
+  `process.py`, `tests/test_process.py` and Process API portion of `docs/cli.md`
+  edits; it owns no `cli.py` or `tests/support.py` edit. RT-1b explicitly owns
+  the later `t3compose/schema.py` and matching `docs/records.md` billing-field
+  edits, plus its routing/spec/test extension after RT-1a. Neither routing
+  Task changes `config.py`. Each command module has its own spec file.
   Tasks with overlapping assigned shared-file edits run sequentially.
 - **Tests.** After `PY="$(uv python find 3.15)"`, confirm a final 3.15.x release
   before taking evidence. `SUITE` means
@@ -173,7 +180,8 @@ work cycle uses. Brief templates carry the rules into each Assignment.
 ## Contracts
 
 This plan fixes the helper's layout, commands, record format and config schema,
-including shared contracts CD-2, CD-3 and CD-4. A Worker who needs to change a
+including shared contracts CD-2, CD-3 and CD-4 and the dated Engineering manager
+amendments below. A Worker who needs to change a
 contract reports it; the manager decides.
 
 ### Layout
@@ -182,8 +190,9 @@ contract reports it; the manager decides.
 |---|---|---|
 | `bin/t3c` | entry point | HS-1 |
 | `t3compose/` | one module per concern | each Task |
+| `t3compose/process.py`, `tests/test_process.py` | shared launch seams and tests | HS-1: `run`/`helper_command`; GA-2a: `start` |
 | `tests/` | offline suite | each Task |
-| `live/` | live checks | JV-1, RT-1, RP-1 |
+| `live/` | live checks | JV-1, RT-1a, RP-1 |
 | `skill/SKILL.md`, `skill/templates/` | manager skill and brief templates | SK-1, BT-1, PH-1, FL-1 |
 | `docs/` | `docs/cli.md` and `docs/testing.md`; `docs/cli/<module>.md`, one per command module; configuration, record, restart and pilot contracts | HS-1; each Task that adds commands; CF-1, RC-1a, RC-1b, RC-1c, PH-1, RP-1, FL-1 |
 | `pilot/` | synthetic router examples | RP-1 |
@@ -201,8 +210,8 @@ CPython 3.15 interpreter as above. This applies to briefs and skill commands too
 | `t3c event add` | append one validated event | RC-1b |
 | `t3c evidence check` | `verified`, or the gaps, for one head | EV-1 |
 | `t3c route classify` | one bounded Jev request | JV-1 |
-| `t3c route input`, `judge`, `select` | routing input; manager judgment; final tier and selection | RT-1 |
-| `t3c quota show`, `record`, `activate` | agy quota state | RT-1 |
+| `t3c route input`, `judge`, `select` | routing input; manager judgment; final tier and selection | RT-1a; RT-1b extends metered selection/billing |
+| `t3c quota show`, `record`, `activate` | agy quota state | RT-1b |
 | `t3c privacy check` | the identifier list against messages, trees, branch name and pull request text | PV-1b |
 | `t3c pr verify` | head, base, state and author of a pull request | PV-1b |
 | `t3c publish check` | mint a token, verify its scope, revoke it | GA-1 |
@@ -263,6 +272,14 @@ HS-1 supplies these shared interfaces:
 - `process`: injectable `run()`, `helper_command()` and `ProcessError`.
 - `paths`: `local_dir()`.
 
+GA-2a later adds `process.start(argv, **kwargs) -> subprocess.Popen`, leaving
+`run()` unchanged. It shares `run()`'s argument-list, no-shell and sanitized
+`ProcessError` launch rules and is called through the module for test injection.
+The caller owns signal handling, waiting and cleanup: GA-2's `token_run` and
+HC-1's runner use `start()`, with no other launch path. The public contract is
+[Process API](../../cli.md#process-api). HS-1 delivered `run()` and
+`helper_command()`; it did not deliver `start()`.
+
 All later process launches call through the `process` module so tests can swap
 it, with argument lists, no shell and no argument/environment echo in errors.
 Tests use the fake runner in `tests/support.py`. Imports and `register` are cheap
@@ -311,7 +328,7 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
 | `routing-input` | task (original intent, acceptance, interfaces, scope, risk facts and dependencies), context (retry context or null), canonical input digest, routing-policy digest |
 | `routing-classification` | routing-input reference and digest, routing-policy digest, rule version, criteria text and digest, declared risk facts, configured model, the response's snapshot `model` and `id`, both answers with probabilities and confidence, outcome, reason |
 | `routing-judgment` | routing-input reference and digest, routing-policy digest, domain, difficulty, reason, basis (Jev failure, low confidence, mixed or unclear, manual) |
-| `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, chosen pool account or null, every skipped pool account with its reason (empty when no pool was walked), availability and fallback reason, config digest, catalog read time and digest, quota-state digest |
+| `routing-selection` | routing-input reference and digest, routing-policy digest, classification or judgment reference, role, round and review scope, tier, floors applied, escalation, selection, chosen pool account or null, every skipped pool account with its reason (empty when no pool was walked), availability and fallback reason, config digest, catalog read time and digest, quota-state digest; RT-1b adds optional `billing`, exactly `"per-token"` or absent, for every metered use |
 | `dispatch-intent` | role, round, `clientRequestId`, brief path and digest, selection, provisioned, start and review-base commits, dispatching checkout, isolation |
 | `dispatch-confirmed` | `clientRequestId`, `taskId`, child thread reference, worktree path or unknown |
 | `result` | `taskId`, completed T3 status evidence, worktree path, result commit, parent commit, branch observed, Worker claims, facts the manager verified, questions |
@@ -319,9 +336,9 @@ identity. Labeled synthetic runs use `synthetic/<name>`.
 | `criterion-evidence` | criterion ID, commit, source, evidence |
 | `lead-assignment` | thread, assigned-by (manager), date, reason; latest event names the current lead |
 | `review` | reviewer (`{kind:task,taskId:...}` or `{kind:lead,thread:...}`), base, head, verdict, findings (ID, severity, summary), evidence path and digest (required for lead, optional for task) |
-| `finding-disposition` | review reference (review event sequence), finding ID, the Worker's response, disposition, by, evidence |
+| `finding-disposition` | review reference (review event sequence), finding ID, the Worker's response, disposition, by, evidence; `owner-decided` requires `{decisionRef: <resolved decision sequence>}` with `decidedBy` exactly `"owner"` |
 | `op-intent`, `op-result` | operation (push, pull request or other), target, commit, expected prior head or absence for a push; then the result and how it was confirmed |
-| `decision` | question, answer or unknown, decided by, date |
+| `decision` | question, answer or unknown, `decidedBy`, date; exact reserved `"owner"` means Shawn; other authors remain valid for other decisions |
 | `scope` | the replaced fields and the decision that changed them |
 | `next-action` | action or unknown |
 | `reconciliation` | the uncertain item, live T3 and Git facts, outcome |
@@ -360,7 +377,15 @@ explicitly and also records the whole config digest for model preferences.
 Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
 (with evidence), `declined` (minor findings only, with a reason), `withdrawn`
 (by the review author, Reviewer or lead), `disputed`, `rejected-by-second-review`
-and `owner-decided`.
+and `owner-decided`. An `owner-decided` disposition requires evidence
+`{decisionRef: <resolved decision sequence>}` naming an existing resolved
+`decision` event with `decidedBy` exactly `"owner"`; anything else is refused.
+The recorder quotes Shawn's words in `answer` and records where and when he
+said them. This is recorded provenance, not authentication, and relies on writer
+adherence. General decisions may name other authors, such as `manager` or `lead`,
+but those decisions cannot authorize an owner-decided disposition. RC-1c
+documents and enforces this in its own records files and tests without a schema
+or shared-file amendment; EV-1 relies on that rule.
 
 ### Config schema
 
@@ -461,6 +486,58 @@ The quota state file beside the config keeps its current shape:
 `available`) and `note`. Observations remain per account for all its pool
 models. No model-keyed quota contract is introduced. A model rollout gap is
 not exhaustion evidence ([decision 12](#decisions)).
+
+## Engineering manager contract and decomposition notes
+
+These dated notes record Engineering manager contracts and decomposition,
+not new owner decisions or new owner approvals. Decisions 1–19 retain their
+original quotes and choices, including decision 18's three records-store PRs.
+The Task and contract sections apply these notes; older catalog summaries in
+owner decisions 9 and 12 retain their history and are subject to the fuller
+catalog checks in the RT-1 contract below.
+
+- **2026-10-28 ~19:20/~19:30 CST, launch seam and GA-2 split.** The blocking
+  `run()` cannot provide the handle needed for signals and cleanup. GA-2a
+  added `process.start` in PR14, then GA-2 shipped in PR15, sequentially under
+  the same lead. The initial combined Worker estimate was 1,280 lines, with
+  no waiver. The split estimates were about 110 lines for GA-2a (medium shared
+  interface) and 1,170 for GA-2 (challenging). Each requires fresh pre-edit
+  and actual measures at most 1,200 lines; no acceptance is dropped. HS-1's
+  `run`/`helper_command` delivery stays historical; GA-2a owns the later seam.
+- **2026-10-28 ~19:55 CST, owner-decided dispositions.** The exact reserved
+  `decision.decidedBy` value `"owner"` means Shawn. Only an existing resolved
+  decision with that value, referenced through the existing evidence
+  `decisionRef`, authorizes an owner-decided disposition. Recording his words
+  and where/when he said them provides provenance, not authentication.
+  RC-1c documents and enforces this in its own records docs/tests; EV-1 checks
+  it. Other decision authors remain valid for other decisions.
+- **2026-10-28 ~21:10 CST, PR-ready evidence.** EV-1 needs both PB-1 operation
+  results at exactly the checked head: confirmed push and pull request, each
+  `succeeded` or `no-op`. Unknown/refused/failed results, nonzero child status
+  and another head never count. PB-1 confirms pushes with `ls-remote` and
+  actual-push child-start/status evidence, and records successful PR results
+  only after exact-head `pr verify`. EV-1 specifies the result/gap contract;
+  PB-1 cites and meets it without a new schema or shared-file edit.
+- **2026-10-28 ~21:20 CST, RT-1 split and catalog contract.** RT-1a delivers
+  route input/judge/select and read-only quota/account evaluation; RT-1b
+  delivers quota commands and metered billing. They are sequential under the
+  same lead, both challenging, each with fresh pre-edit and actual measures
+  at most 1,200 lines; RT-1 is an aggregate anchor, not a third PR. Initial
+  estimates were about 1,165 lines for RT-1a and 255 plus billing for RT-1b.
+  Catalog availability requires a parsed catalog no older than 15 minutes,
+  an existing provider, both child-task flags true, an empty constraints list,
+  and advertised model/options. There is no separate catalog status field.
+  The Tasks below specify driver classification and billing ownership.
+- **2026-10-28 ~21:35 CST, tightened RT-1a boundary.** A fresh RT-1a estimate
+  was 1,275 lines: routing 480, tests 600, validator 45, spec 150. This prompted
+  a tighter boundary, not a size waiver or evidence that the tightened work
+  already fits. RT-1a treats every non-subscription driver, including `pi`, as
+  unavailable for every role; a master resolving to any non-subscription driver
+  makes `route select` exit 3. RT-1b owns the Pi-specific metered Worker rules
+  and billing record together. RT-1a's command-only routing spec points to
+  shared CLI rules; L3/L11 procedures go in the PR body, not that spec. A new
+  pre-edit estimate at most 1,200 is still required for RT-1a; RT-1b grows by
+  the moved logic and also needs fresh measurement. GLM remains unplaced.
 
 ## Tasks
 
@@ -726,7 +803,7 @@ Exclusive sequential file ownership across the three Tasks:
   disposition-to-finding joins and lead-assignment currency, including the
   cases relevant to EV-1.
 
-Every Task that depends on the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
+Every Task that depends on the records store (`RT-1a`, `RT-1b`, `JV-1`, `EV-1`, `BT-1`,
 `HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for `RC-1c` (`RC-1a` alone
 provides only the schema contract and clears no downstream Task). The complete
 ten-item RC-1 acceptance contract holds across the three Tasks and on the
@@ -947,7 +1024,12 @@ combined result after `RC-1c`.
     `(review reference, finding ID)`, and a `finding-disposition` with a missing
     or wrong review reference or unknown finding ID is refused. `withdrawn`
     requires the review author. `check` sources include Feature lead without
-    accepting Worker claims.
+    accepting Worker claims. `owner-decided` requires evidence
+    `{decisionRef: <resolved decision sequence>}` for an existing resolved
+    decision whose `decidedBy` is exactly `"owner"`. Refuse every other
+    reference; the recorder quotes Shawn's words in `answer` and records
+    where/when he said them. This provenance relies on writer adherence,
+    not authentication. No schema/shared-file amendment is assigned for it.
   - A checkpoint holds the last sequence and the digest of `work.json` plus the
     ordered event prefix through that sequence, before the checkpoint-bearing
     event. Verification recomputes that prefix, not the current snapshot.
@@ -999,8 +1081,12 @@ combined result after `RC-1c`.
 - **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_records.py'`,
   `SUITE -p 'test_reconcile.py'`, then `SUITE`.
   Fixtures use synthetic task IDs and paths.
+- **EM acceptance amendment, 2026-10-28 ~19:55 CST.** In RC-1c's own records
+  docs and tests, accept the resolved `"owner"` decision reference above;
+  refuse missing/unresolved decisions and decisions by any other author.
+  Keep all ten combined original acceptance items above.
 - **Depends on.** RC-1b, merged. Cannot run beside RC-1a or RC-1b. Every
-  downstream dependent of the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
+  downstream dependent of the records store (`RT-1a`, `RT-1b`, `JV-1`, `EV-1`, `BT-1`,
   `HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for RC-1c.
 - **Parallel with.** CF-1, PV-1a.
 - **Risk facts and tier.** Subtle invariants (recovery, crash windows, prefix
@@ -1047,14 +1133,22 @@ combined result after `RC-1c`.
 
 ### RT-1 Routing selection and agy quota
 
+The Engineering manager split this work into two sequential Tasks under the
+same lead: [RT-1a](#rt-1a-routing-selection) and
+[RT-1b](#rt-1b-quota-commands-and-metered-billing). This heading preserves the
+aggregate anchor and shared contract; there is no third implementation PR.
+The ~21:35 amendment above governs the boundary and supersedes the initial
+metered split. All six commands and the combined acceptance below are retained.
+
 - **Objective.** Turn a classification or a judgment, the declared risk facts,
   the live catalog and the quota state into one recorded selection, or a stop.
 - **Design.** [Routing and personal configuration][d-routing];
   [Jev decision routing][d-jev] (code applies floors and exclusions);
   [Accepted review policy][d-review] (agy is never a Reviewer).
-- **Files.** Create `t3compose/routing.py`, `t3compose/quota.py`,
-  `live/catalog_shape.py`, `tests/test_routing.py` and `tests/test_quota.py`.
-  Create `docs/cli/routing.md` and `docs/cli/quota.md`.
+- **Ownership.** RT-1a owns routing, catalog validation and their spec/tests;
+  RT-1b owns quota commands and their spec/tests, plus explicitly assigned
+  routing/billing/schema/records-doc extensions after RT-1a merges. The Task
+  sections below list the paths. Neither changes `config.py`.
 - **Interfaces.**
   - `t3c route input --repo REPO --work ID --input TASK.json` records the
     common input with RC-1b's recorder and prints its reference, input digest and policy digest.
@@ -1094,10 +1188,29 @@ combined result after `RC-1c`.
     are recorded; a Reviewer selection is never a pool member.
   - Feature lead: the preference at the Task's tier, at least medium. Text
     helper: the fixed `textHelper` route, with no classification.
-  - A selection is available only when the catalog lists the instance and the
-    model, the provider reports `canRunChildTask: true`, and the catalog
-    advertises its options. A failed status check counts as unavailable. A
-    catalog read more than 15 minutes earlier is refused.
+  - A catalog has no separate status field. Availability requires a parsed
+    catalog read no more than 15 minutes earlier, an existing provider,
+    `canRunChildTask: true` AND `canRunCrossProviderChildTask: true`, an empty
+    `constraints` list, and the requested model and options advertised.
+    Otherwise the selection is unavailable, with the reason recorded:
+    constraint text, false flag, or missing provider, model or option.
+    Unreadable, malformed or stale catalog is a failed status check under
+    the existing stop/fallback rules, never an invented status key.
+  - Classify a direct selection only by catalog `driverKind`, never instance
+    names or model guesses. Subscription drivers are `claudeAgent`, `codex`
+    and `antigravity`. RT-1a treats every other driver, `pi` included, as
+    unavailable for every role. A master resolving to any non-subscription
+    driver makes `route select` exit 3 (invalid config). RT-1b introduces the
+    Pi-specific metered rules below. Existing supported-choice tier limits
+    remain; Argon is a subscription-covered medium Worker-only pool selection.
+  - RT-1b classifies direct `pi` selections as metered and Worker-only, with
+    the supported medium Worker choice constraints. For any other role they
+    are unavailable and may use their one fallback; a master resolving to
+    `pi` exits 3. All other non-subscription driver kinds remain unavailable.
+    RT-1b adds optional `routing-selection.data.billing`: exactly `"per-token"`
+    or absent, never null or arbitrary text. Every metered use records it,
+    and `route select` output states billing for reporting. Only with that
+    record does RT-1b allow metered Workers; GLM remains unplaced.
   - A direct selection, whether a preference or either chain endpoint, may
     limit its roles; absent limits, it serves all `availabilityFallback.roles`.
     A pool preference or chain endpoint is medium and has exactly
@@ -1110,12 +1223,12 @@ combined result after `RC-1c`.
     but its tier association, role eligibility and live availability are
     checked. If the target is unavailable too, or no chain applies, exit 5
     (report to Shawn). Never fall back twice or follow the target's own chain.
-    Record and report every fallback. Record and report every GLM use as
-    billed per token, even when it is the preference. The master never falls
-    back.
+    Record and report every fallback. Once RT-1b enables metered Workers,
+    record and report every GLM use as billed per token, even when it is the
+    preference. The master never falls back.
   - Before walking a pool, check the active account itself. If it is missing
-    from the catalog, reports `canRunChildTask: false`, or fails its status
-    check, stop with exit 4 without rotation. A missing model on an otherwise
+    from the catalog, reports either child-task flag false, has nonempty
+    constraints, or fails its status check, stop with exit 4 without rotation. A missing model on an otherwise
     available active account is handled by the walk below, not this stop.
   - Resolve a pool selection by walking from the active account in pool order,
     wrapping around once. Skip an account whose catalog does not list the
@@ -1133,8 +1246,9 @@ combined result after `RC-1c`.
     chain. Quota observations apply per account to all its pool models;
     rollout gaps are never exhaustion evidence. No model-keyed quota contract
     is introduced ([decision 12](#decisions)).
-  - `route select` writes only its `routing-selection` event. `quota record`
-    and `quota activate` write the quota file atomically and keep every
+  - RT-1a's quota evaluation is read-only: `route select` writes only its
+    `routing-selection` event. RT-1b's `quota record` and `quota activate`
+    write the quota file atomically and keep every
     observation. Tool and correctness failures are not quota evidence;
     `quota record` needs a status and the evidence text.
 - **Acceptance.** Offline tests cover each rule, including a changed input,
@@ -1147,8 +1261,14 @@ combined result after `RC-1c`.
   values. Under [decision 9](#decisions), a Worker-only preference serves a
   Worker; a Reviewer uses that preference's one eligible fallback. A
   Worker-only fallback target leaves a Reviewer with exit 5. A target that is
-  itself the source of another chain is not followed further. GLM is eligible
-  only for medium Workers; every use records and reports its per-token billing.
+  itself the source of another chain is not followed further. RT-1a rejects
+  all non-subscription drivers, including `pi`, for every role and exits 3 for
+  any non-subscription master. RT-1b enables GLM only for medium Workers;
+  every metered use records `billing: "per-token"` and reports it in selection
+  output. Absent billing is allowed for subscription use; null and arbitrary
+  values fail schema validation. Pi never serves other roles, and the one
+  fallback and invalid-master rules hold. Other driver kinds stay unavailable;
+  names or model IDs never decide whether a direct selection is metered.
   Under [decision 12](#decisions), a medium Worker-only pool preference serves
   a Worker; a Reviewer and a Feature lead each reach its one eligible fallback.
   A Worker-only pool chain target serves a Worker and leaves a Reviewer or
@@ -1160,27 +1280,86 @@ combined result after `RC-1c`.
   excludes an account for all pool models. All offering accounts exhausted
   yields one fallback or exit 5, even if a non-offering account has usable quota.
   Account walking never consumes a second fallback, including for a pool chain
-  target. An active account absent from the catalog, unable to run children or
-  failing its status check yields exit 4 without rotation. No test selects an
-  unavailable account. `easyWorker` has the same model-aware walk tests.
-  `live/catalog_shape.py` validates a saved real catalog (L3).
+  target. An active account absent from the catalog, with either child-task
+  flag false, nonempty constraints or a failed status check yields exit 4
+  without rotation. No test selects an unavailable account. `easyWorker` has
+  the same model-aware walk tests. Catalog tests cover both flags independently,
+  constraints and their recorded text, missing provider/model/option,
+  unreadable/malformed/stale catalogs and the 15-minute boundary, without a
+  separate status field. RT-1a's `live/catalog_shape.py` validates a saved real
+  catalog (L3).
 - **Prework.** Before dispatch, the manager saves a redacted sample of a real
   `orchestrator_capabilities` result in `.local/state/` and names it in the
   brief. The parser reads only the fields it needs and treats an unknown shape
   as unavailable.
 - **Offline tests.** `SUITE -p 'test_routing.py'`, `SUITE -p 'test_quota.py'`,
   then `SUITE`.
+- **Review focus across both Tasks.** Tier arithmetic and first-round floors;
+  no path to agy for a Reviewer; medium Worker-only pool preferences and
+  endpoints; one fallback at most; model-aware walking and per-account quota;
+  catalog predicates/reasons, driverKind and master checks; billing on every
+  metered use; config digest in every record.
+
+### RT-1a Routing selection
+
+- **Objective.** Deliver route input/judge/select, read-only quota evaluation
+  and account walking, catalog checks and the subscription/master guard.
+- **Design and interfaces.** The aggregate [RT-1 contract](#rt-1-routing-selection-and-agy-quota)
+  above, limited to routing commands and read-only quota evaluation.
+- **Files.** Create `t3compose/routing.py`, `live/catalog_shape.py`,
+  `tests/test_routing.py` and `docs/cli/routing.md`. Quota observations are read
+  without changing the quota state; quota commands and `quota.py` belong to
+  RT-1b. No `config.py` or billing schema edit.
+- **Spec boundary.** `docs/cli/routing.md` documents only the command contract
+  and points to `docs/cli.md` for shared rules instead of restating them.
+  L3/L11 procedures go in the PR body; this plan retains their live procedures.
+- **Acceptance.** All aggregate routing, tier, catalog, pool/quota-read and
+  fallback cases hold. Every non-subscription driver, including `pi`, is
+  unavailable for every role; any non-subscription master exits 3. The
+  Pi-specific metered logic belongs to RT-1b.
+- **Offline tests.** `SUITE -p 'test_routing.py'`, then `SUITE`.
 - **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b).
-- **Parallel with.** JV-1; L1 and L2 as their prerequisites finish.
-- **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
-  Reviewer) and subtle invariants (one fallback, exhaustion order) →
-  the challenging tier. Reviewer: challenging.
-- **Review focus.** Tier arithmetic and first-round floors; no path to agy
-  for a Reviewer; medium Worker-only pool preferences and endpoints; role
-  limits on preferences and endpoints; one fallback at most; model-aware
-  walking and per-account quota; the config digest in every record.
-- **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
-  follow-up Task.
+- **Parallel with.** JV-1; L1 and L2 as ready. Cannot run beside RT-1b.
+- **Risk facts and tier.** Role/catalog guardrails and account/fallback
+  invariants → challenging. Earlier independent Reviewer: challenging;
+  the assigned lead personally reviews the final head.
+- **Size.** Initial split estimate about 1,165 lines; later fresh estimate
+  1,275 (480 routing, 600 tests, 45 validator, 150 spec) prompted the tightened
+  boundary. A new pre-edit estimate and actual measure must each be at most
+  1,200; no compliant tightened estimate is claimed yet, and no waiver applies.
+
+### RT-1b Quota commands and metered billing
+
+- **Objective.** Deliver quota show/record/activate and enable metered Workers
+  with Pi-specific role/master checks and recorded/reported per-token billing.
+- **Design and interfaces.** The aggregate [RT-1 contract](#rt-1-routing-selection-and-agy-quota),
+  including all quota commands and the metered extension to `route select`.
+- **Files.** Create `t3compose/quota.py`, `tests/test_quota.py` and
+  `docs/cli/quota.md`. Extend `t3compose/routing.py`, `tests/test_routing.py`
+  and `docs/cli/routing.md` for Pi selection and billing. Explicitly assigned
+  shared-contract edits: `t3compose/schema.py`, matching `docs/records.md`
+  and schema tests in `tests/test_records.py` for optional billing on
+  `routing-selection`. These are future ownership assignments in this plan;
+  no `config.py` edit is assigned. Runs after RT-1a and RC-1c, sequentially
+  with other owners of these paths.
+- **Acceptance.** All aggregate quota mutation and metered cases hold;
+  observations are retained and written atomically. Direct `pi` is metered
+  and medium Worker-only, other roles use at most one eligible fallback, and
+  a Pi master exits 3. Every metered use records `billing: "per-token"` and
+  selection output states billing. Field values are exactly `"per-token"` or
+  absent, never arbitrary/null. No other driver is enabled, Argon remains
+  subscription-covered, and GLM stays unplaced until Shawn chooses placement.
+- **Offline tests.** `SUITE -p 'test_quota.py'`, `SUITE -p 'test_routing.py'`,
+  `SUITE -p 'test_records.py'`, then `SUITE`.
+- **Depends on.** RT-1a merged (and its CF-1/RC-1c gates), under the same lead.
+- **Parallel with.** JV-1 or RP-1 once their own gates clear; cannot overlap
+  RT-1a or another owner of the assigned schema/records paths.
+- **Risk facts and tier.** Quota mutation and metered role/billing guardrails
+  → challenging. Earlier independent Reviewer: challenging; current lead
+  personally reviews the final head.
+- **Size.** Initial estimate about 255 lines plus billing, before the ~21:35
+  transfer of metered logic. It grows by that logic; fresh pre-edit and actual
+  measures must each be at most 1,200. No waiver or measured final size is claimed.
 
 ### JV-1 Jev adapter
 
@@ -1232,7 +1411,7 @@ combined result after `RC-1c`.
   the design records; the manager runs it after review (L2).
 - **Offline tests.** `SUITE -p 'test_jev.py'`, then `SUITE`.
 - **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), PV-1a.
-- **Parallel with.** RT-1; L1 and L3 as their prerequisites finish.
+- **Parallel with.** RT-1a, then RT-1b; L1 and L3 as their prerequisites finish.
 - **Risk facts and tier.** Security boundary (a credential and an external
   service) → the challenging tier. Reviewer: challenging.
 - **Review focus.** The key on every error path; strict validation; confidence
@@ -1264,8 +1443,8 @@ combined result after `RC-1c`.
   inputs join only after the pilot lifts the hold, and are recorded with each
   decision.
 - **Offline tests.** `SUITE -p 'test_router_pilot.py'`, then `SUITE`.
-- **Depends on.** JV-1, RT-1.
-- **Parallel with.** EV-1, PV-1b, BT-1, HC-1, GA-1 to GA-3, PB-1, SK-1.
+- **Depends on.** JV-1, RT-1a; RT-1b is not a gate.
+- **Parallel with.** EV-1, PV-1b, BT-1, HC-1, GA-1, GA-2a, GA-2, GA-3, PB-1, SK-1.
 - **Risk facts and tier.** None of the floor facts → the medium tier. Reviewer: medium.
 - **Review focus.** Coverage of every floor and of documentation; labels; no
   private data in the examples.
@@ -1296,8 +1475,20 @@ combined result after `RC-1c`.
   finding is open, disputed or declined. Findings join on `(review reference,
   finding ID)`, where the reference is the review event sequence; a prior review
   cannot clear a later same-ID finding. `withdrawn` is by that review's author.
-  Every acceptance criterion has evidence at the head. `--pr-ready` also needs
-  a confirmed push of the head and a passing `pr verify` result. Manager delivery
+  An `owner-decided` disposition needs evidence
+  `{decisionRef: <resolved decision sequence>}` pointing to an existing resolved
+  decision whose `decidedBy` is exactly `"owner"`. Other authors or references
+  are refused. The recorder quotes Shawn's words in `answer` and records where
+  and when he gave them. This is recorded provenance, not authentication, and
+  relies on writer adherence.
+  Every acceptance criterion has evidence at the head. `--pr-ready` additionally
+  requires both PB-1 `op-result` records, each for that exact checked head:
+  a confirmed `push` result and a `pull-request` result, each with outcome
+  `succeeded` or `no-op`. Unknown, refused or failed results, nonzero child
+  status and results for another head never count. No free-text inference or
+  new schema is used. `docs/cli/evidence.md` specifies the result/gap contract
+  that PB-1 cites and meets, including actual-push start/status evidence and
+  exact-head PR verification before successful recording. Manager delivery
   readiness is not an EV-1 input. `--repo` means an identity or checkout path.
   Exit 1 carries the gaps as one JSON value (CD-2).
 - **Acceptance.** Offline tests cover: a stale review after the head moved; a
@@ -1309,10 +1500,19 @@ combined result after `RC-1c`.
   CD-4 cases accept the current lead's exact-head review and check, refuse a
   wrong or replaced lead, refuse a task final review when a lead exists, refuse
   missing lead evidence, and require an independent task final review when no
-  lead exists. Delivery readiness neither grants nor blocks Task verification.
+  lead exists. Owner-disposition cases accept the existing resolved decision
+  with exact `decidedBy: "owner"`; missing, unresolved or differently authored
+  decisions and invalid `decisionRef` evidence fail. PR-ready cases accept only
+  the exact-head push/PR pair with each outcome `succeeded` or `no-op`; missing
+  either result, another head on either, unknown/refused/failed outcomes and
+  nonzero child status fail. Actual push needs `childStarted: true` and
+  `childStatus: 0` plus `ls-remote` confirmation; an existing-head no-op needs
+  confirmation and invents no child. Failed/skipped exact-head `pr verify`
+  cannot yield successful PR evidence. Free-text claims cannot replace records.
+  Delivery readiness neither grants nor blocks Task verification.
 - **Offline tests.** `SUITE -p 'test_evidence.py'`, then `SUITE`.
 - **Depends on.** RC-1c (after RC-1a and RC-1b).
-- **Parallel with.** RP-1, PV-1b, BT-1, HC-1, GA-1 to GA-3.
+- **Parallel with.** RP-1, PV-1b, BT-1, HC-1, GA-1, GA-2a, GA-2, GA-3.
 - **Risk facts and tier.** None of the floor facts: bounded logic over the
   records store and RC-1a's schema → the medium tier. It compares records and is fully testable;
   PB-1 enforces the publication gate. Reviewer: medium.
@@ -1357,7 +1557,7 @@ combined result after `RC-1c`.
 - **Offline tests.** `SUITE -p 'test_privacy.py'`,
   `SUITE -p 'test_pullrequest.py'`, then `SUITE`.
 - **Depends on.** PV-1a.
-- **Parallel with.** RP-1, EV-1, BT-1, HC-1, GA-1 to GA-3.
+- **Parallel with.** RP-1, EV-1, BT-1, HC-1, GA-1, GA-2a, GA-2, GA-3.
 - **Risk facts and tier.** Guardrail boundary (publication privacy and pull
   request checks) → the challenging tier. Reviewer: challenging.
 - **Review focus.** Fail-closed paths; intermediate commits; nothing private
@@ -1436,7 +1636,7 @@ combined result after `RC-1c`.
   listed above appears in its template.
 - **Offline tests.** `SUITE -p 'test_briefs.py'`, then `SUITE`.
 - **Depends on.** HS-1, RC-1c (complete records store and atomic data writes, after RC-1a and RC-1b).
-- **Parallel with.** RP-1, EV-1, PV-1b, HC-1, GA-1 to GA-3.
+- **Parallel with.** RP-1, EV-1, PV-1b, HC-1, GA-1, GA-2a, GA-2, GA-3.
 - **Risk facts and tier.** Shared interface change (every Assignment uses these
   briefs) → the medium tier. Reviewer: medium.
 - **Review focus.** Completeness against the design; the HEAD-check wording;
@@ -1473,9 +1673,10 @@ combined result after `RC-1c`.
     `--wait`, the call blocks in the kernel until the lock frees. The assigned
     lead, or manager without a lead, runs it as a Harness background command that notifies on exit, so nothing
     polls.
-  - The wrapper starts a dedicated runner that acquires the lock and starts
-    the foreground check. The runner waits for the check even if the wrapper
-    is killed; wrapper signals are forwarded and never release the lock
+  - The wrapper and dedicated runner launch through GA-2a's module-called
+    `process.start`, with no other launch path. The runner acquires the lock
+    and starts the foreground check. The runner waits for the check even if the
+    wrapper is killed; wrapper signals are forwarded and never release the lock
     before the check exits. The check also inherits the locked open file
     description across exec. No process unlocks it while the check is live;
     the runner closes its descriptor only after waiting for the check.
@@ -1495,8 +1696,10 @@ combined result after `RC-1c`.
   stale metadata, each refusal, log capture, the summary's fields and CD-2's
   exit mapping, including child 0 with a changed tree and arbitrary child exits.
 - **Offline tests.** `SUITE -p 'test_heavy.py'`, then `SUITE`.
-- **Depends on.** HS-1, RC-1c (complete records store and atomic data writes, after RC-1a and RC-1b).
-- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, GA-1 to GA-3.
+- **Depends on.** HS-1, GA-2a, RC-1c (complete records store and atomic data
+  writes, after RC-1a and RC-1b).
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, GA-1, GA-2 and GA-3 after
+  GA-2a merges.
 - **Risk facts and tier.** Subtle invariants (concurrency) → the challenging tier, although the Task is small. Reviewer: challenging.
 - **Review focus.** Lock lifetime; descriptor inheritance; the main-checkout
   refusal; the background-run pattern.
@@ -1554,6 +1757,33 @@ combined result after `RC-1c`.
   comparison with the reviewed source.
 - **Size.** About 1,300 lines, mostly ported tests.
 
+### GA-2a Shared process start seam
+
+- **Objective.** Add the nonblocking launch handle that GA-2 and HC-1 need,
+  leaving HS-1's `run()` behavior unchanged. Shipped in PR14 before GA-2/PR15,
+  sequentially under the same lead (Engineering manager ~19:30 decomposition).
+- **Design.** [Sources of truth and local records][d-records]; the dated
+  launch amendment above and public [Process API](../../cli.md#process-api).
+- **Files.** Modify only `t3compose/process.py`, `tests/test_process.py` and
+  the Process API portion of `docs/cli.md`. No `cli.py` or `tests/support.py`
+  edit is assigned.
+- **Interface.** `process.start(argv, **kwargs) -> subprocess.Popen`, called
+  through the module so tests can inject it. Same argument-list/no-shell and
+  sanitized `ProcessError` launch rules as `run()`; `run()` is unchanged.
+  Caller owns signal handling, waiting and cleanup. GA-2's `token_run` and
+  HC-1's runner use it, with no other launch path.
+- **Acceptance.** Tests cover returned handle, launch validation and sanitized
+  errors, module injection and unchanged `run()` behavior; the Process API
+  documents the caller-owned lifecycle. All GA-2/3 and HC-1 acceptance remains.
+- **Offline tests.** `SUITE -p 'test_process.py'`, then `SUITE`.
+- **Depends on.** HS-1, merged; GA-2 then waits for GA-2a and GA-1.
+- **Parallel with.** Other Tasks only with exclusive paths; GA-2 and HC-1
+  wait for this seam. Same lead as GA-2.
+- **Risk facts and tier.** Shared interface → medium; independent earlier
+  Reviewer at least medium, current lead reviews the final head.
+- **Size.** About 110 lines from the split of the original 1,280-line GA-2
+  estimate. Fresh pre-edit and actual measures each at most 1,200; no waiver.
+
 ### GA-2 Worker App token: running a command
 
 - **Objective.** Move the interim step's `run` into the helper as
@@ -1599,7 +1829,10 @@ combined result after `RC-1c`.
   the child status is preserved, including after a revocation warning.
   No file after exit means no child started; true/null is unknown and needs
   reconciliation. Never infer start from exit status or parse child output.
-  PB-1 calls this same logic in-process and records the fields.
+  PB-1 calls this same logic in-process and records the fields. `token_run`
+  launches through GA-2a's module-called `process.start` and owns signals,
+  waiting and cleanup; it adds no other launch path. Shipped in PR15 after
+  GA-2a/PR14 under the same lead.
 - **Acceptance.** Ported and new offline tests pass. They include a real
   `git credential fill` in a temporary repository with an isolated `HOME` and
   `XDG_CONFIG_HOME`, decoy credential helpers and `GIT_CONFIG_NOSYSTEM=1`,
@@ -1610,13 +1843,15 @@ combined result after `RC-1c`.
   absent-file no-start and true/null unknown outcomes; child output remains
   unchanged and revocation failure preserves status.
 - **Offline tests.** `SUITE -p 'test_token_run.py'`, then `SUITE`.
-- **Depends on.** GA-1.
-- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, HC-1.
+- **Depends on.** GA-1 and GA-2a, both merged.
+- **Parallel with.** RP-1, EV-1, PV-1b, BT-1, HC-1 after GA-2a.
 - **Risk facts and tier.** Security boundary → the challenging tier.
   Reviewer: challenging.
 - **Review focus.** Environment scrubbing; the completeness of the helper
   reset; signal handling and revocation timing.
-- **Size.** About 1,000 lines.
+- **Size.** About 1,170 lines after the GA-2a split. The initial 1,280-line
+  estimate prompted two sequential PRs, not a waiver. Fresh pre-edit and
+  actual measures each at most 1,200; all acceptance is preserved.
 
 ### GA-3 Worker App token: refusals before minting
 
@@ -1686,7 +1921,8 @@ combined result after `RC-1c`.
     stops with exit 5, because Shawn pushes such changes; an `op-intent` is
     recorded; `git ls-remote` must show the branch absent, already at the
     head, or at the prior head from the latest confirmed push result for that
-    branch. Already at the head records the result without a push. An update
+    branch. Already at the head records `no-op` only after that confirmation,
+    without a push or invented child evidence. An update
     requires that exact confirmed prior head and a proof that it is an
     ancestor of the new reviewed head; unexpected movement and
     non-fast-forward updates stop before any push. The helper records the
@@ -1696,8 +1932,13 @@ combined result after `RC-1c`.
     for an absent branch) during the push. It is used only after the ancestry
     proof, so it cannot authorize a history rewrite; bare `--force` and leases
     without an explicit expected value are forbidden. Any intervening movement
-    fails the lease. `git ls-remote` confirms; an `op-result` is recorded. A push to an explicit
-    URL adds no remote-tracking ref to the owner's checkout.
+    fails the lease. `git ls-remote` confirms the exact head; only then may
+    `op-result` say `succeeded` or `no-op`. An actual push additionally requires
+    CD-2 start/status evidence: `childStarted: true`, `childStatus: 0` from the
+    required status file, recorded by the same in-process run logic. Unknown,
+    refused, failed or nonzero child outcomes never count as successful push
+    evidence. A push to an explicit URL adds no remote-tracking ref to the
+    owner's checkout.
   - `pr`, in order: `privacy check` of the title, the body and the branch name;
     an `op-intent`; an existing pull request for the branch is reused, never
     duplicated; `publish run --status-file FILE -- gh pr create` with explicit `--repo`, `--head`
@@ -1708,7 +1949,11 @@ combined result after `RC-1c`.
     published. A privacy match in published history goes to Shawn; the
     unpublished-only rewrite exception cannot remove it. Reuse the pull
     request, then verify its new head, base, state and App author before
-    recording PR-ready.
+    recording PR-ready. A pull-request `op-result` says `succeeded` or
+    `no-op` only after `pr verify` passed for that exact head. Failed or skipped
+    verification records `refused` or `failed` with the gap, never success/no-op.
+    Both operations meet EV-1's result/gap contract in `docs/cli/evidence.md`,
+    which `docs/cli/publish.md` cites; no new schema/shared-file edit is assigned.
   - Both commands start `publish run` from the repository directory and pass no
     `-C`, `-c` or `cd`.
   - A failed check stops the flow and names the next step: a Corrections round,
@@ -1735,8 +1980,14 @@ combined result after `RC-1c`.
   unexpected remote movement; a non-fast-forward head; and a refused push
   when the branch changes after preflight; refusal versus identical child
   exit codes; absent-file no-start; true/null unknown reconciliation; lead and
-  no-lead publication without bypassing CD-4. The first pull request after
-  PB-1 is installed is published through it (L5).
+  no-lead publication without bypassing CD-4. Test the exact-head PR-ready
+  pair under EV-1's result/gap contract: actual push needs child start, status
+  zero and `ls-remote`; no-op needs confirmed existing head without inventing a
+  child. Missing/wrong-head confirmation, nonzero/unknown/refused/failed child
+  outcomes, and failed/skipped/wrong-head PR verification never record
+  successful evidence. PR creation/reuse records success/no-op only after
+  exact-head verification. The first pull request after PB-1 is installed is
+  published through it (L5).
 - **Offline tests.** `SUITE -p 'test_publish.py'`, then `SUITE`.
 - **Depends on.** RC-1c (after RC-1a and RC-1b), EV-1, PV-1b, GA-3.
 - **Parallel with.** RP-1.
@@ -1864,8 +2115,9 @@ combined result after `RC-1c`.
   and includes merge/result verification and the one-line manager handoff.
   Installation is L6.
 - **Offline tests.** `SUITE -p 'test_skill.py'`, then `SUITE`.
-- **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), EV-1, JV-1, RT-1, PV-1b, GA-1, GA-2, GA-3, PB-1,
-  HC-1, BT-1, and L7's result.
+- **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), EV-1, JV-1, RT-1b
+  (after RT-1a), PV-1b, GA-1, GA-2a, GA-2, GA-3, PB-1, HC-1, BT-1, and
+  L7's result.
 - **Parallel with.** RP-1.
 - **Risk facts and tier.** Shared interface change (it names every command).
   The skill describes guardrails but changes none, and a floor applies to what
@@ -2079,7 +2331,7 @@ combined result after `RC-1c`.
 |---|---|---|---|---|
 | L1 | after CF-1 | Shawn, or the manager at his instruction | Add the version-2 sections to the routing config with Shawn's values; `t3c config check` passes | owner step |
 | L2 | after JV-1 and L1 | manager | `live/jev_contract.py`: one call to the configured model | live, synthetic |
-| L3 | after RT-1 and L1 | manager | Save a real catalog; run `live/catalog_shape.py` and one `t3c route select` on a synthetic work | live |
+| L3 | after RT-1a and L1 | manager | Save a real catalog; validate both flags, empty constraints and advertised model/options with `live/catalog_shape.py`, then one synthetic `t3c route select` | live |
 | L4 | after GA-1 | manager | `t3c publish check` | live |
 | L5 | after PB-1 | assigned lead for its Task, otherwise manager | Publish the next pull request with `t3c publish push` and `t3c publish pr` | live |
 | L6 | after SK-1 | Shawn, or the manager at his request | `t3c skill install`; a new manager Session lists the skill | live |
@@ -2087,26 +2339,34 @@ combined result after `RC-1c`.
 | L8 | after RP-1 and L1 | manager | `live/router_pilot.py` | live, synthetic |
 | L9 | after the handoff | rapid-ship manager thread | The pilot | live |
 | L10 | after the pilot | manager | The nested scratch pilot (FL-1) | live |
-| L11 | after RT-1 and Shawn places each supported choice in config | manager | Verify both medium Worker choices and role limits under [decisions 9 and 12](#decisions), as described below | live, synthetic |
+| L11 | Argon after RT-1a; GLM after RT-1b; each after Shawn places it in config | manager | Verify both medium Worker choices and role limits under [decisions 9 and 12](#decisions), as described below | live, synthetic |
 
 Under [decisions 9 and 12](#decisions), L11 covers both GLM 5.3 and Argon
-(`gemini-4-argon-high`). It runs for each after RT-1 and Shawn's placement of
-that choice in config, using only the catalog's exact identifiers and options.
+(`gemini-4-argon-high`). Argon waits for RT-1a; GLM waits for RT-1b's Pi rules
+and billing record. Each also waits for Shawn's placement of that choice in
+config, using only the catalog's exact identifiers and options.
 Shawn chose Argon as the medium software-engineering Worker preference with
 Sol as its one fallback; the Engineering manager applies the private config.
 GLM remains unplaced. L11 is independent of the handoff gate.
 
-The manager saves a live catalog. For GLM it confirms that the Pi instance lists
-GLM 5.3 with the requested options and `canRunChildTask: true`. For Argon it
-confirms which pool accounts offer `gemini-4-argon-high` with the requested
-options and `canRunChildTask: true`. The dated two-of-three observation in
+The manager saves a parsed live catalog no older than 15 minutes, with no
+separate status field. For GLM it confirms `driverKind: pi`, GLM 5.3 and the
+requested options. For Argon it confirms which subscription pool accounts offer
+`gemini-4-argon-high` with the requested options. Each provider must report BOTH
+`canRunChildTask: true` and `canRunCrossProviderChildTask: true`, with an empty
+`constraints` list; missing entries/options, false flags and constraint text
+supply unavailability reasons. Unreadable/malformed/stale catalog is a failed
+status check under the existing stop/fallback contract. The dated two-of-three observation in
 decision 12 is not a substitute for this check. Run `t3c route select` once per
 role on synthetic work for each placed choice: a Worker may get it; Argon must
 resolve only to an offering, available account. Reviewers and Feature leads
 never get either choice; each uses one eligible fallback or exits 5. Neither
 choice serves the text helper or master. Record and report the selections and
-any fallback. Record and report every GLM use's per-token billing; Argon remains
-covered by the agy subscription.
+any fallback. Record `billing: "per-token"` and report billing from selection
+output for every GLM use under RT-1b; Argon remains covered by the agy
+subscription. A non-subscription master exits 3; RT-1b retains that refusal for
+Pi. These L3/L11 procedures belong in the relevant PR body, not RT-1a's
+command-only routing spec.
 
 L7 tests two behaviors in a scratch thread bound to the t3-compose root, with a
 trivial read-only child. First, the ways to clear the conversation while
@@ -2130,11 +2390,11 @@ Shawn authorized the scratch thread and manual clear for L7 ([decision 3](#decis
 |---|---|---|
 | 0 | HS-1, DOC-1; L7 independently | this plan's merge; L7 has owner authorization |
 | 1 | CF-1, PV-1a, and sequential RC-1a → RC-1b → RC-1c | CF-1, PV-1a, RC-1a: both DOC-1 / PR3 and HS-1 / PR4 merged (use the merged plan and CD-4; RC-1a adds no dependency on the decision-18 docs follow-up). RC-1b: RC-1a. RC-1c: RC-1b |
-| 2 | RT-1, JV-1; L1 to L3 as ready | Stage 2 waits for all three RC-1 Tasks (RC-1a, RC-1b, RC-1c). RT-1: CF-1, RC-1c. JV-1: CF-1, RC-1c, PV-1a. L1: CF-1. L2: JV-1, L1. L3: RT-1, L1 |
-| 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1. EV-1: RC-1c. PV-1b: PV-1a. BT-1, HC-1: HS-1, RC-1c. GA-1: HS-1 |
-| 3a | GA-2, then GA-3; other stage-3 Tasks may continue | GA-2: GA-1. GA-3: GA-2 |
+| 2 | sequential RT-1a → RT-1b under one lead; JV-1; L1 to L3 as ready | Stage 2 waits for all three RC-1 Tasks (RC-1a, RC-1b, RC-1c). RT-1a: CF-1, RC-1c. RT-1b: RT-1a. JV-1: CF-1, RC-1c, PV-1a. L1: CF-1. L2: JV-1, L1. L3: RT-1a, L1. L11 Argon: RT-1a; GLM: RT-1b; each also needs owner placement |
+| 3 | RP-1, EV-1, PV-1b, BT-1, HC-1, GA-1 | RP-1: JV-1, RT-1a. EV-1: RC-1c. PV-1b: PV-1a. BT-1: HS-1, RC-1c. HC-1: HS-1, GA-2a, RC-1c. GA-1: HS-1 |
+| 3a | GA-2a → GA-2 → GA-3; other stage-3 Tasks may continue | GA-2a: HS-1. GA-2: GA-1 and merged GA-2a, sequential under the same lead. GA-3: GA-2 |
 | 4 | PB-1; RP-1 may still run | RC-1c, EV-1, PV-1b, GA-3 |
-| 5 | SK-1; RP-1 may still run | all helper and template Tasks (including RC-1c), and L7; RP-1 need not finish |
+| 5 | SK-1; RP-1 may still run | all helper and template Tasks (including RC-1c, RT-1b after RT-1a, and GA-2a), and L7; RP-1 need not finish |
 | 6 | PH-1 | RC-1c, SK-1, L7 |
 | 7 | gated handoff, then pilot (L9) | Tasks through PH-1; L1 to L7; Shawn's go-ahead |
 | later | FL-1, then FL-2 | the first pilot; FL-2 also waits for L10 |
@@ -2146,19 +2406,24 @@ sequential Tasks under one Feature lead: RC-1a, then RC-1b, then RC-1c (RC-1a's
 code may merge before the decision-18 documentation follow-up merges, so no
 DOC-2 follow-up merge gate is added). Dispatch CF-1, RC-1a and PV-1a first,
 then RC-1b once RC-1a merges, and RC-1c once RC-1b merges. Stage 2 waits for
-all three RC-1 Tasks (`RC-1a`, `RC-1b` and `RC-1c`): dispatch RT-1 as soon as
-CF-1 and RC-1c finish; JV-1 also needs PV-1a. L1 follows CF-1; L2 follows JV-1
-and L1; L3 follows RT-1 and L1. The router goes live once JV-1, RT-1 and L1 to
-L3 pass, before publication and the skill. L7 is independent of the helper and
+all three RC-1 Tasks (`RC-1a`, `RC-1b` and `RC-1c`): dispatch RT-1a as soon as
+CF-1 and RC-1c finish, then RT-1b after RT-1a merges under the same lead;
+JV-1 also needs PV-1a. L1 follows CF-1; L2 follows JV-1 and L1; L3 follows
+RT-1a and L1. Subscription routing goes live once JV-1, RT-1a and L1 to L3
+pass, before publication and the skill. RP-1 and Argon's L11 part need RT-1a;
+SK-1 and GLM's L11 part need RT-1b. Each L11 part also needs owner placement;
+GLM remains unplaced. L7 is independent of the helper and
 can run while the routing path is built.
 
 The Stage 1 two-merge gate is mandatory, and Stage 2 waits for all three RC-1
 Tasks through RC-1c. Other stages give dispatch priority, not extra
 dependencies. EV-1, PV-1b, BT-1, HC-1 and GA-1 may start earlier once their
 listed dependencies finish if that does not delay routing (EV-1, BT-1 and HC-1
-wait for RC-1c; PV-1b waits for PV-1a; GA-1 waits for HS-1). Each parallel
-group has exclusive file ownership; RC-1a, RC-1b and RC-1c share the records
-paths sequentially and never run in parallel with one another. The post-routing chain is GA-1, GA-2, GA-3, PB-1, SK-1 and PH-1;
+wait for RC-1c; HC-1 also waits for GA-2a; PV-1b waits for PV-1a; GA-1 waits
+for HS-1). Each parallel group has exclusive file ownership; RC-1a, RC-1b and
+RC-1c share records paths sequentially, followed by RT-1b's explicitly assigned
+billing edits. RT-1a/RT-1b and GA-2a/GA-2 are sequential within each pair.
+The post-routing chain is GA-1, GA-2a, GA-2, GA-3, PB-1, SK-1 and PH-1;
 EV-1, the privacy checks, templates and lock run beside the token Tasks.
 The manager chooses concurrency from capacity and Shawn's direction. DOC-1's
 exact-text carve-outs and FL-2 name easy-tier work.
@@ -2186,7 +2451,7 @@ step's reviews leave to this plan.
 | 2 | The failure action for the head-commit check | Decided. It applies to every repository: report to Shawn; not PR-ready. | PV-1b; DOC-1 records it |
 | 3 | The open-decisions section's lifecycle | Decided. DOC-1 records the confirmed answer to former open decision 4 and keeps an "Open decisions" heading with one line saying no decisions remain open and pointing to their recorded answers, preserving `#open-decisions`. | DOC-1 |
 | 4 | Risk floors and the documentation criterion | Decided by Shawn on 2026-10-27 ([decision 1](#decisions)). Floors count changed behavior; documents are medium and technical project documentation is software engineering. CF-1 defines the fields; the confirmed values enter `.local/` at L1. | CF-1, L1, DOC-1 |
-| 5 | The interim token step | Decided. The helper absorbs it. GA-1 (minting, scope, revocation), GA-2 (running a command) and GA-3 (refusals before minting) port its reviewed behavior: the key only in an anonymous pipe, the token only in the child's environment, the helper reset, SSH refusal and redirect refusal. PB-1 builds the flow. After L4 and L5, the manager stops using the interim step, and Shawn may delete it. | GA-1, GA-2, GA-3, PB-1 |
+| 5 | The interim token step | Decided. The helper absorbs it. GA-1 (minting, scope, revocation), GA-2a (later shared launch seam), GA-2 (running a command) and GA-3 (refusals before minting) port its reviewed behavior: the key only in an anonymous pipe, the token only in the child's environment, the helper reset, SSH refusal and redirect refusal. PB-1 builds the flow. After L4 and L5, the manager stops using the interim step, and Shawn may delete it. | GA-1, GA-2a, GA-2, GA-3, PB-1 |
 | 6 | The interim step's two questions | Decided. Keep `protocol.ssh.allow=never` and remove an inherited `GIT_ALLOW_PROTOCOL`. Revoke every token: `check` fails when revocation fails; `run` warns and keeps the child's status. | GA-1, GA-2 |
 | 7 | Heavy-check coordination across manager threads | Decided. One stable `flock` inode in `.local/state/locks/`, separate status metadata, and a runner that retains the lock until the check exits, even if the wrapper dies. | HC-1 |
 | 8 | The identifier list | Decided. The helper loads it for every publication check and blocks when it is missing, empty or invalid. JV-1 also screens Jev input with it. | PV-1a, PV-1b, JV-1 |
@@ -2203,18 +2468,20 @@ step's reviews leave to this plan.
 |---|---|---|
 | Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1a, RC-1b, RC-1c, EV-1, JV-1 |
 | Validated config schema and its digest; medium Worker-only pool preferences and endpoints under decision 12 | [Routing and personal configuration][d-routing] | CF-1 |
-| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, model-aware pool walking, per-account quota and skipped-account reasons under decision 12, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
-| Medium Worker choices under decisions 9 and 12: owner-controlled placement, role limits, live catalog and GLM billing | [Routing and personal configuration][d-routing] | DOC-1, CF-1, RT-1, L11 |
+| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, model-aware pool walking, per-account quota and skipped-account reasons under decision 12, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1a; RT-1b adds quota commands and metered rules/billing |
+| Medium Worker choices under decisions 9 and 12: owner-controlled placement, role limits, live catalog and GLM billing | [Routing and personal configuration][d-routing] | DOC-1, CF-1, RT-1a (Argon/catalog), RT-1b (GLM/billing), L11 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1a, RC-1b, RC-1c, EV-1 |
-| Publication by commit; Worker App token; privacy; head and author checks; subsequent own-Task t3-compose lead squash merge under decision 19 (no helper merge command) | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1; SK-1, FL-1, FL-2 describe merge authority |
+| Publication by commit; Worker App token; privacy; head and author checks; subsequent own-Task t3-compose lead squash merge under decision 19 (no helper merge command) | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2a, GA-2, GA-3, PB-1; EV-1 checks exact-head push/PR results; SK-1, FL-1, FL-2 describe merge authority |
+| PR-ready requires confirmed push and verified pull-request op-results, both succeeded/no-op at exactly the checked head; no free-text inference/new schema | [Checks and publication][d-publication] | EV-1 specifies result/gap contract; PB-1 meets it |
+| Owner-decided disposition references an existing resolved decision by exact reserved `"owner"`; recorded words/place/time provenance, not authentication | [Sources of truth and local records][d-records]; [Accepted review policy][d-review] | RC-1c records docs/tests/history; EV-1 acceptance; no schema/shared-file amendment |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
 | Worker and Reviewer brief templates | [Work cycle][d-cycle]; [Manager threads and bases][d-bases] | BT-1 |
 | Manager skill and user-level installation | [Scope][d-scope] | SK-1 |
-| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record schema validation in RC-1a, store validation, duplicate-dispatch refusal and refusal of the three deferred CD-4 event kinds in RC-1b, and CD-4 review/finding history, current-lead provenance, uncertain-dispatch reconciliation and recovery in RC-1c; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
+| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record schema validation in RC-1a, store validation, duplicate-dispatch refusal and refusal of the three deferred CD-4 event kinds in RC-1b, and CD-4 review/finding history, current-lead provenance, uncertain-dispatch reconciliation and recovery in RC-1c; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1a; quota commands and metered billing in RT-1b, with simulated quota tests |
 | The test command in `AGENTS.md` | [t3-compose repository workflow][d-workflow] | HS-1 |
 | Lead final-head review, own-Task publication and t3-compose merge, lead reporting limits and manager delivery timing; CD-4 schema shapes in RC-1a, three-kind refusal in RC-1b, full review-sequence/finding history and current-lead provenance/evidence enforcement in RC-1c (decisions 13, 17 and 19) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1a, RC-1b, RC-1c, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
 | Stable uv-pinned CPython 3.15, final-release floor, one interpreter and isolated commands (decision 14, CD-3) | [Sources of truth and local records][d-records] | DOC-1, HS-1, BT-1, SK-1; manager delivery checks |
-| Structured nonzero CLI data, sanitized errors, publish status file, heavy JSON summary, reserved options and injectable shared process interfaces/ownership (decision 15, CD-2) | [Sources of truth and local records][d-records]; [Checks and publication][d-publication] | DOC-1, HS-1 and every later command Task; GA-2/3, PB-1, HC-1, PV-1b |
+| Structured nonzero CLI data, sanitized errors, publish status file, heavy JSON summary, reserved options and injectable shared process interfaces/ownership (decision 15, CD-2) | [Sources of truth and local records][d-records]; [Checks and publication][d-publication] | DOC-1, HS-1 and every later command Task; GA-2a adds `start` after HS-1; GA-2/3, PB-1, HC-1, PV-1b |
 | Temporary private prose setup, no rapid-ship work by t3-compose agents, formal L9 gates unchanged; Stage 1 after PR3 and PR4 merge; records store split into three sequential Tasks and Stage 2 gated on all three (decisions 15, 16 and 18) | [Taking over existing Claude work][d-takeover]; [Pilot and validation][d-pilot]; [Sources of truth and local records][d-records] | DOC-1, CF-1, RC-1a, RC-1b, RC-1c, PV-1a, PH-1, SK-1 |
 | Feature leads after the first pilot | [Feature lead options][d-leads] | FL-1, FL-2 |
 | Pilot handoff, both restarts, synthetic router pilots | [Pilot and validation][d-pilot]; [Taking over existing Claude work][d-takeover] | PH-1, RP-1, L7 |
