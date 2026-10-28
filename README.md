@@ -8,6 +8,7 @@ re-home findings, takes effect when Shawn approves and merges its pull request.
 Implementation and live pilots are pending.
 
 - [Design and accepted decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md)
+- [Implementation plan](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md)
 - [Glossary](GLOSSARY.md)
 - [Agent instructions](AGENTS.md)
 
