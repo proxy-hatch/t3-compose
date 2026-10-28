@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from . import github_app as app, jsonio, process
+from . import github_app as app, jsonio, process, token_preconditions
 from .cli import CommandError, PassThrough
 
 _REMOVED = frozenset('GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN '
@@ -73,6 +73,8 @@ def _unexpected(error):
 
 
 def _prestart_failure(error, stage):
+    if stage == 'setup-failed' and isinstance(error, token_preconditions.Refusal):
+        return error.kind, 1, None
     interrupted = isinstance(error, (KeyboardInterrupt, InterruptedError))
     refusal = 'interrupted' if interrupted else stage
     expected = (interrupted or
@@ -195,8 +197,7 @@ def run_command(command, status_file, *, local_dir):
                 stage = 'setup-failed'
                 cwd = os.getcwd()
                 base = sanitized_environment(os.environ)
-                # GA-3 inserts its checks here, with this exact base and cwd,
-                # before token injection. This Task performs no Git reads.
+                token_preconditions.check(command, env=base, cwd=cwd)
                 stage = 'invalid-config'
                 config = app.load_config(Path(local_dir) / 'github-app.json')
                 stage = 'setup-failed'
