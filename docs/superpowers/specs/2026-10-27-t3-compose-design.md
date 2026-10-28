@@ -1,10 +1,11 @@
 # t3-compose design
 
-Status: design decisions approved by Shawn on 2026-10-27. This revision, made the
-same day, records Shawn's [re-home](#decisions-accepted-at-the-re-home) and
-[publication](#decisions-on-t3-compose-publication) decisions and the
-[findings](#findings), and takes effect when Shawn approves and merges its pull
-request. The remaining [open decisions](#open-decisions) are listed at the end.
+Status: design decisions approved by Shawn on 2026-10-27. This revision, made on
+2026-10-28, records Shawn's [re-home](#decisions-accepted-at-the-re-home),
+[publication](#decisions-on-t3-compose-publication) and
+[implementation-plan](#decisions-on-the-implementation-plan) decisions, and the
+[findings](#findings). It takes effect when Shawn approves and merges its pull
+request. No decisions remain [open](#open-decisions).
 Implementation and live validation are pending.
 
 Terminology: [project glossary](../../../GLOSSARY.md). A Task is one pull request;
@@ -124,8 +125,9 @@ the global assignment record and final readiness reporting. A feature lead owns
 one approved feature brief, decomposition within that scope, its Worker/Reviewer
 dispatches and local integration coordination. It reports outcomes, blockers,
 changed interfaces and evidence to the manager. It delegates project edits and
-cannot approve its own implementation. Its usual software-engineering coordination
-route is Sonnet 5.5 High; challenging engineering decisions go to Opus 5.5 High.
+cannot approve its own implementation. Its software-engineering coordination
+route uses the configured selection at the Task's tier, at least medium;
+challenging engineering decisions use the challenging tier.
 
 Only the parent that created a T3 child manages that child's task lifecycle. Thus
 the lead manages its Workers; the master manages the lead. Leads own their feature's
@@ -147,12 +149,11 @@ creates a security boundary or that full-access agents cannot bypass its records
 
 Use `.local/agent-routing.json` in the t3-compose root as the canonical personal
 routing config. This file and its adjacent policy and quota state are Git-ignored. The adjacent Markdown file explains operating rules and points to it.
-The following preferences describe its initial values, not hard-coded behavior.
-Challenging software-engineering work prefers Opus 5.5 High; challenging
-non-engineering work prefers Astra 6 High. Medium software-engineering work prefers
-Sonnet 5.5 High; medium non-engineering work prefers Sol 6.1 High. Bounded easy
-Worker tasks use agy Flash High. The master remains Opus 5.5. Account identifiers
-and observed quota state remain private. Package source contains no credentials.
+The config selects models and reasoning options for the medium and challenging
+tiers in each domain, the easy Worker pool and the text helper. These are
+preferences, not hard-coded behavior. The master remains Opus 5.5; only Shawn
+chooses a change to the Engineering manager's identity. Account identifiers and
+observed quota state remain private. Package source contains no credentials.
 
 Load and validate the config before every dispatch. Valid changes apply to future
 dispatches without restarting the manager. Running children keep their recorded
@@ -161,24 +162,36 @@ a cached value. Record the config digest with each selection so later changes do
 not obscure why a model was chosen. Personal configuration can change models,
 reasoning, account order and thresholds, but cannot waive repository requirements.
 
-The configurable routing rule includes classification criteria and task-risk
-floors, not only model names. The current config captures initial model choices,
+The configurable routing rule includes classification criteria, task-risk floors
+and round tiers, not only model names. The current config captures model choices,
 the confidence threshold and the approved availability fallback chains.
-Implementation must add the classification criteria and task-risk floors below.
+Implementation must add the classification criteria, task-risk floors and round
+tiers below.
 Code validates and applies those values; it must not hide changeable routing
 preferences in prompts or constants. Repository rules, including agy never
 Reviewer, remain separate constraints.
 
 The manager declares a Task's risk facts from a configured list. Each fact has a
 configured minimum tier, its floor, which is medium or challenging; there is no
-easy floor. The final Worker tier is the higher of the difficulty, from Jev or
-from recorded manager judgment, and every applicable floor. Easy work goes to agy
-only when no floor applies. The Reviewer tier is the higher of medium and the
-highest tier at which any Worker on the Task ran, including escalations, so agy is
-never a Reviewer. The risk facts, their floors and the domain criteria are
-configuration values, not constants. The initial risk facts and floors, and a
-domain criterion for technical documentation, are proposals for Shawn to tune; see
-[Open decisions](#open-decisions), item 4.
+easy floor. The first-round Worker tier is the higher of the difficulty, from
+Jev or recorded manager judgment, and every applicable floor. Easy first-round
+work goes to agy only when no floor applies. A floor counts what a Task changes.
+The first implementation of code that handles credentials or enforces a
+guardrail, and recovery or concurrency invariants, is challenging. Shared
+interface changes are medium. Documents are medium; technical documentation of
+a software project counts as software engineering. Exact-text mechanical edits
+can use the easy tier. These are the initial values from
+[plan decision 1](#decisions-on-the-implementation-plan), dated 2026-10-27.
+
+Corrections rounds with enumerated findings use the easy tier, even when a
+floor set the first round's tier. A brief that adds unresolved work is split or
+classified afresh. Repeated correctness failures escalate to a medium-tier
+Worker. Document reviews and scoped Corrections re-reviews use the medium tier.
+First reviews of challenging code follow the Task's tier, including escalations;
+other first reviews are at least medium. agy is never a Reviewer. The config's
+`roundTiers` values set the Corrections, scoped re-review and document-review
+tiers; plan decisions 5 and 6 supply their initial values. Risk facts, floors
+and domain criteria are also config values, not constants.
 
 The manager resolves each selection against T3's live catalog. A model is
 available only when the catalog lists it and its provider reports
@@ -189,13 +202,13 @@ and reason so the owner can see why cheap work was escalated.
 Use one agy account until confirmed quota exhaustion before moving to the next.
 Resolve the old attempt before retrying. Preserve its work and supply a continuation
 brief. Tool failures and correctness failures are not quota evidence. Repeated
-correctness failures escalate to a stronger Worker. An unavailable master is
+correctness failures escalate to a medium-tier Worker. An unavailable master is
 reported to the owner; the package does not replace the Engineering manager
 without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
-the configured availability fallback in both directions: Sonnet 5.5 High and
-Sol 6.1 High fall back to each other, as do Opus 5.5 High and Astra 6 High
-(re-home decision 3 added the reverse direction). When the fallback target is
-also unavailable, report it to Shawn; never fall back twice. Record and report
+the configured availability fallback at the selected tier. The config names
+each source and target selection and its options; re-home decision 3 added
+reverse chains. When the fallback target is also unavailable, report it to
+Shawn; never fall back twice. Record and report
 the reason, preserve all quality requirements, and resolve the original attempt
 before retrying. Availability fallback grants no extra permissions.
 
@@ -222,9 +235,9 @@ or account data; boilerplate safety language must not make every task appear har
 Ask closed-choice questions for domain (software engineering, other, mixed/unclear)
 and difficulty (easy, medium, challenging, insufficient context). These are
 classification results, not free-form model identifiers. The domain criteria must
-say where technical documentation belongs: in the live check, jev-1.14 classified
-a README spelling fix as domain OTHER (F3). [Open decisions](#open-decisions),
-item 4, proposes a criterion.
+say that technical documentation of a software project counts as software
+engineering, as plan decision 1 confirms. In the live check, jev-1.14 classified
+a README spelling fix as domain OTHER (F3).
 
 Code maps accepted classifications to the owner's routes. It independently applies
 role exclusions (especially agy never Reviewer), hard task-risk floors, live model
@@ -250,9 +263,9 @@ Reclassify when task-relevant inputs or policy change. Availability and quota ar
 checked at dispatch even when classification is reused.
 
 Jev does not generate prose. Typed routing needs no separate text model. When a
-bounded text-generation step is useful, use agy Flash High through T3 as a distinct
-fixed-role task, then consume its result. Do not add a synchronous agy API gateway
-or route the router's own prerequisite recursively. A generated summary may assist
+bounded text-generation step is useful, use the configured text helper through
+T3 as a distinct fixed-role task, then consume its result. Do not add a synchronous
+agy API gateway or route the router's own prerequisite recursively. A generated summary may assist
 the manager but cannot replace original requirements in a consequential routing decision.
 
 The existing local Jev browser skill uses OpenRouter for decisions and a separate
@@ -337,7 +350,7 @@ manager is bound to the t3-compose root; the pilot runs from a manager thread
 bound to the rapid-ship root (re-home decision 1).
 
 A root-bound manager uses the owner's checkout. It never moves that checkout or
-writes to it: no switch, reset, pull, stash, commit or file edit. The exceptions
+writes to it: no switch, reset, stash, commit or file edit. The exceptions
 are:
 
 - The manager's records under t3-compose's Git-ignored `.local/state/`.
@@ -347,15 +360,19 @@ are:
   date. The manager does not change routing values or account order without
   Shawn's instruction.
 - A plain `git fetch`, which adds objects and updates remote-tracking refs.
+- After a merge, `git pull --ff-only` on the owner's clean `main`, only when
+  T3 has not already fast-forwarded it (plan decision 2, dated 2026-10-27).
 - A push of a reviewed commit for publication, which changes only the remote and
   its remote-tracking refs.
 - Operations that Shawn explicitly requests.
 
 Neither a fetch nor a push moves HEAD, the index, the working tree, a stash or a
-local branch. That checkout's local `main` can lag `origin` (F2), so its HEAD need
-not be the intended base, for example an advanced `origin/main` or a stacked
-parent's head. When the intended base is not local, the manager fetches before it
-writes the brief.
+local branch. After a merge, read the checkout's actual HEAD; T3 may already
+have fast-forwarded it (F2). Its HEAD need not be the intended base, for example
+an advanced `origin/main` or a stacked parent's head. Read the provisioned
+commit again at dispatch rather than assuming the checkout lags `origin`.
+When the intended base is not local, the manager fetches before it writes the
+brief.
 
 Each Worker brief therefore names three commits:
 
@@ -442,8 +459,16 @@ repository or in t3-compose, as those rules require (F4). It publishes the
 reviewed head by commit, for example `git push origin <sha>:refs/heads/<name>`,
 not by branch name, because T3 can rename a child's branch (F8). Before it
 reports the Task PR-ready, it confirms that the pull request's head commit equals
-the reviewed head. It links each pull request to its T3 thread with
-`link_pull_request`.
+the reviewed head and checks the author where the repository's identity rules
+name one. A mismatched head or author means: report to Shawn; not PR-ready.
+This applies to every repository. It links each pull request to its T3 thread
+with `link_pull_request`.
+
+A private-identifier match blocks publication in every repository until
+Corrections or Shawn resolves it. A match in a commit's message or tree returns
+to the Worker in a Corrections round whose brief permits rewriting only the
+unpublished commits needed to remove it. The manager fixes its own branch name,
+pull request title and body. Shawn decides when an identifier seems necessary.
 
 These rules are instructional. Every child inherits full access and the owner's
 local `gh` login, and Codex and agy children run without rapid-ship's hook until
@@ -484,9 +509,10 @@ The Worker App lacks the workflows permission, so it cannot push changes under
 App's use in rapid-ship and not yet observed on t3-compose.
 
 Shawn merges t3-compose pull requests, squash only, and agents never merge
-(publication decision 2). All three merge methods remain enabled in the
-repository settings, so squash-only is a working rule, not a setting. `main` has
-a GitHub ruleset (publication decision 4): a pull request is required, force
+(publication decision 2). On 2026-10-28, the manager read the repository settings
+through the GitHub API: only squash merges are allowed, and GitHub deletes a
+pull request's branch when it merges. `main` has a GitHub ruleset (publication
+decision 4): a pull request is required, force
 pushes and deletion are blocked, and there are no bypass actors. A child can
 still push other branches with Shawn's login, and `main` accepts changes only
 through pull requests. Someone holding Shawn's login could still edit the
@@ -501,12 +527,19 @@ rapid-ship's task list; write "recorded in `.local/`" instead. Before it
 publishes, the manager checks the commit messages and the pull request's title
 and body against the private identifier list in `.local/`. Commit author and
 committer fields do carry the owner's email, which F7 found already public.
+On 2026-10-28, Shawn accepted the `Co-authored-by` trailers that GitHub generates
+on a squash commit when he merges (plan decision 7). They may carry his commit
+email; agents never write it. These trailers are the only exception for
+commit-message text. They sit on the base branch, normally
+outside the review ranges that privacy checks cover. A match in a squash commit
+that a branch update brings into a range goes to Shawn.
 
 ## Design refinement
 
 Approved designs are the starting point. A new finding can justify a revision;
 record the evidence and the affected decision. Commission difficult software design
-work to Opus 5.5 High, and difficult non-engineering design work to Astra 6 High.
+work to the configured challenging software-engineering selection, and difficult
+non-engineering design work to the configured challenging non-engineering selection.
 Use an independent reviewer to check the proposed change.
 Refinements that change product scope or an owner decision go to Shawn before
 dependent implementation. Unaffected tasks can continue.
@@ -598,9 +631,9 @@ skills/templates plus a small Jev/record helper. Use T3 only; leave portability
 and a Compose upstream adapter for later. Treat the pilot as evidence for
 proceeding, not proof of universal quality parity.
 
-The project currently contains design and personal configuration only. The
-implementation plan, runtime helper, manager skill and live pilots remain to be
-built. Moving the project does not authorize takeover of rapid-ship work.
+The implementation plan is merged. The runtime helper, manager skill and live
+pilots remain to be built. Moving the project does not authorize takeover of
+rapid-ship work.
 
 ## Accepted review policy
 
@@ -619,7 +652,10 @@ A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
 For who runs a repository's heavy required check, see
 [Checks and publication](#checks-and-publication).
 
-Use the configurable engineering model preferences for the Reviewer. agy is never
+Use the configurable engineering model preferences for the Reviewer. Document
+reviews and scoped Corrections re-reviews use the configured round tiers,
+initially medium. First reviews of challenging code follow the Task's tier,
+including escalations; other first reviews are at least medium. agy is never
 a Reviewer. Review independence requires a separate Session that did not implement
 the change; it does not require a different model vendor.
 
@@ -633,8 +669,8 @@ Shawn accepted all four recommendations on 2026-10-27:
 1. Include optional Feature leads in version one, enabled after the nested-lifecycle
    pilot. Keep small independent Tasks under the Engineering manager.
 2. Permit configured automatic availability fallback for Workers, Reviewers and
-   Feature leads: Sonnet High to Sol High, and Opus High to Astra High. Report the
-   reason and preserve quality requirements. Engineering manager model changes
+   Feature leads at the selected tier, using the config's source and target
+   selections. Report the reason and preserve quality requirements. Engineering manager model changes
    remain Shawn's explicit choice.
 3. Keep the manager's no-project-edit rule advisory in version one. Check adherence
    in the pilot and preserve existing repository guardrails. New Harness-specific
@@ -657,10 +693,10 @@ to manager threads bound to each repository's checkout:
 2. rapid-ship work waits for the pilot. Do not resume, review, check or publish
    any rapid-ship task, and do not choose the pilot task, until t3-compose is
    built and the pilot starts in the rapid-ship-bound manager thread.
-3. Add reverse availability fallbacks for Workers, Reviewers and Feature leads:
-   Sol 6.1 High to Sonnet 5.5 High, and Astra 6 High to Opus 5.5 High, in
-   addition to the existing Sonnet 5.5 High to Sol 6.1 High and Opus 5.5 High to
-   Astra 6 High. They are already applied to the personal config in `.local/`.
+3. Add reverse availability fallbacks for Workers, Reviewers and Feature leads
+   at the medium and challenging tiers, in addition to the existing forward
+   chains. The personal config in `.local/` holds the selections in each
+   direction.
 4. t3-compose integrates through a public GitHub repository with pull requests.
 
 Earlier owner decisions stand as recorded above.
@@ -686,7 +722,42 @@ Shawn made these decisions on 2026-10-27, after the re-home:
    rules that apply to `main`. All three merge methods remain enabled in the
    repository settings; squash-only is a working rule, not a setting.
 
+   Settings note, 2026-10-28: the manager read the repository settings through
+   the GitHub API. Only squash merges are allowed, and GitHub deletes a pull
+   request's branch when it merges. This records the current settings, not a
+   new decision.
+
 [t3-compose repository workflow](#t3-compose-repository-workflow) applies them.
+
+## Decisions on the implementation plan
+
+Shawn made these decisions while reviewing the implementation plan. Their
+numbers match the plan's Decisions section.
+
+- **Decision 1, 2026-10-27: floors and documentation.** Documents are medium. Technical documentation of a software project counts as software engineering. A floor applies to what a Task changes, not what it mentions.
+  The first implementation of code that handles credentials or enforces a
+  guardrail, and recovery or concurrency invariants, is challenging. Shared
+  interface changes are medium. Exact-text mechanical edits can use the easy
+  tier. Values remain configurable. This answers former open decision 4.
+- **Decision 2, 2026-10-27: checkout updates.** After a merge, read the actual
+  checkout HEAD. The manager may run `git pull --ff-only` on the owner's clean
+  `main` only when T3 has not already fast-forwarded it. Read the provisioned
+  commit again at dispatch.
+- **Decision 5, 2026-10-27: Corrections and review tiers.** Corrections with
+  enumerated findings, document reviews and scoped re-reviews use the medium
+  tier. First reviews of challenging code follow the Task's tier. The config
+  supplies the models. Decision 6 replaces only the Corrections tier.
+- **Decision 6, 2026-10-28: Corrections at the easy tier.** Corrections rounds
+  with enumerated findings use the easy tier, even when a floor set the first
+  round's tier. Their scoped re-reviews stay medium; agy is never a Reviewer.
+  The config's `roundTiers` holds the Worker tier for enumerated Corrections
+  and the Reviewer tiers for scoped Corrections re-reviews and document
+  reviews. Decisions 5 and 6 supply the initial values: easy, medium and medium.
+- **Decision 7, 2026-10-28: squash trailers.** Shawn accepts the
+  `Co-authored-by` trailers that GitHub generates on a squash commit when he
+  merges. They may carry his commit email, which F7 found already public.
+  Agents never write it. The privacy rule above covers a match in a squash
+  commit that a branch update brings into a review range.
 
 ## Findings
 
@@ -703,10 +774,13 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   - Status: read from T3's source on 2026-10-27; the failed probe matches it.
   - Changes: [Manager threads and bases](#manager-threads-and-bases), work cycle
     step 4 and the takeover exception; prompted re-home decision 1.
-- **F2, the manager's checkout lags.** A root-bound manager uses the owner's
-  checkout, which it must not move or write, and that checkout's local `main` can
-  lag `origin`.
-  - Status: follows from F1 and ordinary Git behavior; not probed separately.
+- **F2, the manager's checkout can advance after merge.** A root-bound manager
+  uses the owner's checkout. Its local `main` can lag `origin`, but T3 may
+  fast-forward it after a linked pull request merges. Read the actual HEAD
+  after merge and again at dispatch; do not assume it lags.
+  - Status: the build manager observed an automatic fetch and
+    `pull --ff-only` within 19 s of a linked pull request merging, likely by T3.
+    The evidence is recorded in `.local/`.
   - Changes: [Manager threads and bases](#manager-threads-and-bases) and work
     cycle step 2.
 - **F3, the Jev contract.** A two-question call returned the contract recorded
@@ -715,7 +789,8 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
   jev-1.14 classified a README spelling fix as domain OTHER (0.86), and
   OpenRouter's public model list omits decision models.
   - Status: verified live on 2026-10-27 with synthetic input.
-  - Changes: [Jev decision routing](#jev-decision-routing) and open decision 4.
+  - Changes: [Jev decision routing](#jev-decision-routing) and former open
+    decision 4, answered by plan decision 1.
 - **F4, rapid-ship's hook and the Session's repository.** rapid-ship's guardrail
   hook judges every command by the Session's working repository, so a Claude
   Session rooted in a rapid-ship checkout is denied `gh` writes and plain
@@ -751,17 +826,4 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
 
 ## Open decisions
 
-On 2026-10-27, Shawn answered items 1 to 3: the GitHub identity, merge authority
-and license. The answers are
-[publication decisions](#decisions-on-t3-compose-publication) 1 to 3. Item 4 is
-still open, and Shawn's answer replaces it.
-
-4. **Initial routing values.** Proposals for Shawn to tune; the confirmed values
-   become personal configuration.
-   - Risk floors: unresolved design, a security or guardrail boundary (including
-     a repository's Protected set) and subtle invariants (concurrency, recovery,
-     data loss) go to challenging; a shared interface change goes to medium.
-   - Domain criterion: technical documentation of a software project, such as a
-     README, agent instructions, a design or an API reference, counts as software
-     engineering. Reason: its correctness depends on the code, interfaces and
-     repository rules it describes.
+No decisions remain open; [publication decisions](#decisions-on-t3-compose-publication) 1 to 3 answer former items 1 to 3, and [implementation-plan decision 1](#decisions-on-the-implementation-plan) answers former item 4.
