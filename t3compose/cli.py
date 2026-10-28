@@ -139,6 +139,9 @@ def _is_reserved_name(name):
 
 
 def _validate_parser_names(parser):
+    for action in parser._owned_actions:
+        if not any(action is item for item in parser._actions):
+            raise ValueError("registry-owned argument removed")
     for action in parser._actions:
         owned = any(action is item for item in parser._owned_actions)
         if action.dest == "handler" or (_is_reserved_name(action.dest) and not owned):
@@ -256,12 +259,21 @@ def command_names():
     return paths
 
 
+def _text_json(value):
+    return (canonical_json(value).decode("utf-8")
+            .replace("\u0085", "\\u0085")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
+
+
 def _format_output(data, text_mode):
     encoded = canonical_json(data).decode("utf-8")
-    if not text_mode or not isinstance(data, dict):
+    if not text_mode:
         return encoded
+    if not isinstance(data, dict):
+        return _text_json(data)
     return "\n".join("{}: {}".format(json.dumps(str(key), ensure_ascii=True)[1:-1],
-                                    canonical_json(value).decode("utf-8"))
+                                    _text_json(value))
                      for key, value in data.items())
 
 

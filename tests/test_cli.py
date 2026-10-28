@@ -416,6 +416,8 @@ class OfflineCLI(OfflineTestCase):
 
     def test_corrections_reserved_registration_at_every_level(self):
         cases = (
+            ("registry.parser.add_argument_group(conflict_handler='resolve').add_argument('--text')", ""),
+            ("registry.parser.add_argument_group(conflict_handler='resolve').add_argument('--local-dir', dest='workspace')", ""),
             ("registry.parser.set_defaults(t3c_text=True)", ""),
             ("registry.parser.set_defaults(t3c_local_dir='synthetic-redirect')", ""),
             ("registry.parser.add_argument('--collision', dest='t3c_text')", ""),
@@ -482,6 +484,32 @@ class OfflineCLI(OfflineTestCase):
         self.assertEqual(out, 'note\\nverified: "forged"\ntab\\tkey: "value"\n'
                              'split\\u2028key: "separator"\nok: false\n')
         self.assertEqual(len(out.splitlines()), 4)
+
+    def test_corrections_text_values_escape_unicode_line_boundaries(self):
+        for separator, escaped in (("\u0085", "\\u0085"), ("\u2028", "\\u2028"),
+                                   ("\u2029", "\\u2029")):
+            data = {'note': 'a' + separator + 'b',
+                    'nested': {'values': ['x' + separator + 'y']}, 'ok': False}
+            source = ("def register(registry):\n"
+                      "    p = registry.group('sample').add_parser('show')\n"
+                      "    p.set_defaults(handler=lambda a: " + repr(data) + ")\n")
+            with self.subTest(separator=ord(separator)):
+                code, out, err = self._invoke_corrections_module(
+                    source, ['--text', 'sample', 'show'])
+                expected = ('note: "a' + escaped + 'b"\n'
+                            'nested: {"values":["x' + escaped + 'y"]}\nok: false\n')
+                self.assertEqual((code, out, err), (0, expected, ''))
+                self.assertEqual(len(out.splitlines()), 3)
+                code, out, err = self._invoke_corrections_module(source, ['sample', 'show'])
+                self.assertEqual((code, json.loads(out), err), (0, data, ''))
+                self.assertIn(separator, out)  # Canonical JSON keeps Unicode literal.
+                source = ("def register(registry):\n"
+                          "    p = registry.group('sample').add_parser('show')\n"
+                          "    p.set_defaults(handler=lambda a: " + repr([data['note']]) + ")\n")
+                code, out, err = self._invoke_corrections_module(
+                    source, ['--text', 'sample', 'show'])
+                self.assertEqual((code, out, err), (0, '["a' + escaped + 'b"]\n', ''))
+                self.assertEqual(len(out.splitlines()), 1)
 
     def test_helper_info_preserves_git_index_and_version_failure_is_sanitized(self):
         from t3compose import cli

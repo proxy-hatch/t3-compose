@@ -124,12 +124,13 @@ With global `--text`, a `dict` result prints one `key: <json-value>` line per
 item in insertion order. Keys use `json.dumps(str(key), ensure_ascii=True)`
 without its surrounding quotes; control characters, quotes, backslashes and
 non-ASCII characters are escaped. Simple labels such as `root` stay readable.
-Values use `canonical_json(value).decode("utf-8")`. Escaped keys and values
-cannot insert extra physical output lines. An empty dictionary prints an empty
-line (`""` followed by the trailing
-newline from `print`). Any non-`dict` value (such as a list, string, number,
-boolean or `None`) prints its single `canonical_json(data).decode("utf-8")`
-line. Plain returns and `Outcome` share this exact rendering path.
+Values start with `canonical_json(value).decode("utf-8")`, then text rendering
+escapes U+0085, U+2028 and U+2029, including inside nested values. Canonical JSON
+output is unchanged. Escaped keys and values cannot insert extra physical
+output lines. An empty dictionary prints an empty line (`""` followed by the
+trailing newline from `print`). Any non-`dict` value (such as a list, string,
+number, boolean or `None`) prints its canonical JSON with the same Unicode
+line-boundary escaping. Plain returns and `Outcome` share this rendering path.
 
 `CommandError(message, code=ExitCode.INVALID_INPUT)` requires a listed nonzero
 `ExitCode` (`1`, `2`, `3`, `4`, `5` or `75`); it rejects `0` (`ExitCode.SUCCESS`),
@@ -258,7 +259,8 @@ later interpreters:
   registry-owned action objects and metadata defaults are exempt; matching a
   reserved name does not grant an exemption. Argument actions targeting
   `handler` are rejected at every level, while callable handler defaults are
-  supported.
+  supported. Every recorded registry-owned action must also remain installed;
+  argument-group conflict resolution cannot remove a global option.
 
 Any `Exception` or `SystemExit` during module lookup, import, `register` or
 registration validation becomes `CommandError("cannot load command module: <name>")`
