@@ -1,6 +1,6 @@
 # t3-compose implementation plan
 
-Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–16
+Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–17
 and shared contracts CD-1 to CD-4. It follows the design revision in pull request
 #1 at `906fdb0` and the owner decisions recorded below. The revision takes effect
 when Shawn approves and merges its pull request. Implementation and live
@@ -133,11 +133,19 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   Earlier-head reviews and Corrections re-reviews remain independent. Without
   a lead, an independent Reviewer clears the final head. Coordinators make no
   project edits. The lead owns required checks, including heavy checks; the
-  manager does so for Tasks without a lead. The manager owns cross-feature
-  integration, operational readiness, integration tests and final delivery
-  readiness to Shawn, without repeating the lead's final review. Verified,
+  manager does so for Tasks without a lead. Under decision 17, a lead puts the
+  machine prerequisites and integration evidence in the pull request body, tells
+  Shawn in its own thread when the pull request is ready, never reports pull
+  request readiness to the manager, and sends no progress reports; it sends the
+  manager one line when Shawn merges, plus blockers, cross-Task or
+  shared-interface changes, new machine prerequisites, owner rule changes and
+  agy exhaustion. The manager owns cross-feature integration, operational
+  readiness, integration tests and final delivery readiness to Shawn—setting the
+  expected integration tests and machine prerequisites at Task start and
+  checking `main` and the machine after a merge—without adding a manager
+  pre-merge readiness approval or repeating the lead's final review. Verified,
   PR-ready, merged and delivery-ready remain distinct; delivery readiness is
-  not an EV-1 input (decision 13, CD-4).
+  not an EV-1 input (decisions 13 and 17, CD-4).
 - **Publication.** The assigned lead publishes its own Task's pull request;
   the manager publishes Tasks without a lead. Until PB-1 is installed, that
   coordinator uses the interim token step after confirming its reviewed hash.
@@ -1553,9 +1561,18 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     otherwise the manager, machine-wide serialization after writer completion
     in a clean exact-head linked worktree. Verification through
     `t3c evidence check`, including the current lead's required-check evidence.
-    Manager delivery readiness covers cross-feature integration, operational
-    readiness and integration tests, without repeating lead final review; it is
-    separate from verified/PR-ready and is not an EV-1 input.
+    Under decision 17, a lead puts the machine prerequisites and integration
+    evidence in the pull request body, tells Shawn in its own thread when the
+    pull request is ready, never reports pull request readiness to the manager,
+    and sends no progress reports; it sends the manager one line when Shawn
+    merges, plus blockers, cross-Task or shared-interface changes, new machine
+    prerequisites, owner rule changes and agy exhaustion. Manager delivery
+    readiness covers cross-feature integration, operational readiness and
+    integration tests—setting the expected integration tests and machine
+    prerequisites at Task start and checking `main` and the machine after a
+    merge—without adding a manager pre-merge readiness approval or repeating
+    lead final review; it is separate from verified/PR-ready and is not an EV-1
+    input.
   - Publication: `t3c publish push` and `t3c publish pr` on t3-compose.
     Elsewhere, the repository's own commands with a recorded intent and result,
     then `t3c pr verify`. Then `link_pull_request`. A privacy match leads to a
@@ -1680,18 +1697,24 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   from [Record format](#record-format).
 - **Content.** The lead brief covers one approved feature brief, decomposition
   within it, the lead's own Worker and Reviewer dispatches, its own records as
-  their single writer, and reports of outcomes, blockers, changed interfaces
-  and evidence to the manager. A lead makes no project edits and creates no
+  their single writer, and upward reports to the manager only when Shawn merges
+  its pull request (one line) or on blockers, cross-Task or shared-interface
+  changes, new machine prerequisites, owner rule changes and agy exhaustion. A lead makes no project edits and creates no
   leads. It cannot approve its own implementation because it implements
   nothing; it personally reviews its Task's exact final head with requirements,
   design, interfaces, diff, callers, tests and evidence in context. No separate
   Reviewer reviews that final head; earlier-head/Corrections reviews remain
   independent. It owns all required checks including heavy ones, publishes its
-  own Task's PR under the unchanged identity/privacy gates, and reports Task
-  readiness to the manager. CD-4's manager-only lead assignment, lead reviewer
+  own Task's PR under the unchanged identity/privacy gates with the machine
+  prerequisites and integration evidence in the PR body, tells Shawn in its own
+  thread when the PR is ready, never reports PR readiness to the manager, and
+  sends no progress reports (decision 17). CD-4's manager-only lead assignment, lead reviewer
   form without `taskId`, evidence path/digest and uniform review sequence
   references are required; writer transfers and parent lifecycle ownership stay
-  intact. Manager delivery readiness remains separate and is not EV-1 input.
+  intact. The manager sets expected integration tests and machine prerequisites
+  at Task start and checks `main` and the machine after a merge, without an
+  extra pre-merge readiness approval or repeated final-head review; manager
+  delivery readiness remains separate and is not EV-1 input.
   `docs/feature-leads.md` gives the judgment criteria for creating a lead, its route (the medium tier; the challenging
   tier for challenging decisions) and the scratch pilot's procedure.
 - **Live (L10, scratch).** A scratch lead records an intent in its own record,
@@ -1703,9 +1726,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   duplicate dispatch.
 - **Acceptance.** The template renders. The documents hold no private
   identifier. The scratch procedure exercises a lead's own final review and
-  required-check evidence, manager-only lead assignment and replacement, and
-  own-Task publication authority without a merge or duplicate final Reviewer.
-  L10's evidence is recorded in `.local/` and reported to Shawn.
+  required-check evidence, manager-only lead assignment and replacement,
+  own-Task publication authority with prerequisites and integration evidence in
+  the PR body without a merge or duplicate final Reviewer, and decision 17's
+  reporting and delivery rules (telling Shawn in the lead's thread when the PR
+  is ready, no ready or progress reports to the manager, one-line merge and
+  allowed exception reports, and manager delivery checks at Task start and
+  after merge). L10's evidence is recorded in `.local/` and reported to Shawn.
 - **Offline tests.** `SUITE -p 'test_feature_lead.py'`, then `SUITE`.
 - **Depends on.** The first pilot's completion.
 - **Parallel with.** None planned.
@@ -1731,14 +1758,22 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   the medium tier and challenging decisions to the challenging tier. Only the
   parent that created a child manages its lifecycle. Use the Feature lead
   template. The current lead personally reviews its Task's exact final head,
-  owns required checks and publishes its own Task's PR; no separate Reviewer
+  owns required checks and publishes its own Task's PR with the machine
+  prerequisites and integration evidence in the PR body; no separate Reviewer
   reviews that head. Earlier-head reviews stay independent; without a lead,
   an independent Reviewer clears the final head and the manager publishes.
-  Record CD-4 lead assignments, review provenance and evidence. Manager delivery
-  readiness remains separate from Task verification and is not an EV-1 input."
+  A lead tells Shawn in its own thread when the PR is ready, never reports PR
+  readiness to the manager, and sends no progress reports; it sends the manager
+  one line when Shawn merges, plus blockers, cross-Task or shared-interface
+  changes, new machine prerequisites, owner rule changes and agy exhaustion.
+  Record CD-4 lead assignments, review provenance and evidence. At Task start
+  the manager sets expected integration tests and machine prerequisites, and
+  after a merge it checks `main` and the machine, without an extra pre-merge
+  readiness approval or repeated final-head review; manager delivery readiness
+  remains separate from Task verification and is not an EV-1 input."
 - **Acceptance.** Only that replacement. It gives the design's criteria, one
-  lead level, the lead's route and the parent lifecycle rule. The `SKILL.md`
-  command test passes.
+  lead level, the lead's route, the parent lifecycle rule, and decision 17's
+  reporting and delivery rules. The `SKILL.md` command test passes.
 - **Offline tests.** `SUITE`.
 - **Depends on.** FL-1 and L10.
 - **Parallel with.** None planned.
@@ -1879,7 +1914,7 @@ step's reviews leave to this plan.
 | Manager skill and user-level installation | [Scope][d-scope] | SK-1 |
 | Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record validation and uncertain dispatch in RC-1; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
 | The test command in `AGENTS.md` | [t3-compose repository workflow][d-workflow] | HS-1 |
-| Lead final-head review, own-Task publication, manager delivery readiness; review sequence references, lead assignments/provenance/evidence and distinct finding keys (decision 13, CD-4) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
+| Lead final-head review, own-Task publication, lead reporting limits and manager delivery timing; review sequence references, lead assignments/provenance/evidence and distinct finding keys (decisions 13 and 17, CD-4) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
 | Stable uv-pinned CPython 3.15, final-release floor, one interpreter and isolated commands (decision 14, CD-3) | [Sources of truth and local records][d-records] | DOC-1, HS-1, BT-1, SK-1; manager delivery checks |
 | Structured nonzero CLI data, sanitized errors, publish status file, heavy JSON summary, reserved options and injectable shared process interfaces/ownership (decision 15, CD-2) | [Sources of truth and local records][d-records]; [Checks and publication][d-publication] | DOC-1, HS-1 and every later command Task; GA-2/3, PB-1, HC-1, PV-1b |
 | Temporary private prose setup, no rapid-ship work by t3-compose agents, formal L9 gates unchanged; Stage 1 after PR3 and PR4 merge (decisions 15/16) | [Taking over existing Claude work][d-takeover]; [Pilot and validation][d-pilot] | DOC-1, CF-1, RC-1, PV-1a, PH-1, SK-1 |
@@ -2002,7 +2037,16 @@ Shawn added these decisions on 2026-10-28:
     worktree at the exact head after writer completion. Owner-checkout and
     parent lifecycle rules remain. The manager owns cross-feature integration,
     operational readiness, integration tests and final delivery readiness to
-    Shawn, without repeating lead final review. Verified/PR-ready and overall
+    Shawn, without repeating lead final review. Under decision 17's 2026-10-28
+    refinement, a lead puts the machine prerequisites and integration evidence
+    in the PR body, tells Shawn in its own thread when the PR is ready, never
+    reports PR readiness to the manager, and sends no progress reports; it sends
+    the manager one line when Shawn merges, plus blockers, cross-Task or
+    shared-interface changes, new machine prerequisites, owner rule changes and
+    agy exhaustion. Manager delivery checks move to two points: at Task start
+    the manager sets expected integration tests and machine prerequisites, and
+    after a merge it checks `main` and the machine, without an extra pre-merge
+    readiness approval. Verified/PR-ready and overall
     delivery readiness remain distinct; delivery readiness is not an EV-1 input.
     CD-4 uses the review event sequence as every review reference and keys
     findings by `(review reference, finding ID)`. Every later same ID is distinct.
@@ -2065,6 +2109,19 @@ Shawn added these decisions on 2026-10-28:
     rapid-ship work. Formal L9 still waits for `t3c` and the existing handoff
     gates. Private prompt paths/content, thread/account identifiers and claims
     of formal pilot completion do not belong in tracked documents.
+17. **Lead reporting and manager delivery timing, 2026-10-28.** Shawn said: "btw, notice how each feature lead notifies you when a task is ready for me to merge? I can check that they have open PRs for me myself. In the future, don't let them notify you at this point, it's a waste of your context and tokens"
+    A Feature lead never reports to its manager that a pull request is ready,
+    and sends no progress reports. Shawn reads open pull requests himself; a
+    lead still tells Shawn in its own thread that the pull request is ready. A
+    lead still sends one line when Shawn merges, and sends blockers, cross-Task
+    or shared-interface changes, new machine prerequisites, owner rule changes
+    and agy exhaustion, without turning that into a status-report channel.
+    Manager delivery duty moves to two points: at Task start the manager sets
+    expected integration tests and machine prerequisites; after a merge it
+    checks `main` and the machine. The lead's pull request body carries the
+    prerequisites and integration evidence. There is no extra manager pre-merge
+    readiness approval or repeated final-head review; the manager still owns
+    overall delivery, and delivery readiness remains separate from EV-1.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
