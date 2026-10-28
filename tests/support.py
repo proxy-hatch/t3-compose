@@ -76,6 +76,25 @@ def harness_paths():
     return paths
 
 
+class AllowedPrograms:
+    """Programs a test may start. A harness never counts: neither one found on
+    PATH when the guard was installed, nor one that PATH shows later."""
+
+    def __init__(self):
+        self.programs = {resolve_program("git")}
+        self.harnesses = harness_paths()
+
+    def add(self, program):
+        self.programs.add(program)
+
+    def is_harness(self, program):
+        self.harnesses |= harness_paths()
+        return program in self.harnesses
+
+    def __contains__(self, program):
+        return program in self.programs and not self.is_harness(program)
+
+
 def is_bootstrap(path_str):
     try:
         p = Path(os.fsdecode(path_str))
@@ -150,13 +169,13 @@ def guarded_posix_spawnp(allowed_programs, path, argv, *rest, **kwargs):
 
 
 def install_guard(enter_context=None):
-    allowed_programs = {resolve_program("git")}
+    allowed_programs = AllowedPrograms()
 
     def allow_program(program):
         resolved = resolve_program(program)
         if (Path(os.fsdecode(program)).name in FORBIDDEN | {"env"} or
                 resolved.name in FORBIDDEN | {"env"} or
-                resolved in harness_paths() or
+                allowed_programs.is_harness(resolved) or
                 is_python_interpreter(program) or is_python_interpreter(resolved)):
             refuse()
         allowed_programs.add(resolved)

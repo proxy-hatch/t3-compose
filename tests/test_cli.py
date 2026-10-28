@@ -11,7 +11,7 @@ import textwrap
 from unittest.mock import patch
 import urllib.request
 
-from tests.support import OfflineTestCase, ROOT
+from tests.support import AllowedPrograms, OfflineTestCase, ROOT
 
 
 class OfflineCLI(OfflineTestCase):
@@ -240,6 +240,31 @@ class OfflineGuard(OfflineTestCase):
                     self.allow_program(program)
             with self.assertRaisesRegex(AssertionError, "offline guard"):
                 subprocess.run([str(self.temp / "alias")])
+        self.assertFalse(marker.exists())
+
+    def test_harness_paths_survive_path_changes(self):
+        marker = self.temp / "ran"
+        target = self.temp / "2.0.0"
+        target.write_text("#!/bin/sh\ntouch '%s'\n" % marker)
+        target.chmod(0o755)
+        harness_dir = self.temp / "harness-bin"
+        harness_dir.mkdir()
+        (harness_dir / "codex").symlink_to(target)
+        alias = self.temp / "codex-alias"
+        alias.symlink_to(target)
+        exposed = str(harness_dir) + os.pathsep + os.environ.get("PATH", "")
+        # Found at installation, then hidden from PATH: still refused.
+        with patch.dict(os.environ, {"PATH": exposed}):
+            allowed = AllowedPrograms()
+        with patch.dict(os.environ, {"PATH": os.defpath}):
+            self.assertTrue(allowed.is_harness(target.resolve()))
+            allowed.add(target.resolve())
+            self.assertNotIn(target.resolve(), allowed)
+        # Allowed while hidden, then exposed on PATH: refused at launch.
+        self.allow_program(target)
+        with patch.dict(os.environ, {"PATH": exposed}):
+            with self.assertRaisesRegex(AssertionError, "offline guard"):
+                subprocess.run([str(alias)])
         self.assertFalse(marker.exists())
 
     def test_program_resolution_uses_child_path_and_cwd(self):
