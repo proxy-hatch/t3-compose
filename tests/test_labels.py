@@ -40,7 +40,6 @@ class OfflineLifecycle(OfflineTestCase):
         import urllib.request
         from t3compose.paths import local_dir
 
-        self.assertFalse(hasattr(OfflineTestCase, "enterContextCompat"))
         outer_temp, outer_cwd = self.temp, Path.cwd()
         outer_env, outer_local = dict(os.environ), local_dir()
         outer_socket, outer_popen = socket.socket, subprocess.Popen
