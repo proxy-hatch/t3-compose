@@ -70,8 +70,8 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   reviewed source.
 - **Files.** A Task changes only the files it lists. Tasks that may run in
   parallel share no file. Only HS-1 edits `t3compose/cli.py`; later Tasks add
-  modules that its registry loads. The manager sequences Tasks that share a
-  spec file.
+  modules that its registry loads. Each command module has its own spec file,
+  so parallel Tasks never share one.
 - **Tests.** `SUITE` means
   `python3 -I -S -B -m unittest discover -s tests -t . -v`, run from the
   repository root; `SUITE -p 'test_x.py'` runs one file. The suite passes under
@@ -79,10 +79,12 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   class derives from the offline guard in `tests/support.py` and is named
   `Offline…`, or `Simulated…` when it injects quota responses. Tests cover
   failure and refusal paths as well as success.
-- **Specs.** A Task that adds or changes a command documents its invocation,
-  options, output, exit codes and module contract in `docs/cli.md`. A Task
-  that changes the test harness documents it in `docs/testing.md`. The
-  Reviewer checks the specs against the code ([decision 10](#decisions)).
+- **Specs.** `docs/cli.md` holds what every command shares: invocation,
+  global options, output, exit codes and the module contract. A Task that adds
+  or changes a command documents its options, output and exit codes in
+  `docs/cli/<module>.md`, one file per command module. A Task that changes the
+  test harness documents it in `docs/testing.md`. The Reviewer checks the
+  specs against the code ([decision 10](#decisions)).
 - **Live checks.** Live checks sit in `live/`, outside the suite, print `LIVE`
   and run only when the manager runs them after review. Synthetic inputs are
   labeled synthetic. No offline or simulated test counts as a live pass. Live
@@ -129,7 +131,7 @@ reports it; the manager decides.
 | `tests/` | offline suite | each Task |
 | `live/` | live checks | JV-1, RT-1, RP-1 |
 | `skill/SKILL.md`, `skill/templates/` | manager skill and brief templates | SK-1, BT-1, PH-1, FL-1 |
-| `docs/` | `docs/cli.md`, `docs/testing.md`; configuration, record, restart and pilot contracts | HS-1 first, then each Task that adds commands; CF-1, RC-1, PH-1, RP-1, FL-1 |
+| `docs/` | `docs/cli.md` and `docs/testing.md`; `docs/cli/<module>.md`, one per command module; configuration, record, restart and pilot contracts | HS-1; each Task that adds commands; CF-1, RC-1, PH-1, RP-1, FL-1 |
 | `pilot/` | synthetic router examples | RP-1 |
 
 ### Commands
@@ -463,7 +465,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Files.** Create `t3compose/config.py`, `docs/configuration.md`,
   `docs/examples/agent-routing.example.json`,
   `docs/examples/agent-routing-state.example.json` and `tests/test_config.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/config.md`.
 - **Interfaces.** `t3c config check [--config PATH] [--state PATH]` prints the
   digest, the rule version, the risk facts with their floors, the round tiers
   and any notices; it exits 0 or 3. `load_config()` returns a validated,
@@ -508,7 +510,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as data), `docs/records.md`, `tests/test_records.py` and
   `tests/test_reconcile.py`. Modify `t3compose/jsonio.py` and
   `tests/test_jsonio.py` to add atomic replace and exclusive create.
-  Update `docs/cli.md`.
+  Create `docs/cli/records.md`.
 - **Interfaces.**
   - `t3c work new --repo REPO --work ID --file WORK.json --writer W`
   - `t3c event add --repo REPO --work ID --kind KIND --file DATA.json --writer W [--checkout PATH]`
@@ -626,7 +628,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Accepted review policy][d-review] (agy is never a Reviewer).
 - **Files.** Create `t3compose/routing.py`, `t3compose/quota.py`,
   `live/catalog_shape.py`, `tests/test_routing.py` and `tests/test_quota.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/routing.md` and `docs/cli/quota.md`.
 - **Interfaces.**
   - `t3c route input --repo REPO --work ID --input TASK.json` records the
     common input with RC-1 and prints its reference, input digest and policy digest.
@@ -729,7 +731,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Jev decision routing][d-jev];
   [Routing and personal configuration][d-routing].
 - **Files.** Create `t3compose/jev.py`, `live/jev_contract.py` and
-  `tests/test_jev.py`. Update `docs/cli.md`.
+  `tests/test_jev.py`. Create `docs/cli/jev.md`.
 - **Interfaces.** `t3c route classify --repo REPO --work ID --input TASK.json [--context EXTRA.json]`.
   `TASK.json` holds only `intent`, `acceptance`, `interfaces`, `scope`,
   `riskFacts` and `dependencies`. Unknown keys fail, so global boilerplate
@@ -786,7 +788,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   routes recorded apart from unnecessary expensive ones);
   [Jev decision routing][d-jev].
 - **Files.** Create `pilot/router-examples.json`, `live/router_pilot.py`,
-  `docs/router-pilot.md` and `tests/test_router_pilot.py`. Update `docs/cli.md`.
+  `docs/router-pilot.md` and `tests/test_router_pilot.py`.
 - **Content.** At least twelve synthetic examples: software engineering, other
   work, mixed scope, easy but sensitive (at least one for each confirmed floor),
   and technical documentation. Each holds the author's expected domain, tier
@@ -817,7 +819,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Accepted review policy][d-review]; [Checks and publication][d-publication]
   (a check on another commit does not cover the head).
 - **Files.** Create `t3compose/evidence.py` and `tests/test_evidence.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/evidence.md`.
 - **Interfaces.** `t3c evidence check --repo REPO --work ID --head SHA [--pr-ready]`
   prints `verified` or the gaps. It exits 0 or 1, and 2 for invalid records.
 - **Rules.** Verified needs all of the following. The head is the latest result
@@ -854,7 +856,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [t3-compose repository workflow][d-workflow] (privacy, the author
   check and failure action); [Checks and publication][d-publication] (head check).
 - **Files.** Create `t3compose/privacy.py`, `t3compose/pullrequest.py`,
-  `tests/test_privacy.py` and `tests/test_pullrequest.py`. Update `docs/cli.md`.
+  `tests/test_privacy.py` and `tests/test_pullrequest.py`. Create
+  `docs/cli/privacy.md` and `docs/cli/pullrequest.md`.
 - **Interfaces.**
   - `t3c privacy check --repo-path P --range BASE..HEAD [--branch NAME] [--text LABEL=FILE ...]`
   - `t3c pr verify --repo OWNER/NAME --number N --head SHA [--base BRANCH] [--author LOGIN]`
@@ -899,7 +902,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [t3-compose repository workflow][d-workflow] (privacy);
   [Accepted review policy][d-review].
 - **Files.** Create `skill/templates/worker.md`, `skill/templates/reviewer.md`,
-  `t3compose/briefs.py` and `tests/test_briefs.py`. Update `docs/cli.md`.
+  `t3compose/briefs.py` and `tests/test_briefs.py`. Create
+  `docs/cli/briefs.md`.
 - **Worker template.** Sections, in order:
   - Role and routing: the tier, the model and the reason; stay on this
     Assignment and this model; start no agents or T3 tasks. A slot carries the
@@ -976,7 +980,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   commit, runner and check process IDs, start time) is atomically written to
   `heavy-check-status.json` beside it; it is never written into the lock file.
 - **Files.** Create `t3compose/heavy.py` and `tests/test_heavy.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/heavy.md`.
 - **Interfaces.**
   `t3c heavy run --repo-path WORKTREE --commit SHA --label TEXT --log FILE [--wait] -- CMD [ARGS...]`
   and `t3c heavy status`.
@@ -1026,7 +1030,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   GA-3. The port holds no private value: the App's ID, installation account
   and Keychain item stay in `.local/github-app.json`.
 - **Files.** Create `t3compose/github_app.py` and `tests/test_github_app.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/github_app.md`.
 - **Kept behavior.**
   - The App config is strict: permission names `contents` and `pull_requests`
     only, levels `read` or `write`, and a repository owner equal to the
@@ -1075,7 +1079,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   Shawn's stored credentials or SSH key); [publication decision 1][d-pubdec].
 - **Source.** As for GA-1.
 - **Files.** Create `t3compose/token_run.py` and `tests/test_token_run.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/token_run.md`.
 - **Kept behavior.**
   - The child receives the token only in `GH_TOKEN`. `GITHUB_TOKEN` is removed.
   - Git config passed through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
@@ -1128,7 +1132,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Source.** As for GA-1.
 - **Files.** Create `t3compose/token_preconditions.py` and
   `tests/test_token_preconditions.py`. Modify `t3compose/token_run.py` to call
-  the checks before minting. Update `docs/cli.md`.
+  the checks before minting. Update `docs/cli/token_run.md`.
 - **Kept behavior.** From the first review's findings: `run` builds GA-2's
   sanitized environment first and passes it to every preflight Git invocation.
   It refuses when Git's effective config, read from the directory `run` starts
@@ -1166,7 +1170,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Checks and publication][d-publication];
   [t3-compose repository workflow][d-workflow]; [Work cycle][d-cycle], step 8.
 - **Files.** Create `t3compose/publish.py` and `tests/test_publish.py`.
-  Update `docs/cli.md`.
+  Create `docs/cli/publish.md`.
 - **Interfaces.**
   - `t3c publish push --repo-path P --work ID --head SHA --branch NAME`
   - `t3c publish pr --work ID --head SHA --branch NAME --base main --title-file F --body-file F`
@@ -1233,7 +1237,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Checks and publication][d-publication]; [Design refinement][d-refine].
 - **Files.** Create `skill/SKILL.md`, `t3compose/skill_install.py` and
   `tests/test_skill.py`. Modify `README.md` (installation, updates and status)
-  and `AGENTS.md` (status). Update `docs/cli.md`.
+  and `AGENTS.md` (status). Create `docs/cli/skill_install.md`.
 - **`SKILL.md` covers.**
   - Hard rules: the manager makes no project edits; it does not move or write
     the owner's checkout beyond the design's list; Workers commit on their
@@ -1308,7 +1312,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Taking over existing Claude work][d-takeover];
   [Manager threads and bases][d-bases]; [re-home decisions 1 and 2][d-rehome].
 - **Files.** Create `skill/templates/manager-kickoff.md`, `docs/restart.md`,
-  `docs/pilot.md` and `tests/test_pilot_docs.py`. Update `docs/cli.md`.
+  `docs/pilot.md` and `tests/test_pilot_docs.py`.
 - **Interfaces.** No new command. The kickoff template's placeholders are the
   pointers listed below, rendered with `t3c brief render`. The procedures use
   `t3c work snapshot`, `t3c work reconcile`, `t3c event add` and T3's
@@ -1375,7 +1379,7 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Design.** [Feature lead options][d-leads];
   [decision 1 after grill-with-docs][d-grill].
 - **Files.** Create `skill/templates/feature-lead.md`, `docs/feature-leads.md`
-  and `tests/test_feature_lead.py`. Update `docs/cli.md`.
+  and `tests/test_feature_lead.py`.
 - **Interfaces.** No new command. The lead brief renders with
   `t3c brief render`; a lead writes its records with the `lead:` writer form
   from [Record format](#record-format).
@@ -1608,8 +1612,9 @@ Shawn added these decisions on 2026-10-28:
    verifies it once Shawn places GLM in config.
 10. **Command and test-harness specs, 2026-10-28.** Shawn said: "I also don't see the spec supporting the impl choices in pr4. The impl design of all the CLI cmds implemented need to be surfaced."
     Every implemented command and test-harness contract has a written spec in
-    the repository. HS-1 adds `docs/cli.md` and `docs/testing.md`; later Tasks
-    keep them current, and the Reviewer checks them against the code.
+    the repository. HS-1 adds `docs/cli.md` and `docs/testing.md`; each later
+    Task that adds commands adds its module's `docs/cli/<module>.md`, and the
+    Reviewer checks the specs against the code.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
