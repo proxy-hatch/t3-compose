@@ -55,7 +55,8 @@ pending.
 
 Shawn decided how t3-compose is published on 2026-10-27; see the
 [publication decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md#decisions-on-t3-compose-publication).
-Only the Engineering manager publishes to t3-compose. It pushes and opens pull
+The Task's assigned Feature lead, or the Engineering manager for a Task without
+a lead, publishes to t3-compose. It pushes and opens pull
 requests as the rapid-ship Worker App, with a short-lived installation token
 scoped to t3-compose, never under Shawn's account. It confirms that GitHub
 records the App as each pull request's author. The App lacks the workflows
@@ -76,4 +77,7 @@ The owner's Claude Engineering manager context dump arrived and was verified on
 2026-10-27. Shawn then decided that rapid-ship work waits for the pilot: do not
 resume, review, check or publish any rapid-ship task, and do not choose the pilot
 task, until t3-compose is built and the pilot starts in the rapid-ship-bound
-manager thread. t3-compose design, planning and implementation continue.
+manager thread. Plan decision 16 temporarily unblocks rapid-ship development
+under a private prose setup run by a rapid-ship-bound manager thread;
+t3-compose agents still do no rapid-ship work.
+t3-compose design, planning and implementation continue.
