@@ -1,10 +1,10 @@
 # t3-compose implementation plan
 
-Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–18
+Status: proposed on 2026-10-27, revised on 2026-10-28 to record decisions 1–19
 and shared contracts CD-1 to CD-4. It follows the design revision in pull request
 #1 at `906fdb0` and the owner decisions recorded below. The revision takes effect
-when Shawn approves and merges its pull request. Implementation and live
-validation remain pending.
+when its pull request merges. Implementation and live validation remain
+pending.
 
 Terminology: [project glossary][glossary]. A Task is one pull request; an
 Assignment is one delegated piece of work. Each Task cites the sections of the
@@ -53,9 +53,12 @@ work cycle uses. Brief templates carry the rules into each Assignment.
 - Workers commit on their branch only. Workers and Reviewers do not push, open,
   edit or merge pull requests, or post to GitHub. An assigned Feature lead
   publishes its own Task's pull request; the manager publishes Tasks without
-  a lead. Shawn merges t3-compose pull requests today, squash only. A managed repository's
-  own rules decide who merges; rapid-ship's flight mode lets agents approve
-  and merge pull requests.
+  a lead in managed repositories. Every t3-compose Task has a lead, who
+  squash-merges only its own Task's pull request as the Worker App after its
+  exact-final-head review and passed required checks, subject to decision 19's
+  merge conditions. The manager does not merge t3-compose pull requests. A
+  managed repository's own rules decide who merges; rapid-ship's flight mode
+  lets agents approve and merge pull requests.
 - The helper's checks are instructional. They create no security boundary
   ([Checks and publication][d-publication]).
 - The original rapid-ship hold ([re-home decision 2][d-rehome]) has a dated
@@ -90,9 +93,9 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   including appending to `cli.py`'s `MODULES`, require explicit owned-path edits
   in a manager-assigned brief. Across the sequential records-store split
   ([decision 18](#decisions)), `RC-1a` owns the initial `docs/records.md`,
-  `t3compose/schema.py` and `tests/test_schema.py`; `RC-1b` retains the assigned
-  `jsonio.py` and `tests/test_jsonio.py` changes, creates `t3compose/records.py`,
-  `docs/cli/records.md` and `tests/test_records.py`, and extends
+  `t3compose/schema.py` and `tests/test_records.py`; `RC-1b` retains the assigned
+  `jsonio.py` and `tests/test_jsonio.py` changes, creates `t3compose/records.py`
+  and `docs/cli/records.md`, and extends `tests/test_records.py` and
   `docs/records.md`; and `RC-1c` extends `t3compose/records.py`,
   `docs/records.md`, `docs/cli/records.md` and `tests/test_records.py` and
   creates `tests/test_reconcile.py`. Each command module has its own spec file.
@@ -144,7 +147,7 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   machine prerequisites and integration evidence in the pull request body, tells
   Shawn in its own thread when the pull request is ready, never reports pull
   request readiness to the manager, and sends no progress reports; it sends the
-  manager one line when Shawn merges, plus blockers, cross-Task or
+  manager one line when its pull request merges, plus blockers, cross-Task or
   shared-interface changes, new machine prerequisites, owner rule changes and
   agy exhaustion. The manager owns cross-feature integration, operational
   readiness, integration tests and final delivery readiness to Shawn—setting the
@@ -152,12 +155,17 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   checking `main` and the machine after a merge—without adding a manager
   pre-merge readiness approval or repeating the lead's final review. Verified,
   PR-ready, merged and delivery-ready remain distinct; delivery readiness is
-  not an EV-1 input (decisions 13 and 17, CD-4).
+  not an EV-1 input (decisions 13, 17 and 19, CD-4). In t3-compose, the lead
+  verifies its authorized own-Task squash merge and sends that one-line
+  handoff; the manager checks `main` and the machine and starts dependent
+  Tasks and leads after dependencies merge, without waiting for Shawn.
 - **Publication.** The assigned lead publishes its own Task's pull request;
   the manager publishes Tasks without a lead. Until PB-1 is installed, that
   coordinator uses the interim token step after confirming its reviewed hash.
   The pinned tool remains unchanged on its reviewed interpreter outside the
   helper, and retires after L5. The first publication through the helper is L5.
+  PB-1 supplies push and pull request commands only; the assigned t3-compose lead subsequently merges
+  under decision 19, with no new helper merge command.
 - **Copied code.** Compose and Firstmate are references. A Worker who copies
   their code keeps the upstream MIT notice in the copied file's header and
   reports it ([publication decision 3][d-pubdec]).
@@ -565,8 +573,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   - Record [decision 7](#decisions) in the t3-compose privacy rule. The
     `Co-authored-by` trailers that GitHub generates on a squash commit when
     Shawn merges may carry his commit email, which F7 found already public.
-    Agents never write it. The trailers sit on the base branch, normally
-    outside the review ranges that privacy checks cover. A match in a squash
+    Decision 19 applies the same exception to GitHub-generated trailers when
+    a lead merges its own t3-compose pull request. Agents never write it. The
+    trailers sit on the base branch, normally outside the review ranges that privacy checks cover. A match in a squash
     commit that a branch update brings into a range goes to Shawn (item 14).
   - Apply [decision 9](#decisions) to both documents: one fallback at most,
     role limits on any selection, Shawn's choice of GLM's place in config,
@@ -696,20 +705,26 @@ from interrupted writes ([Sources of truth and local records][d-records];
 
 Exclusive sequential file ownership across the three Tasks:
 
-- `RC-1a` creates `t3compose/schema.py`, `tests/test_schema.py` and the schema
+- `RC-1a` creates `t3compose/schema.py`, `tests/test_records.py` and the schema
   contract portion of `docs/records.md`. It adds no usable store and registers
   no CLI commands.
 - `RC-1b` modifies `t3compose/jsonio.py` and `tests/test_jsonio.py` (atomic
-  replace and exclusive create), creates `t3compose/records.py`,
-  `docs/cli/records.md` and `tests/test_records.py`, and extends
+  replace and exclusive create), creates `t3compose/records.py` and
+  `docs/cli/records.md`, and extends `tests/test_records.py` and
   `docs/records.md` for the durable store core, history, common routing-input
   recorder, and `t3c work new`, `t3c work show`, `t3c work list` and
-  `t3c event add`.
+  `t3c event add`. It refuses `review`, `finding-disposition` and
+  `lead-assignment` events until RC-1c adds their cross-event enforcement.
 - `RC-1c` extends `t3compose/records.py`, `docs/records.md`,
   `docs/cli/records.md` and `tests/test_records.py`, and creates
   `tests/test_reconcile.py` for `t3c work snapshot`, `t3c work reconcile` and
   `t3c work repair`, prefix checkpoint verification, `restart`, `handoff` and
-  `writer-transfer` enforcement, and orphan-temporary crash recovery.
+  `writer-transfer` enforcement, orphan-temporary crash recovery, and the full
+  CD-4 review/finding history and current-lead provenance unit, including its
+  tests and documentation. RC-1a validates schema shapes only; RC-1c enforces
+  review references by event sequence, cross-round finding identity,
+  disposition-to-finding joins and lead-assignment currency, including the
+  cases relevant to EV-1.
 
 Every Task that depends on the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
 `HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for `RC-1c` (`RC-1a` alone
@@ -729,7 +744,7 @@ combined result after `RC-1c`.
   (CD-4 review sequence references, reviewer forms, lead assignments and
   finding keys).
 - **Files.** Create `t3compose/schema.py` (event kinds and record schemas as
-  data), `tests/test_schema.py` and `docs/records.md` (schema part and
+  data), `tests/test_records.py` and `docs/records.md` (schema part and
   design-to-field mapping). Exclusive ownership of these files during RC-1a;
   `t3compose/records.py`, `docs/cli/records.md` and `t3compose/jsonio.py` are
   not touched.
@@ -756,10 +771,12 @@ combined result after `RC-1c`.
     `(review reference, finding ID)`; `lead-assignment` requires `thread`,
     manager `assigned-by`, `date` and `reason`; `check` sources include manager,
     Feature lead, Reviewer, assigned Session and Worker (with Worker-only claims
-    distinguished from verified sources).
+    distinguished from verified sources). These are schema-shape checks only;
+    cross-event review references, finding joins and current-lead provenance
+    are enforced by RC-1c.
 - **Acceptance.**
   1. Each event kind's required fields and `work.json`'s required fields have a
-     passing and a failing test in `tests/test_schema.py` (RC-1 acceptance item
+     passing and a failing test in `tests/test_records.py` (RC-1 acceptance item
      1).
   2. CD-4 schema validation covers both `reviewer` forms, rejects a fabricated
      lead `taskId`, requires lead `evidence` path and digest, validates integer
@@ -771,7 +788,7 @@ combined result after `RC-1c`.
      acceptance item 7, schema part).
   4. No store module or CLI command is added; `SUITE` passes with `records`
      still skipped by `cli.py`.
-- **Offline tests.** `SUITE -p 'test_schema.py'`, then `SUITE`. Fixtures use
+- **Offline tests.** `SUITE -p 'test_records.py'`, then `SUITE`. Fixtures use
   synthetic task IDs and paths.
 - **Depends on.** HS-1 / PR4 and DOC-1 / PR3, both merged. Stage 1 uses the
   merged plan, including CD-4. RC-1a's code may merge before the decision-18
@@ -790,17 +807,16 @@ combined result after `RC-1c`.
 
 - **Objective.** Add atomic file persistence and exclusive event creation to
   `jsonio.py`, implement the durable records store core, history and cross-event
-  invariants in `t3compose/records.py`, provide the common routing-input
+  invariants outside the CD-4 review/finding history unit in
+  `t3compose/records.py`, provide the common routing-input
   recorder, and expose `t3c work new`, `t3c work show`, `t3c work list` and
   `t3c event add`.
 - **Design.** [Sources of truth and local records][d-records];
   [Manager threads and bases][d-bases] (the three commits);
-  [Work cycle][d-cycle], steps 3 and 5;
-  [Accepted review policy][d-review] (CD-4 review provenance, finding keys and
-  lead history).
+  [Work cycle][d-cycle], steps 3 and 5.
 - **Files.** Modify `t3compose/jsonio.py` and `tests/test_jsonio.py` to add
-  atomic replace and exclusive create. Create `t3compose/records.py`,
-  `docs/cli/records.md` and `tests/test_records.py`. Modify `docs/records.md`
+  atomic replace and exclusive create. Create `t3compose/records.py`
+  and `docs/cli/records.md`. Extend `tests/test_records.py` and `docs/records.md`
   to add the store layout, atomic write protocol, history and core command
   rules. Exclusive ownership of these files after RC-1a merges.
 - **Interfaces.**
@@ -842,24 +858,19 @@ combined result after `RC-1c`.
     intent, `clientRequestId` and brief digest; it is not a new writer.
   - A `result` needs completed T3 status evidence, a worktree path and a result
     commit. A branch name is informational only ([finding F8][d-findings]).
-  - CD-4 validates both `reviewer` forms from [Record format](#record-format),
-    their base/head/verdict/findings and uniform event-sequence references.
-    Task reviews retain native dispatch/result provenance (`dispatch-intent`,
-    `dispatch-confirmed` and `result` with matching `taskId`); lead reviews have
-    no `taskId`, require evidence path plus digest, and must come from the
-    current lead named by the latest manager-only `lead-assignment` event.
-    Repeated finding IDs in separate review rounds remain distinct under
-    `(review reference, finding ID)`, and a `finding-disposition` with a missing
-    or wrong review reference or unknown finding ID is refused. `withdrawn`
-    requires the review author. `check` sources include Feature lead without
-    accepting Worker claims.
+  - Until RC-1c, the store API and `event add` refuse `review`,
+    `finding-disposition` and `lead-assignment` events. RC-1a's schema shapes
+    remain available, but RC-1b does not accept these events without RC-1c's
+    complete history and provenance enforcement.
   - `routing-classification` and `routing-judgment` must reference an existing
     `routing-input` event with matching input and policy digests.
   - An invalid record makes commands on that work exit 2. Other work stays
     usable.
 - **Acceptance.**
-  1. Each event kind's required fields and store rules have passing and failing
-     tests through the store API and CLI (RC-1 acceptance item 1).
+  1. Supported event kinds' required fields and store rules have passing and
+     failing tests through the store API and CLI (RC-1 acceptance item 1, core
+     store part). Both interfaces explicitly refuse all three deferred kinds:
+     `review`, `finding-disposition` and `lead-assignment`.
   2. A failure injected at each atomic-write step leaves the old or new file,
      never a partial one; written data has mode 0600 (RC-1 acceptance item 2,
      atomic-write part).
@@ -876,27 +887,18 @@ combined result after `RC-1c`.
   6. `docs/records.md` and `docs/cli/records.md` document the store layout,
      persistence and `work new`, `work show`, `work list` and `event add`
      commands (RC-1 acceptance item 7, store core part).
-  7. Repeated finding IDs in separate review rounds remain distinct; a
-     disposition with a missing or wrong review reference is refused (RC-1
-     acceptance item 8).
-  8. Both review forms pass with valid provenance; fabricated lead `taskId`,
-     missing lead evidence, invalid reviewer forms and a `lead-assignment` by
-     anyone other than the manager fail, and current-lead history, author-only
-     withdrawal and the Feature lead check source are covered (RC-1 acceptance
-     item 9, core provenance part).
-  9. Classifications and judgments must reference an existing routing input
+  7. Classifications and judgments must reference an existing routing input
      with matching input and policy digests (RC-1 acceptance item 10).
-- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_schema.py'`,
-  `SUITE -p 'test_records.py'`, then `SUITE`. Fixtures use synthetic task IDs
-  and paths.
+- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_records.py'`,
+  then `SUITE`. Fixtures use synthetic task IDs and paths.
 - **Depends on.** RC-1a, merged. Cannot run beside RC-1a or RC-1c.
 - **Parallel with.** CF-1, PV-1a.
 - **Risk facts and tier.** Subtle invariants (atomic persistence, the
-  exclusive-create writer race, duplicate-dispatch refusal, cross-event review
-  provenance) → the challenging tier. Reviewer: challenging.
+  exclusive-create writer race and duplicate-dispatch refusal) → the
+  challenging tier. Reviewer: challenging.
 - **Review focus.** Fsync order and mode 0600; the exclusive-create race;
-  the duplicate-dispatch block and three-commit checks; CD-4 task and lead
-  review provenance, finding keys and routing-input digest matching.
+  the duplicate-dispatch block and three-commit checks; refusal of the three
+  deferred CD-4 event kinds; routing-input digest matching.
 - **Size.** About 900–1,200 lines, tests and documentation included (at most
   1,200 lines; decision 18).
 
@@ -905,15 +907,20 @@ combined result after `RC-1c`.
 - **Objective.** Complete the records store with `t3c work snapshot`,
   `t3c work reconcile` and `t3c work repair`, prefix checkpoint verification,
   `restart`, `handoff` and `writer-transfer` invariants, and recovery from
-  interrupted writes and orphaned temporary files.
+  interrupted writes and orphaned temporary files. Add the complete CD-4
+  review/finding history and current-lead provenance unit, with tests and
+  documentation, including the cases relevant to EV-1.
 - **Design.** [Sources of truth and local records][d-records] (ownership
   transfer and interrupted-write recovery); [Work cycle][d-cycle], steps 1 and
   5; [Taking over existing Claude work][d-takeover] (reconcile before acting);
-  [Pilot and validation][d-pilot] (deliberate context restarts).
+  [Pilot and validation][d-pilot] (deliberate context restarts);
+  [Accepted review policy][d-review] (CD-4 review provenance, finding identity
+  and lead history).
 - **Files.** Modify `t3compose/records.py`, `docs/records.md`,
   `docs/cli/records.md` and `tests/test_records.py`. Create
   `tests/test_reconcile.py`. Exclusive ownership of these files after RC-1b
-  merges.
+  merges. These files also cover the moved CD-4 unit and its EV-1-relevant
+  tests and documentation.
 - **Interfaces.**
   - `t3c work snapshot|reconcile|repair --repo REPO [--work ID] [--through-seq N]`
     (`--through-seq` is for `snapshot` only; `--work` is required for
@@ -926,6 +933,21 @@ combined result after `RC-1c`.
     intents without results, and orphaned temporary files. `repair` prints and
     then removes orphaned temporary files; it never changes an event.
 - **Rules.**
+  - Enable the three event kinds refused by RC-1b only with full CD-4
+    enforcement. CD-4 validates both `reviewer` forms from
+    [Record format](#record-format),
+    their base/head/verdict/findings and uniform event-sequence references.
+    Task reviews retain native dispatch/result provenance (`dispatch-intent`,
+    `dispatch-confirmed` and `result` with matching `taskId`); lead reviews have
+    no `taskId`, require evidence path plus digest, and must come from the
+    current lead named by the latest manager-only `lead-assignment` event at
+    the review. Record the history needed for EV-1 to require that lead still
+    be current at verification; cover current and replaced leads in tests.
+    Repeated finding IDs in separate review rounds remain distinct under
+    `(review reference, finding ID)`, and a `finding-disposition` with a missing
+    or wrong review reference or unknown finding ID is refused. `withdrawn`
+    requires the review author. `check` sources include Feature lead without
+    accepting Worker claims.
   - A checkpoint holds the last sequence and the digest of `work.json` plus the
     ordered event prefix through that sequence, before the checkpoint-bearing
     event. Verification recomputes that prefix, not the current snapshot.
@@ -974,21 +996,23 @@ combined result after `RC-1c`.
      and the Feature lead check source.
   10. Classifications and judgments must reference an existing routing input
       with matching input and policy digests.
-- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_schema.py'`,
-  `SUITE -p 'test_records.py'`, `SUITE -p 'test_reconcile.py'`, then `SUITE`.
+- **Offline tests.** `SUITE -p 'test_jsonio.py'`, `SUITE -p 'test_records.py'`,
+  `SUITE -p 'test_reconcile.py'`, then `SUITE`.
   Fixtures use synthetic task IDs and paths.
 - **Depends on.** RC-1b, merged. Cannot run beside RC-1a or RC-1b. Every
   downstream dependent of the records store (`RT-1`, `JV-1`, `EV-1`, `BT-1`,
   `HC-1`, `PB-1`, `SK-1` and `PH-1`) and Stage 2 wait for RC-1c.
 - **Parallel with.** CF-1, PV-1a.
 - **Risk facts and tier.** Subtle invariants (recovery, crash windows, prefix
-  checkpoints, reconciled writer transfer) → the challenging tier. Reviewer:
+  checkpoints, reconciled writer transfer and cross-event review provenance) → the challenging tier. Reviewer:
   challenging.
 - **Review focus.** Crash windows before and after event link; `reconcile` and
   `repair` handling of orphaned temporary files without touching events; prefix
   checkpoint verification across `restart`, `handoff` and `writer-transfer`;
-  reconciled writer-transfer and manager-only lead assignment invariants.
-- **Size.** About 650–850 lines, tests and documentation included (at most
+  reconciled writer-transfer and manager-only lead assignment invariants; review
+  event-sequence references, cross-round finding identity, disposition joins
+  and current-lead history/provenance, including EV-1-relevant cases.
+- **Size.** About 830–1,080 lines, tests and documentation included (at most
   1,200 lines; decision 18).
 
 ### PV-1a Identifier-list loader and matcher
@@ -1697,8 +1721,13 @@ combined result after `RC-1c`.
     so resumption does not duplicate an operation.
   - Only the assigned lead publishes its own Task's PR; the manager publishes
     Tasks without a lead. Identity/privacy/head/author gates stay the same.
-    No command merges. The publishing coordinator then calls
-    `link_pull_request` and records it.
+    These helper commands only push and open/reuse pull requests; PB-1 adds no
+    merge command. The publishing coordinator then calls `link_pull_request`
+    and records it. Subsequently, the assigned t3-compose lead squash-merges
+    its own Task's pull request as the Worker App under decision 19, verifies
+    the merge and result, and sends the one-line manager handoff. The merge
+    follows all decision-19 conditions and leaves GitHub to generate the squash
+    title and message; it is outside PB-1's command behavior.
 - **Acceptance.** Offline tests, with injected runners, cover each stop
   condition, the order of records, and an interrupted flow that resumes
   without a second push or a second pull request; a Corrections update from
@@ -1714,7 +1743,9 @@ combined result after `RC-1c`.
 - **Risk facts and tier.** Security and guardrail boundaries (the publication
   identity and privacy) → the challenging tier. Reviewer: challenging.
 - **Review focus.** The order of checks; idempotent resumption; push by commit
-  to an explicit URL; ancestry proof plus exact lease; no history rewrite or merge.
+  to an explicit URL; ancestry proof plus exact lease; no history rewrite or
+  merge in the helper commands, distinct from the lead's subsequent authorized
+  own-Task t3-compose squash merge.
 - **Size.** About 700 lines.
 
 ### SK-1 Manager skill and installation
@@ -1731,7 +1762,12 @@ combined result after `RC-1c`.
   - Hard rules: the manager makes no project edits; it does not move or write
     the owner's checkout beyond the design's list; Workers commit on their
     branch only; the assigned lead publishes its Task's own PR, otherwise the
-    manager publishes; agy is never a Reviewer. Earlier-head/Corrections reviews
+    manager publishes in managed repositories. In t3-compose every Task has a
+    lead, who alone squash-merges its own Task's PR as the Worker App after its
+    exact-final-head review and passed required checks, subject to decision 19;
+    the manager does not merge and no lead merges another Task's PR. Workers
+    and Reviewers never push, post or merge; agy is never a Reviewer.
+    Earlier-head/Corrections reviews
     stay independent; a led Task's final head is personally reviewed by its
     current lead, with no separate Reviewer on that head, while an unled Task
     requires an independent final review. Preserve dated history and decision
@@ -1773,8 +1809,8 @@ combined result after `RC-1c`.
     Under decision 17, a lead puts the machine prerequisites and integration
     evidence in the pull request body, tells Shawn in its own thread when the
     pull request is ready, never reports pull request readiness to the manager,
-    and sends no progress reports; it sends the manager one line when Shawn
-    merges, plus blockers, cross-Task or shared-interface changes, new machine
+    and sends no progress reports; it sends the manager one line when its pull
+    request merges, plus blockers, cross-Task or shared-interface changes, new machine
     prerequisites, owner rule changes and agy exhaustion. Manager delivery
     readiness covers cross-feature integration, operational readiness and
     integration tests—setting the expected integration tests and machine
@@ -1784,7 +1820,19 @@ combined result after `RC-1c`.
     input.
   - Publication: `t3c publish push` and `t3c publish pr` on t3-compose.
     Elsewhere, the repository's own commands with a recorded intent and result,
-    then `t3c pr verify`. Then `link_pull_request`. A privacy match leads to a
+    then `t3c pr verify`. Then `link_pull_request`. For t3-compose, the assigned
+    lead proceeds to its own Task's authorized squash merge without waiting for
+    Shawn. It verifies the open, non-draft, clean and mergeable PR at the exact
+    reviewed head, passed required checks and hosted checks if present, App
+    author, privacy,
+    owned paths and absence of workflow changes or open owner questions. GitHub
+    generates the squash title/message; decision 7's generated-trailer exception
+    applies, and agents never write Shawn's email. The lead verifies the merge
+    and result, then sends the one-line manager handoff. The manager checks
+    `main` and the machine and starts dependent Tasks and leads after
+    dependencies merge. PB-1 still implements only push/pr commands; no new
+    helper merge command is authorized. Other repositories keep their own
+    merge rules. A privacy match leads to a
     Corrections round, a fix to the publishing coordinator's own text, or Shawn. At a Keychain
     prompt, the manager asks Shawn to choose Allow, not Always Allow.
   - Quota: only confirmed exhaustion and successful availability checks are
@@ -1794,7 +1842,8 @@ combined result after `RC-1c`.
     a current lead reviews a led Task's final design head, otherwise an
     independent Reviewer does. A change to scope or an owner decision goes to
     Shawn first.
-  - Feature leads stay off until FL-2.
+  - For managed repositories, Feature leads stay off until FL-2. This package
+    enablement gate does not change the t3-compose build's assigned leads.
   - Updates: the installed version is the owner's checkout; `t3c version` shows
     which commit runs. After a merge, read HEAD first. Only when T3 has not
     already fast-forwarded clean `main` may the manager run `git pull --ff-only`
@@ -1809,7 +1858,11 @@ combined result after `RC-1c`.
   owner setup `uv python pin 3.15 --global`, names `"$PY" -I -S <root>/bin/t3c`
   and the `SUITE` invocation, and refuses pre-release evidence. It documents
   CD-2's data-on-nonzero exits, required publish status file, heavy summary and
-  shared-module ownership. Installation is L6.
+  shared-module ownership. It states decision 19's own-Task t3-compose lead
+  merge authority and conditions, preserves all Worker/Reviewer bans and other
+  repositories' rules, distinguishes push/pr commands from merge authority,
+  and includes merge/result verification and the one-line manager handoff.
+  Installation is L6.
 - **Offline tests.** `SUITE -p 'test_skill.py'`, then `SUITE`.
 - **Depends on.** CF-1, RC-1c (after RC-1a and RC-1b), EV-1, JV-1, RT-1, PV-1b, GA-1, GA-2, GA-3, PB-1,
   HC-1, BT-1, and L7's result.
@@ -1906,8 +1959,8 @@ combined result after `RC-1c`.
   from [Record format](#record-format).
 - **Content.** The lead brief covers one approved feature brief, decomposition
   within it, the lead's own Worker and Reviewer dispatches, its own records as
-  their single writer, and upward reports to the manager only when Shawn merges
-  its pull request (one line) or on blockers, cross-Task or shared-interface
+  their single writer, and upward reports to the manager when its pull
+  request merges (one line) or on blockers, cross-Task or shared-interface
   changes, new machine prerequisites, owner rule changes and agy exhaustion. A lead makes no project edits and creates no
   leads. It cannot approve its own implementation because it implements
   nothing; it personally reviews its Task's exact final head with requirements,
@@ -1917,7 +1970,15 @@ combined result after `RC-1c`.
   own Task's PR under the unchanged identity/privacy gates with the machine
   prerequisites and integration evidence in the PR body, tells Shawn in its own
   thread when the PR is ready, never reports PR readiness to the manager, and
-  sends no progress reports (decision 17). CD-4's manager-only lead assignment, lead reviewer
+  sends no progress reports (decision 17). For t3-compose only, every Task has
+  a lead, who proceeds without waiting for Shawn and squash-merges its own Task's
+  PR as the Worker App after its exact-final-head review and passed required
+  checks, subject to decision 19's merge conditions. The lead verifies the
+  merge and result and sends the one-line manager handoff; the manager does
+  not merge or add a pre-merge approval and starts dependent Tasks/leads after
+  dependencies merge. No new helper merge command is authorized. Other
+  repositories keep their own merge rules. CD-4's manager-only lead assignment,
+  lead reviewer
   form without `taskId`, evidence path/digest and uniform review sequence
   references are required; writer transfers and parent lifecycle ownership stay
   intact. The manager sets expected integration tests and machine prerequisites
@@ -1937,7 +1998,11 @@ combined result after `RC-1c`.
   identifier. The scratch procedure exercises a lead's own final review and
   required-check evidence, manager-only lead assignment and replacement,
   own-Task publication authority with prerequisites and integration evidence in
-  the PR body without a merge or duplicate final Reviewer, and decision 17's
+  the PR body without a duplicate final Reviewer, and the distinct own-Task
+  t3-compose lead merge authority and decision-19 conditions (no live merge
+  is performed by the scratch procedure). It covers merge/result verification,
+  the one-line handoff, manager continuation after dependencies merge, and
+  decision 17's
   reporting and delivery rules (telling Shawn in the lead's thread when the PR
   is ready, no ready or progress reports to the manager, one-line merge and
   allowed exception reports, and manager delivery checks at Task start and
@@ -1960,9 +2025,9 @@ combined result after `RC-1c`.
 - **Files.** Modify `skill/SKILL.md`.
 - **Interfaces.** None new; the skill uses FL-1's template and RT-1's
   `feature-lead` role.
-- **Exact text.** Replace "Feature leads stay off until FL-2." with:
-  "Feature leads are optional after L10 passes. Create one for several
-  dependent Tasks, repeated local integration and review, or enough parallel
+- **Exact text.** Replace "For managed repositories, Feature leads stay off until FL-2." with:
+  "In managed repositories, Feature leads are optional after L10 passes. Create
+  one for several dependent Tasks, repeated local integration and review, or enough parallel
   work to need a local coordinator. Use one lead level. Route coordination to
   the medium tier and challenging decisions to the challenging tier. Only the
   parent that created a child manages its lifecycle. Use the Feature lead
@@ -1973,23 +2038,39 @@ combined result after `RC-1c`.
   an independent Reviewer clears the final head and the manager publishes.
   A lead tells Shawn in its own thread when the PR is ready, never reports PR
   readiness to the manager, and sends no progress reports; it sends the manager
-  one line when Shawn merges, plus blockers, cross-Task or shared-interface
-  changes, new machine prerequisites, owner rule changes and agy exhaustion.
+  one line when its pull request merges, plus blockers, cross-Task or
+  shared-interface changes, new machine prerequisites, owner rule changes and agy exhaustion.
   Record CD-4 lead assignments, review provenance and evidence. At Task start
   the manager sets expected integration tests and machine prerequisites, and
   after a merge it checks `main` and the machine, without an extra pre-merge
   readiness approval or repeated final-head review; manager delivery readiness
-  remains separate from Task verification and is not an EV-1 input."
+  remains separate from Task verification and is not an EV-1 input.
+  In t3-compose every Task has a lead, who squash-merges only its own Task's PR
+  as the Worker App after its own exact-final-head review and passed required
+  checks under decision 19's merge conditions. The lead verifies the exact
+  reviewed head, App author, privacy, open non-draft and clean/mergeable state,
+  passed hosted checks if present, owned paths, no workflow changes and no open
+  owner question. GitHub generates the squash title/message; the generated
+  co-author trailer exception applies, and agents never write Shawn's email.
+  The lead verifies the merge and result and sends its one-line handoff; the
+  manager does not merge and starts dependent Tasks/leads after dependencies
+  merge, without waiting for Shawn. Workers/Reviewers never merge, a lead never
+  merges another Task's PR, and other repositories keep their own merge rules.
+  No new helper merge command is authorized; workflow changes, routing values
+  and model placement, L9, product decisions and anything unclear remain Shawn's."
 - **Acceptance.** Only that replacement. It gives the design's criteria, one
   lead level, the lead's route, the parent lifecycle rule, and decision 17's
-  reporting and delivery rules. The `SKILL.md` command test passes.
+  reporting and delivery rules, with decision 19's t3-compose-only own-Task
+  lead merge authority, merge/result verification and one-line handoff. All
+  merge conditions and Worker/Reviewer bans remain; no helper merge command
+  is introduced. The `SKILL.md` command test passes.
 - **Offline tests.** `SUITE`.
 - **Depends on.** FL-1 and L10.
 - **Parallel with.** None planned.
 - **Risk facts and tier.** None; the brief supplies the exact replacement
   after FL-1's evidence → the easy tier. Reviewer: medium, never agy.
 - **Review focus.** Agreement with the design's Feature lead options; leads
-  stay optional.
+  stay optional in managed repositories; every t3-compose Task has a lead.
 - **Size.** About 10 lines; the exact replacement needs no separate module.
 
 ## Live checks and owner steps
@@ -2125,13 +2206,13 @@ step's reviews leave to this plan.
 | Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, role limits on any selection, one fallback at most, model-aware pool walking, per-account quota and skipped-account reasons under decision 12, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
 | Medium Worker choices under decisions 9 and 12: owner-controlled placement, role limits, live catalog and GLM billing | [Routing and personal configuration][d-routing] | DOC-1, CF-1, RT-1, L11 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1a, RC-1b, RC-1c, EV-1 |
-| Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
+| Publication by commit; Worker App token; privacy; head and author checks; subsequent own-Task t3-compose lead squash merge under decision 19 (no helper merge command) | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1; SK-1, FL-1, FL-2 describe merge authority |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
 | Worker and Reviewer brief templates | [Work cycle][d-cycle]; [Manager threads and bases][d-bases] | BT-1 |
 | Manager skill and user-level installation | [Scope][d-scope] | SK-1 |
-| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record schema validation in RC-1a, store validation and duplicate-dispatch refusal in RC-1b, and uncertain-dispatch reconciliation and recovery in RC-1c; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
+| Labels, and the design's offline test list | [Pilot and validation][d-pilot] | HS-1; record schema validation in RC-1a, store validation, duplicate-dispatch refusal and refusal of the three deferred CD-4 event kinds in RC-1b, and CD-4 review/finding history, current-lead provenance, uncertain-dispatch reconciliation and recovery in RC-1c; stale reviews and missing checks in EV-1; malformed Jev results in JV-1; unknown quota, failover and floors in RT-1, with simulated quota tests |
 | The test command in `AGENTS.md` | [t3-compose repository workflow][d-workflow] | HS-1 |
-| Lead final-head review, own-Task publication, lead reporting limits and manager delivery timing; review sequence references, lead assignments/provenance/evidence and distinct finding keys (decisions 13 and 17, CD-4) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1a, RC-1b, RC-1c, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
+| Lead final-head review, own-Task publication and t3-compose merge, lead reporting limits and manager delivery timing; CD-4 schema shapes in RC-1a, three-kind refusal in RC-1b, full review-sequence/finding history and current-lead provenance/evidence enforcement in RC-1c (decisions 13, 17 and 19) | [Feature lead options][d-leads]; [Accepted review policy][d-review]; [Sources of truth and local records][d-records] | DOC-1, RC-1a, RC-1b, RC-1c, EV-1, BT-1, PB-1, SK-1, FL-1, FL-2 |
 | Stable uv-pinned CPython 3.15, final-release floor, one interpreter and isolated commands (decision 14, CD-3) | [Sources of truth and local records][d-records] | DOC-1, HS-1, BT-1, SK-1; manager delivery checks |
 | Structured nonzero CLI data, sanitized errors, publish status file, heavy JSON summary, reserved options and injectable shared process interfaces/ownership (decision 15, CD-2) | [Sources of truth and local records][d-records]; [Checks and publication][d-publication] | DOC-1, HS-1 and every later command Task; GA-2/3, PB-1, HC-1, PV-1b |
 | Temporary private prose setup, no rapid-ship work by t3-compose agents, formal L9 gates unchanged; Stage 1 after PR3 and PR4 merge; records store split into three sequential Tasks and Stage 2 gated on all three (decisions 15, 16 and 18) | [Taking over existing Claude work][d-takeover]; [Pilot and validation][d-pilot]; [Sources of truth and local records][d-records] | DOC-1, CF-1, RC-1a, RC-1b, RC-1c, PV-1a, PH-1, SK-1 |
@@ -2169,6 +2250,10 @@ Shawn added these decisions on 2026-10-28:
    GitHub generates on a squash commit when he merges. They may carry his
    commit email, which is already public ([finding F7][d-findings]). Agents
    never write it (plan input 14).
+
+   Application note, 2026-10-28: decision 19 applies this same exception to
+   GitHub-generated trailers when a lead merges its own t3-compose pull request.
+   Agents still never write Shawn's email or supply the squash title or message.
 8. **Routing stays untuned.** Unoptimized routing is acceptable for now.
    Evaluating and tuning the thresholds that route work to each model and
    reasoning level is backlog work outside this plan.
@@ -2276,6 +2361,14 @@ Shawn added these decisions on 2026-10-28:
     lead joins check sources, with its current exact-head pass accepted and
     Worker claims insufficient. `withdrawn` is by the review author. Record
     single-writer, transfer and history invariants remain.
+
+    Superseding note, 2026-10-28: decision 19 replaces the Shawn-only merge
+    rule for t3-compose. Every t3-compose Task has an assigned lead, who alone
+    squash-merges its own Task's PR as the Worker App after its exact-final-head
+    review and passed required checks, subject to decision 19's merge conditions.
+    The manager does not merge; the general optional-lead/no-lead design remains
+    for managed repositories. The one-line notification is sent when the PR
+    merges. All review, evidence, identity and privacy duties remain.
 14. **Stable Python through uv, 2026-10-28.** Shawn said: "use latest stable python instead of python 3.9"
     He corrected: "correction: uv python pin 3.15 --global"
     CD-3 selects stable CPython 3.15 through uv's global pin, floor 3.15,
@@ -2342,6 +2435,11 @@ Shawn added these decisions on 2026-10-28:
     prerequisites and integration evidence. There is no extra manager pre-merge
     readiness approval or repeated final-head review; the manager still owns
     overall delivery, and delivery readiness remains separate from EV-1.
+
+    Superseding note, 2026-10-28: under decision 19, the one-line notification
+    is sent when the pull request merges, including a lead's authorized own-Task
+    t3-compose merge. The lead proceeds without waiting for Shawn; no ready or
+    progress report to the manager is added.
 18. **Three sequential records-store Tasks, 2026-10-28.** Shawn was asked:
     "RC-1 (the records store) will be about 2,200–2,800 lines, more than twice the plan's 1,200-line limit per PR. How should it ship?"
     Shawn chose the option: "Three PRs in sequence (Recommended)", with the
@@ -2350,26 +2448,69 @@ Shawn added these decisions on 2026-10-28:
     (rejecting "One PR, size exception"; no size waiver is granted).
     RC-1 splits into three sequential pull-request Tasks under one Feature lead,
     each at most 1,200 changed lines: RC-1a (record schema contract foundation
-    in `docs/records.md`, `t3compose/schema.py` and `tests/test_schema.py`,
+    in `docs/records.md`, `t3compose/schema.py` and `tests/test_records.py`,
     with no usable store or commands; medium tier, about 800–1,100 lines;
     depends on merged HS-1 / PR4 and DOC-1 / PR3, runs in parallel with CF-1
     and PV-1a, and adds no dependency on this documentation follow-up's merge),
     RC-1b (durable store core and history, `jsonio.py` and `tests/test_jsonio.py`
     additions, `t3compose/records.py`, `docs/cli/records.md`,
     `tests/test_records.py`, `docs/records.md` updates, the common routing-input
-    recorder, dispatch provenance and duplicate-writer refusal, CD-4 reviews and
-    findings, the exclusive-create writer race, and `work new`, `show`, `list`
+    recorder, dispatch provenance and duplicate-writer refusal, the
+    exclusive-create writer race, and `work new`, `show`, `list`
     and `event add`; challenging tier, about 900–1,200 lines; depends on RC-1a
     and cannot run beside it), and RC-1c (`work snapshot`, `reconcile` and
     `repair`, prefix checkpoint verification, `restart`, `handoff` and
-    `writer-transfer` enforcement, and orphan-temporary crash recovery in
+    `writer-transfer` enforcement, orphan-temporary crash recovery and the full
+    CD-4 review/finding history and current-lead provenance unit in
     `t3compose/records.py`, `docs/records.md`, `docs/cli/records.md`,
     `tests/test_records.py` and `tests/test_reconcile.py`; challenging tier,
-    about 650–850 lines; depends on RC-1b and cannot run beside it). The full
+    about 830–1,080 lines; depends on RC-1b and cannot run beside it). The full
     original RC-1 record contract and all ten acceptance items hold across the
     three Tasks and on the combined result after RC-1c. Every Task that
     depended on RC-1 (RT-1, JV-1, EV-1, BT-1, HC-1, PB-1, SK-1 and PH-1) waits
     for RC-1c, and Stage 2 waits for all three.
+
+    Decomposition note, 2026-10-28: the Engineering manager moved the CD-4
+    review/finding history unit and its tests and documentation from RC-1b to
+    RC-1c after the Worker estimated RC-1b at 1,350 lines. This keeps RC-1b
+    within 1,200 lines. The moved unit covers review references by event
+    sequence, cross-round finding identity, disposition-to-finding joins and
+    current-lead provenance/lead-assignment currency, including EV-1-relevant
+    tests. RC-1b refuses `review`, `finding-disposition` and `lead-assignment`
+    events until RC-1c; RC-1a continues to validate schema shapes only. Current
+    estimates are RC-1a 800–1,100, RC-1b 900–1,200 and RC-1c 830–1,080 lines,
+    all at most 1,200 (about 2,530–3,380 combined). The option's original
+    650–850 estimate and the question's aggregate estimate above are historical. RC-1a created `tests/test_records.py` in PR8; RC-1b and RC-1c
+    extend that file. All three pull requests keep the same lead, and the full
+    combined RC-1 acceptance and every RC-1c dependency gate remain unchanged.
+
+19. **t3-compose Feature lead merge authority, 2026-10-28 (~18:00 CST).**
+    Shawn said: "permission upgrade: for this project t3c ONLY, feature leads have permission to auto-merge PRs after they have reviewed. I.e., continue dev of this project fully unsupervised."
+    On t3-compose only, every Task has an assigned Feature lead, and that lead
+    squash-merges its own Task's pull request as the Worker App after its own
+    exact-final-head review and passed required checks. The Engineering manager
+    does not merge, a Feature lead never merges another Task's pull request,
+    and Workers and Reviewers still never merge. rapid-ship and all other
+    repositories keep their own merge rules; the general optional-lead/no-lead
+    package design remains for managed repositories.
+    Merge depends on the pull request being open and non-draft, clean and
+    mergeable, at the exact reviewed head, with passed hosted checks if present,
+    no `.github/workflows/` or out-of-owned-path change, and no open owner
+    question. Final-head review, privacy, Worker App identity, exact head/author
+    verification and review evidence remain required. GitHub generates the
+    squash commit title and message; agents supply neither. Decision 7 covers
+    GitHub-generated co-author trailers on merges under this grant; agents
+    still never write Shawn's email. PB-1 implements push/pr commands only;
+    no new helper merge command is authorized.
+    Tasks and stages continue without waiting for Shawn. The lead verifies the
+    merge and result and sends its one-line manager handoff when the pull
+    request merges, with no ready or progress report. The manager sets expected
+    integration tests and machine prerequisites at Task start, checks `main`
+    and the machine after each merge, and starts dependent Tasks and leads once
+    dependencies merge. `.github/workflows/` changes, routing values and model
+    placement, the rapid-ship pilot (L9), product decisions and anything unclear
+    remain Shawn's. This grants no rapid-ship work and adds no implementation
+    Task, runtime, API, schema or publication-tool behavior.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md

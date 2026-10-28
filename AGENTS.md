@@ -35,8 +35,10 @@ posts, such as pull request titles, bodies and comments, never hold the owner's
 email, keys or tokens, the Jev key file's path, paths under the owner's
 configuration directories, agy account or provider-instance names, T3 or Session
 IDs, or rapid-ship's task list. The one exception is the `Co-authored-by`
-trailer that GitHub generates on a squash commit when Shawn merges: it may
-carry his commit email ([plan decision 7](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions)),
+trailer that GitHub generates on a squash commit when a pull request merges
+(including when Shawn merges or when an assigned Feature lead squash-merges its
+own t3-compose pull request under [plan decision 19](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions)):
+it may carry his commit email ([plan decision 7](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions)),
 and agents never write it. Before it publishes, the coordinator checks
 the commit messages and the pull request's title and body against the private
 identifier list in `.local/`.
@@ -53,19 +55,26 @@ and commit on their branch only. Workers and Reviewers do not push, open, edit
 or merge pull requests, or post to GitHub. Implementation and live pilots are
 pending.
 
-Shawn decided how t3-compose is published on 2026-10-27; see the
+Shawn decided how t3-compose is published on 2026-10-27 and updated t3-compose
+merge authority on 2026-10-28; see the
 [publication decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md#decisions-on-t3-compose-publication).
-The Task's assigned Feature lead, or the Engineering manager for a Task without
-a lead, publishes to t3-compose. It pushes and opens pull
-requests as the rapid-ship Worker App, with a short-lived installation token
+Every t3-compose Task has an assigned Feature lead. That lead publishes its
+own Task's pull request. It pushes and opens pull requests as the rapid-ship
+Worker App, with a short-lived installation token
 scoped to t3-compose, never under Shawn's account. It confirms that GitHub
 records the App as each pull request's author. The App lacks the workflows
 permission (known from its use in rapid-ship), so Shawn pushes changes under
-`.github/workflows/`. Shawn merges t3-compose pull requests today, squash only.
-That is not a standing rule: a managed repository's own rules decide who
-merges, and rapid-ship's flight mode lets agents approve and merge pull
-requests. On a managed repository, that repository's identity rules apply;
-for rapid-ship, its Worker App commands.
+`.github/workflows/`. On t3-compose only, the assigned Feature lead
+squash-merges its own Task's pull request as the Worker App
+after its own exact-final-head review and passed required checks ([plan decision 19](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions));
+merge also requires the conditions in the repository workflow, including a
+clean, mergeable, open non-draft pull request at the reviewed head and no open
+owner question. The Engineering manager does not merge, a Feature lead never
+merges another Task's pull request, and Workers and Reviewers still never
+merge. GitHub generates the squash commit title and message; agents supply neither.
+A managed repository's own rules decide who merges, and rapid-ship's flight
+mode lets agents approve and merge pull requests. On a managed repository, that
+repository's identity rules apply; for rapid-ship, its Worker App commands.
 
 These rules are instructional. A child can still push other branches with
 Shawn's login. `main` accepts changes only through pull requests: a GitHub

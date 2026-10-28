@@ -4,8 +4,8 @@ Status: design decisions approved by Shawn on 2026-10-27. This revision, made on
 2026-10-28, records Shawn's [re-home](#decisions-accepted-at-the-re-home),
 [publication](#decisions-on-t3-compose-publication) and
 [implementation-plan](#decisions-on-the-implementation-plan) decisions, and the
-[findings](#findings). It takes effect when Shawn approves and merges its pull
-request. No decisions remain [open](#open-decisions).
+[findings](#findings). It takes effect when its pull request merges. No
+decisions remain [open](#open-decisions).
 Implementation and live validation are pending.
 
 Terminology: [project glossary](../../../GLOSSARY.md). A Task is one pull request;
@@ -114,15 +114,21 @@ checks, personally reviews and clears the Task's final head (with no separate
 Reviewer dispatched for that final head), maintains current evidence and finding
 dispositions, and publishes its Task's own pull request with the machine
 prerequisites and integration evidence in the pull request body (without
-authority to merge or to change other Tasks' pull requests). It tells Shawn in
-its own thread that the pull request is ready, never reports pull request
-readiness to the manager, and sends no progress reports; it sends the manager
-one line when Shawn merges, plus blockers, cross-Task or shared-interface
-changes, new machine prerequisites, owner rule changes and agy exhaustion. Because a lead makes no project edits, its final-head review does not
-approve its own implementation (plan decisions 13 and 17). Use direct children for
-bounded independent tasks. Enable real feature leads only after the nested
-pilot. The package does not impose a new agent-count cap; the owner, runtime
-capacity, dependencies and exclusive file ownership determine safe parallelism.
+authority to change other Tasks' pull requests; merge authority follows the
+repository's rules, and in t3-compose only the assigned Feature lead
+squash-merges its own Task's pull request as the Worker App after its own
+exact-final-head review and passed required checks under plan decision 19). It
+tells Shawn in its own thread that the pull request is ready, never reports pull
+request readiness to the manager, and sends no progress reports; it sends the
+manager one line when its pull request merges, plus blockers, cross-Task or
+shared-interface changes, new machine prerequisites, owner rule changes and agy exhaustion. Because a lead makes no
+project edits, its final-head review does not approve its own implementation
+(plan decisions 13, 17 and 19). Use direct children for bounded independent
+tasks in managed repositories; in t3-compose every Task has an assigned Feature
+lead under plan decision 19. Enable real feature leads in the package skill only
+after the nested pilot. The package does not impose a new agent-count cap; the
+owner, runtime capacity, dependencies and exclusive file ownership determine
+safe parallelism.
 
 ## Feature lead options
 
@@ -142,8 +148,9 @@ Use optional feature leads from version one, instantiated when
 a feature has several dependent tasks, repeated local integration/review cycles,
 or enough parallel activity that the manager would otherwise track every detail.
 These are judgment criteria, not an automatic task-count threshold. Simple work
-continues through direct delegation. One lead level is enough; leads do not create
-other leads.
+in a managed repository continues through direct delegation; in t3-compose every
+Task has an assigned Feature lead (plan decision 19). One lead level is enough;
+leads do not create other leads.
 
 The manager owns cross-feature priorities, shared interfaces, owner decisions,
 the global assignment record, assigning feature leads, and overall delivery
@@ -167,19 +174,23 @@ or assigns required checks (including the repository's heavy required check),
 records its final-head review and finding dispositions, and publishes its Task's own
 pull request under the repository's identity and privacy gates, with the machine
 prerequisites and integration evidence in the pull request body (without
-authority to merge or to change other Tasks' pull requests; the manager
-publishes for Tasks without a lead). Under plan decision 17, Shawn reads open
-pull requests himself and the lead tells Shawn in its own thread when the pull
-request is ready; a feature lead never reports to the manager that a pull
-request is ready and sends no progress reports. A lead sends the manager one
-line when Shawn merges its pull request, plus blockers, cross-Task or
-shared-interface changes, new machine prerequisites, owner rule changes and agy
-exhaustion, without turning that into a status-report channel. The manager uses
-the lead's verified Task evidence and pull request body without adding a
-manager pre-merge readiness approval or routinely repeating the
-same final-head review. A Verified Task or PR-ready Task is distinct from
-integrated delivery readiness; no new deployment or merge authority or automatic
-readiness rule is introduced. A feature lead delegates project edits and makes
+authority to change other Tasks' pull requests; merge authority follows the
+repository's rules, and in t3-compose only the assigned Feature lead
+squash-merges its own Task's pull request as the Worker App after its own
+exact-final-head review and passed required checks under plan decision 19; the
+manager publishes for Tasks without a lead, and never merges in t3-compose).
+Under plan decision 17, Shawn reads open pull requests himself and the lead
+tells Shawn in its own thread when the pull request is ready; a feature lead
+never reports to the manager that a pull request is ready and sends no progress
+reports. A lead sends the manager one line when its pull request merges, plus
+blockers, cross-Task or shared-interface changes, new machine prerequisites,
+owner rule changes and agy exhaustion, without turning that into a status-report channel. The manager uses the lead's verified
+Task evidence and pull request body without adding a manager pre-merge readiness
+approval or routinely repeating the same final-head review. A Verified Task or
+PR-ready Task is distinct from integrated delivery readiness; the package
+introduces no new deployment authority, no automatic readiness rule, and no
+general merge authority beyond each repository's rules and plan decision 19's
+own-Task t3-compose lead grant. A feature lead delegates project edits and makes
 no implementation edits itself, so it cannot approve its own implementation when
 it reviews a Worker's final head. Its software-engineering coordination route
 uses the configured selection at the Task's tier, at least medium; challenging
@@ -568,15 +579,17 @@ the takeover exception under
    by the current Feature lead's final-head review (when the Task has a lead) or
    by an independent Reviewer (when it does not). An assigned Feature lead
    publishes its Task's own pull request with the machine prerequisites and
-   integration evidence in the pull request body (without authority to merge or
-   to change other Tasks' pull requests) and tells Shawn in its own thread that
-   the pull request is ready; it never reports pull request readiness to the
-   manager and sends no progress reports. The lead sends the manager one line
-   when Shawn merges its pull request, plus blockers, cross-Task or
-   shared-interface changes, new machine prerequisites, owner rule changes and
-   agy exhaustion. The manager publishes for Tasks without a lead and tells
-   Shawn when such a pull request is ready. The
-   manager retains overall delivery accountability across features—cross-feature
+   integration evidence in the pull request body (without authority to change
+   other Tasks' pull requests; merge authority follows the repository's rules,
+   and in t3-compose only the assigned Feature lead squash-merges its own Task's
+   pull request as the Worker App after its own exact-final-head review and
+   passed required checks under plan decision 19) and tells Shawn in its own
+   thread that the pull request is ready; it never reports pull request
+   readiness to the manager and sends no progress reports. The lead sends the
+   manager one line when its pull request merges, plus blockers, cross-Task or shared-interface changes, new machine
+   prerequisites, owner rule changes and agy exhaustion. The manager publishes
+   for Tasks without a lead and tells Shawn when such a pull request is ready.
+   The manager retains overall delivery accountability across features—cross-feature
    integration, integration tests in place and their evidence on the intended
    integrated result, operational readiness, and resolved or surfaced
    dependencies and risks: at Task start it sets the expected integration tests
@@ -589,7 +602,9 @@ the takeover exception under
    distinct. Integration and publishing follow the repository's existing
    authority and identity rules (see
    [Checks and publication](#checks-and-publication)). The package grants no
-   new deployment or merge authority and introduces no automatic readiness rule.
+   new deployment authority, introduces no automatic readiness rule, and grants
+   no general merge authority beyond each repository's rules and plan decision
+   19's own-Task t3-compose lead grant.
 
 T3 notifications wake the dispatching parent. There are no parallel watcher
 processes or polling loops. An interrupted manager or Feature lead reconstructs
@@ -620,8 +635,12 @@ required checks still cover the final head.
 Workers commit on their branch only. Workers and Reviewers do not push, open, edit
 or merge pull requests, or post to GitHub. An assigned Feature lead publishes
 its Task's own pull request, and the manager publishes for Tasks without a lead
-(plan decision 13); lead publication grants no authority to merge or to change
-other Tasks' pull requests. The publishing coordinator records each publication
+(plan decision 13); lead publication grants no authority to change other Tasks'
+pull requests, and merge authority follows the repository's rules (in
+t3-compose, only the assigned Feature lead squash-merges its own Task's pull
+request as the Worker App after its own exact-final-head review and passed
+required checks under plan decision 19; the manager never merges in t3-compose).
+The publishing coordinator records each publication
 intent and its confirmed result. It publishes under the repository's identity
 rules (for rapid-ship, its Worker App commands), from a Session rooted in that
 repository or in t3-compose, as those rules require (F4). It publishes the
@@ -652,18 +671,18 @@ boundary. For t3-compose's `main` ruleset, see [t3-compose repository workflow](
 
 t3-compose is the public GitHub repository `proxy-hatch/t3-compose`, created on
 2026-10-27 (re-home decision 4), under the MIT License (publication decision 3).
-Its build manager (or an assigned Feature lead for its Task's own pull request)
-publishes from its t3-compose-rooted Session, because a rapid-ship-rooted Claude
-Session cannot push to it (F4). Tasks land through pull requests after
-final-head review (by the assigned Feature lead when a Task has one, or by a
-separate independent Reviewer when it does not; plan decision 13).
+Its assigned Feature lead publishes its Task's own pull request from its
+t3-compose-rooted Session, because a rapid-ship-rooted Claude
+Session cannot push to it (F4). Tasks land through pull requests after the
+assigned Feature lead's final-head review and passed required checks (plan
+decisions 13 and 19).
 Workers commit on their branch only. `AGENTS.md` describes this workflow and,
 once the helper exists, its test command.
 
-On t3-compose, only the manager or an assigned Feature lead (for its Task's own
-pull request, without authority to merge or to change other Tasks' pull
-requests) publishes, as the rapid-ship Worker App and never under Shawn's
-account (publication decision 1; plan decision 13). On a managed repository,
+On t3-compose, every Task has an assigned Feature lead. Only that lead
+publishes its Task's own pull request, as the rapid-ship Worker App and never
+under Shawn's account (publication decision 1; plan decisions 13 and 19). The
+lead has no authority over other Tasks' pull requests. On a managed repository,
 that repository's identity rules apply instead, as
 [Checks and publication](#checks-and-publication) describes. To publish to
 t3-compose, the publishing coordinator mints a short-lived installation token
@@ -684,13 +703,24 @@ The Worker App lacks the workflows permission, so it cannot push changes under
 `.github/workflows/`; Shawn pushes those changes. This is known from the same
 App's use in rapid-ship and not yet observed on t3-compose.
 
-Shawn merges t3-compose pull requests today, squash only (publication decision
-2). A managed repository's own rules decide who merges; rapid-ship's flight
-mode lets agents approve and merge pull requests. Workers and Reviewers still
-never merge, and a Feature lead's publication of its Task's pull request grants
-no authority to merge on t3-compose. On 2026-10-28, the manager read the
-repository settings through the GitHub API: only squash merges are allowed, and
-GitHub deletes a pull request's branch when it merges. `main` has a GitHub
+On t3-compose only, every Task has an assigned Feature lead, and that lead
+squash-merges its own Task's pull request as the Worker App after its own
+exact-final-head review and passed required checks (publication decision 2, as
+superseded on 2026-10-28 by plan decision 19). Merge depends on the pull request
+being open and non-draft, clean and mergeable, at the exact reviewed head, with
+passed hosted checks if present, no `.github/workflows/` or out-of-owned-path
+change, and no open owner question. GitHub generates the squash commit title and
+message; agents supply neither. No `t3c` merge command is authorized. The
+Engineering manager does not merge, a Feature lead never merges another Task's
+pull request, and Workers and Reviewers still never merge. Tasks and stages
+continue without waiting for Shawn: the manager checks `main` and the machine
+after each merge and starts dependent Tasks and their leads once dependencies
+merge. Changes under `.github/workflows/`, routing values and model placement,
+the rapid-ship pilot (L9), product decisions and anything unclear remain
+Shawn's. A managed repository's own rules decide who merges; rapid-ship's flight
+mode lets agents approve and merge pull requests. On 2026-10-28, the manager
+read the repository settings through the GitHub API: only squash merges are
+allowed, and GitHub deletes a pull request's branch when it merges. `main` has a GitHub
 ruleset (publication decision 4): a pull request is required, force
 pushes and deletion are blocked, and there are no bypass actors. A child can
 still push other branches with Shawn's login, and `main` accepts changes only
@@ -707,7 +737,9 @@ publishes, the publishing coordinator checks the commit messages and the pull
 request's title and body against the private identifier list in `.local/`.
 Commit author and committer fields do carry the owner's email, which F7 found
 already public. On 2026-10-28, Shawn accepted the `Co-authored-by` trailers that
-GitHub generates on a squash commit when he merges (plan decision 7). They may
+GitHub generates on a squash commit when a pull request merges (including when
+Shawn merges or when an assigned Feature lead squash-merges its own t3-compose
+pull request under plan decision 19; plan decision 7). They may
 carry his commit email; agents never write it. These trailers are the only
 exception for commit-message text. They sit on the base branch, normally
 outside the review ranges that privacy checks cover. A match in a squash commit
@@ -836,7 +868,7 @@ decision 16), while t3-compose agents still do no rapid-ship work and the formal
 
 Shawn approved choice 1 on 2026-10-27: independently review every Task.
 On 2026-10-28, Shawn refined step 4 and step 5 for Tasks that have a Feature
-lead (plan decisions 13 and 17): when a Task has a Feature lead, earlier heads (Worker
+lead (plan decisions 13, 17 and 19): when a Task has a Feature lead, earlier heads (Worker
 rounds and Corrections re-reviews) still go to separate Reviewers, and the
 Feature lead's own review is the final-head review, with no separate Reviewer
 dispatched for that head; when a Task has no Feature lead, a separate Reviewer
@@ -862,13 +894,17 @@ A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
    final-head review and all finding dispositions are current on the exact final
    commit, publishes its Task's own pull request under the repository's identity
    and privacy gates with the machine prerequisites and integration evidence in
-   the pull request body (without authority to merge or to change other Tasks'
-   pull requests), and tells Shawn in its own thread that the pull request is
-   ready. Under plan decision 17, Shawn reads open pull requests himself: the
-   lead never reports to the manager that a pull request is ready and sends no
-   progress reports. The lead sends the manager one line when Shawn merges its
-   pull request, plus blockers, cross-Task or shared-interface changes, new
-   machine prerequisites, owner rule changes and agy exhaustion. The manager
+   the pull request body (without authority to change other Tasks' pull
+   requests; merge authority follows the repository's rules, and in t3-compose
+   only the assigned Feature lead squash-merges its own Task's pull request as
+   the Worker App after its own exact-final-head review and passed required
+   checks under plan decision 19), and tells Shawn in its own thread that the
+   pull request is ready. Under plan decision 17, Shawn reads open pull requests
+   himself: the lead never reports to the manager that a pull request is ready
+   and sends no progress reports. The lead sends the manager one line when its
+   pull request merges, plus blockers,
+   cross-Task or shared-interface changes, new machine prerequisites, owner rule
+   changes and agy exhaustion. The manager
    sets the expected integration tests and machine prerequisites when a Task
    starts and checks `main` and the machine after a merge, using the lead's
    verified Task evidence and pull request body without adding a manager
@@ -894,7 +930,9 @@ the change; it does not require a different model vendor.
 
 There is no initial quick-scan stage. A quick scan cannot replace the required
 review, whether by the current lead or an independent Reviewer. Merge authority
-and all repository acceptance requirements remain unchanged.
+follows each repository's rules (including plan decision 19's own-Task
+t3-compose Feature lead grant), and all repository acceptance requirements
+remain unchanged.
 
 ## Decisions accepted after grill-with-docs
 
@@ -963,12 +1001,28 @@ Shawn made these decisions on 2026-10-27, after the re-home:
    Worker App under the same identity, privacy and head/author verification
    rules, without authority to merge or to change other Tasks' pull requests;
    the manager publishes for Tasks without a lead.
+   Superseding note, 2026-10-28: decision 19 replaces the earlier merge
+   prohibition only for an assigned lead's own-Task t3-compose squash merge.
+   Every t3-compose Task has a lead; the general no-lead path remains for
+   managed repositories. The identity, privacy and head/author gates remain.
 2. Merge authority. Shawn merges t3-compose pull requests, squash only. Agents
    never merge.
 
    Owner note, 2026-10-28: Shawn said, "this is not a standing rule. Once used with rapid-ship, there is a flight-mode for agents to auto approve and merge PRs".
    The record above states t3-compose's current rule. A managed repository's
    own rules decide who merges. Workers and Reviewers still never merge.
+
+   Superseding note, 2026-10-28 (plan decision 19): Shawn said, "permission upgrade: for this project t3c ONLY, feature leads have permission to auto-merge PRs after they have reviewed. I.e., continue dev of this project fully unsupervised."
+   On t3-compose only, every Task has an assigned Feature lead, and that lead
+   squash-merges its own Task's pull request as the Worker App after its own
+   exact-final-head review and passed required checks. Merge depends on the pull
+   request being open and non-draft, clean and mergeable, at the exact reviewed
+   head, with passed hosted checks if present, no `.github/workflows/` or
+   out-of-owned-path change, and no open owner question. GitHub generates the
+   squash commit title and message; agents supply neither. The Engineering
+   manager does not merge, a Feature lead never merges another Task's pull
+   request, and Workers and Reviewers still never merge. rapid-ship and all
+   other repositories keep their own merge rules.
 3. License. MIT, in [`LICENSE`](../../../LICENSE). Reused Compose or Firstmate
    code keeps its MIT attribution.
 4. Ruleset. `main` has a GitHub ruleset: a pull request is required, force pushes
@@ -1014,6 +1068,10 @@ numbers match the plan's Decisions section.
   merges. They may carry his commit email, which F7 found already public.
   Agents never write it. The privacy rule above covers a match in a squash
   commit that a branch update brings into a review range.
+
+  Application note, 2026-10-28: decision 19 applies this same exception to
+  GitHub-generated trailers when a lead merges its own t3-compose pull request.
+  Agents still never write Shawn's email or supply the squash title or message.
 - **Decision 9, 2026-10-28: medium Worker selection.** Shawn first said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
   He clarified: "Never fallback twice is a sound rule. The current routing rule remains flexible. Some time in the future I will consider GLM -> Sonnet fallback." and "GLM and jev are both added, as 2 new Pi providers in T3 code, using separate API keys."
   GLM 5.3 through OpenRouter, run in the Pi Harness with Shawn's own key, is a
@@ -1114,6 +1172,16 @@ numbers match the plan's Decisions section.
   No new deployment or merge authority or automatic readiness rule is
   introduced, and this documentation revision claims no integration or live
   pass.
+
+  Superseding note, 2026-10-28: decision 19 grants only the assigned lead
+  authority to squash-merge its own Task's t3-compose pull request as the Worker
+  App after its exact-final-head review and passed required checks, subject to
+  the repository workflow's merge conditions. Every t3-compose Task has a lead;
+  the manager does not merge. The one-line manager notification is sent when
+  the pull request merges. Managed repositories retain their own merge rules;
+  the general optional-lead/no-lead design and all review and evidence duties
+  remain. Decision 13's earlier merge prohibition is historical, not operative
+  for this own-Task grant.
 - **Decision 14, 2026-10-28: Python 3.15 runtime through uv's global pin.**
   Shawn first said: "use latest stable python instead of python 3.9"
   He corrected: "correction: uv python pin 3.15 --global". He then authorized:
@@ -1181,6 +1249,33 @@ numbers match the plan's Decisions section.
   prerequisites and integration evidence. There is no extra manager pre-merge
   readiness approval or repeated final-head review; the manager still owns
   overall delivery, and delivery readiness remains separate from EV-1.
+
+  Superseding note, 2026-10-28: under decision 19, the one-line notification is
+  sent when the pull request merges, including a lead's authorized own-Task
+  t3-compose merge. The lead proceeds without waiting for Shawn; no ready or
+  progress report to the manager is added.
+- **Decision 19, 2026-10-28: t3-compose Feature lead merge authority.**
+  Shawn said: "permission upgrade: for this project t3c ONLY, feature leads have permission to auto-merge PRs after they have reviewed. I.e., continue dev of this project fully unsupervised."
+  On t3-compose only, every Task has an assigned Feature lead, and that lead
+  squash-merges its own Task's pull request as the Worker App after its own
+  exact-final-head review and passed required checks. The Engineering manager
+  does not merge, a Feature lead never merges another Task's pull request, and
+  Workers and Reviewers still never merge. rapid-ship and all other repositories
+  keep their own merge rules. Merge depends on the pull request being open and
+  non-draft, clean and mergeable, at the exact reviewed head, with passed hosted
+  checks if present, no `.github/workflows/` or out-of-owned-path change, and no
+  open owner question. Final-head review, privacy, Worker App identity, exact
+  head/author verification and review evidence remain required. GitHub generates
+  the squash commit title and message; agents supply neither, and decision 7
+  covers GitHub-generated co-author trailers on merges under this grant while
+  agents still never write Shawn's email. No `t3c` merge command is authorized.
+  Tasks and stages continue without waiting for Shawn: the lead verifies the
+  merge and result and sends its one-line manager handoff when the pull request merges, and
+  the manager checks `main` and the machine after each merge and starts
+  dependent Tasks and leads once dependencies merge. `.github/workflows/`
+  changes, routing values and model placement, the rapid-ship pilot (L9),
+  product decisions and anything unclear remain Shawn's, with no grant to do
+  rapid-ship work.
 
 ## Findings
 
