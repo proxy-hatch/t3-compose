@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Run explicitly as python3 -I -S /path/to/bin/t3c."""
+import sys
+from pathlib import Path
+import shlex
+
+if sys.version_info < (3, 9) or not (sys.flags.isolated and sys.flags.no_site):
+    command = "{} -I -S {}".format(shlex.quote(sys.executable),
+                                    shlex.quote(str(Path(__file__).resolve())))
+    print("Python 3.9+ with isolation and no site required; run: " + command + " version",
+          file=sys.stderr)
+    sys.exit(2)
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from t3compose.cli import main
+
+sys.exit(main())

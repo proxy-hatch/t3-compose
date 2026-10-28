@@ -2,7 +2,12 @@
 
 Read the [design](docs/superpowers/specs/2026-10-27-t3-compose-design.md) before
 planning or changing the package. Use the terms in [GLOSSARY.md](GLOSSARY.md).
-The project contains documentation only; no runtime or test commands exist yet.
+`SUITE` is `python3 -I -S -B -m unittest discover -s tests -t . -v`, run from
+the repository root under both the system and Homebrew Python interpreters.
+Every test class derives from the offline guard in `tests/support.py` and is
+named `Offline…`, or `Simulated…` when it injects quota responses. Only the
+Engineering manager runs `live/` checks; offline and simulated tests do not
+count as live passes.
 
 Keep this package separate from rapid-ship. Apply a managed repository's rules
 when assigning work there. Do not copy its product code, backlog or guardrails
