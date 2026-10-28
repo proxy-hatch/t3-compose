@@ -2,6 +2,8 @@
 import contextlib
 import importlib
 import io
+import os
+import stat
 from pathlib import Path
 import subprocess
 import traceback
@@ -200,6 +202,110 @@ class OfflineIdentifierList(OfflineTestCase):
                 self.assertIn("line 1", str(err_ctx.exception))
                 for secret in ("secret-out", "secret-err", text_sentinel, "syn-first"):
                     self.assertNotIn(secret, str(err_ctx.exception))
+
+    def test_corrections_pattern_files_are_atomic_and_mode_0600(self):
+        from t3compose import identifier_list
+
+        events, consumed = [], []
+        real_sync, real_replace = os.fsync, os.replace
+
+        def sync(fd):
+            kind = "file-sync" if stat.S_ISREG(os.fstat(fd).st_mode) else "dir-sync"
+            events.append(kind)
+            return real_sync(fd)
+
+        def replace(source, target):
+            self.assertEqual(Path(source).parent, Path(target).parent)
+            self.assertEqual(stat.S_IMODE(Path(source).stat().st_mode), 0o600)
+            events.append("replace")
+            return real_replace(source, target)
+
+        def grep(argv, **kwargs):
+            path = Path(argv[3])
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            consumed.append((path, path.read_bytes()))
+            events.append("grep")
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        previous_mask = os.umask(0o022)
+        try:
+            with patch.object(identifier_list.os, "fsync", sync), \
+                    patch.object(identifier_list.os, "replace", replace), \
+                    patch.object(process, "run", FakeRunner({"grep": grep})):
+                self.assertEqual(identifier_list.match_identifiers(["syn-first", "syn-next"], "safe"), [])
+        finally:
+            os.umask(previous_mask)
+        self.assertEqual(events, ["file-sync", "replace", "dir-sync", "grep"] * 2)
+        self.assertEqual([data for _, data in consumed], [b"syn-first\n", b"syn-next\n"])
+        self.assertTrue(all(not path.parent.exists() for path, _ in consumed))
+
+    def test_corrections_write_failures_and_exception_context_are_private(self):
+        from t3compose import identifier_list
+
+        marker = "syn-private-backend-991"
+        path_marker = "syn-private-path-992"
+        local_dir = self.temp / path_marker
+        _write_list(local_dir, "syn-private-pattern-993\n")
+        runner = FakeRunner({"grep": lambda argv, **kw: subprocess.CompletedProcess(argv, 1, b"", b"")})
+
+        def assert_private(call):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with self.assertRaises(cli.CommandError) as ctx:
+                    call()
+            self.assertEqual(ctx.exception.code, cli.ExitCode.INVALID_INPUT)
+            self.assertTrue(ctx.exception.__suppress_context__)
+            formatted = "".join(traceback.format_exception(ctx.exception))
+            for value in (str(ctx.exception), repr(ctx.exception), formatted, out.getvalue(), err.getvalue()):
+                for secret in (marker, path_marker, "syn-private-pattern-993"):
+                    self.assertNotIn(secret, value)
+            self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+        assert_private(lambda: identifier_list.load_identifiers(local_dir / "missing"))
+        for target in ("os.open", "os.fstat"):
+            with patch("t3compose.identifier_list." + target, side_effect=OSError(marker)):
+                assert_private(lambda: identifier_list.load_identifiers(local_dir))
+        with patch.object(identifier_list.os, "fsdecode", side_effect=ValueError(marker)):
+            assert_private(lambda: identifier_list.load_identifiers(local_dir))
+
+        with patch.object(identifier_list.tempfile, "TemporaryDirectory", side_effect=OSError(marker)):
+            assert_private(lambda: identifier_list.match_identifiers(["syn-private-pattern-993"], "safe"))
+
+        for stage in ("create", "write", "file-sync", "replace", "dir-sync"):
+            with self.subTest(stage=stage), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(process, "run", runner))
+                if stage == "create":
+                    stack.enter_context(patch.object(identifier_list.tempfile, "mkstemp", side_effect=OSError(marker)))
+                elif stage == "write":
+                    real_fdopen = os.fdopen
+
+                    class FailingWrite:
+                        def __init__(self, fd, mode):
+                            self.stream = real_fdopen(fd, mode)
+                        def __enter__(self):
+                            return self
+                        def __exit__(self, *args):
+                            return self.stream.__exit__(*args)
+                        def fileno(self):
+                            return self.stream.fileno()
+                        def write(self, data):
+                            raise OSError(marker)
+
+                    stack.enter_context(patch.object(identifier_list.os, "fdopen", FailingWrite))
+                elif stage == "replace":
+                    stack.enter_context(patch.object(identifier_list.os, "replace", side_effect=OSError(marker)))
+                else:
+                    real_sync = os.fsync
+
+                    def failing_sync(fd):
+                        is_file = stat.S_ISREG(os.fstat(fd).st_mode)
+                        if is_file == (stage == "file-sync"):
+                            raise OSError(marker)
+                        return real_sync(fd)
+
+                    stack.enter_context(patch.object(identifier_list.os, "fsync", failing_sync))
+                assert_private(lambda: identifier_list.match_identifiers(["syn-private-pattern-993"], "safe"))
+        self.assertEqual(runner.calls, [])
 
     def test_equivalence_with_system_grep_including_ere_duplicates_lf_and_blank_line(self):
         from t3compose.identifier_list import load_identifiers, match_identifiers

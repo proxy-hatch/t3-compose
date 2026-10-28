@@ -25,7 +25,7 @@ GREP_TIMEOUT_SECONDS = 5.0
 
 
 def _fail(message):
-    raise cli.CommandError(message, code=cli.ExitCode.INVALID_INPUT)
+    raise cli.CommandError(message, code=cli.ExitCode.INVALID_INPUT) from None
 
 
 def _split_lf_lines(text):
@@ -106,13 +106,33 @@ def _encode_text(text):
     return text_bytes
 
 
+def _write_pattern(path, data):
+    """Publish private scratch data with the common atomic mode-0600 contract."""
+    fd, pending_name = tempfile.mkstemp(dir=path.parent, prefix=".pattern-")
+    pending = Path(pending_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def _evaluate_patterns(encoded_patterns, input_bytes):
     matches = []
     try:
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="t3c-id-") as temp_dir:
             pattern_path = Path(temp_dir) / "pattern.txt"
             for line_number, pattern_bytes in enumerate(encoded_patterns, start=1):
-                pattern_path.write_bytes(pattern_bytes + b"\n")
+                _write_pattern(pattern_path, pattern_bytes + b"\n")
                 try:
                     result = process.run(
                         ["grep", "-E", "-f", str(pattern_path)],
