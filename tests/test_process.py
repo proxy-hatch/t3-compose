@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from subprocess import Popen as PopenHandle
 import sys
 import textwrap
 import traceback
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 from tests import support
 from tests.support import OfflineTestCase, ROOT
+from t3compose import process
 
 
 class OfflineProcess(OfflineTestCase):
@@ -173,3 +175,116 @@ class OfflineProcess(OfflineTestCase):
                                  capture_output=True, text=True)
         self.assertEqual(json.loads(result.stdout)["root"], str(ROOT))
         self.assertIsInstance(json.loads(result.stdout)["dirty"], bool)
+
+
+class OfflineProcessStart(OfflineTestCase):
+    def assert_public_start_failure(self, argv, kind, **kwargs):
+        try:
+            process.start(argv, **kwargs)
+        except process.ProcessError as error:
+            self.assertEqual((error.kind, error.returncode), (kind, None))
+            for display in (str(error), repr(error), repr(error.args),
+                            "".join(traceback.format_exception(error))):
+                self.assertNotIn("synthetic-private-sentinel", display)
+            self.assertTrue(error.__suppress_context__)
+            self.assertIsNone(error.__cause__)
+        else:
+            self.fail("launch failure must become sanitized ProcessError")
+
+    def test_start_refuses_invalid_command_before_popen(self):
+        sentinel = "synthetic-private-sentinel"
+        for argv, kwargs in ((sentinel, {}), (b"synthetic", {}), (None, {}),
+                             ((), {}), (("git",), {}), ({"git": 1}, {}),
+                             ([], {}), ([sentinel], {"shell": True}),
+                             ([sentinel], {"shell": sentinel})):
+            with self.subTest(argv=argv), patch.object(subprocess, "Popen") as launch:
+                with self.assertRaises(process.ProcessError) as caught:
+                    process.start(argv, **kwargs)
+                self.assertEqual(caught.exception.kind, "invalid-command")
+                self.assertNotIn(sentinel, repr(caught.exception))
+                launch.assert_not_called()
+
+    def test_start_sanitizes_backend_failures_and_exception_display(self):
+        sentinel = "synthetic-private-sentinel"
+        for failure, kind in ((FileNotFoundError(2, sentinel, sentinel), "not-found"),
+                              (PermissionError(sentinel), "os-error"),
+                              (OSError(sentinel), "os-error"),
+                              (TypeError(sentinel), "invalid-options"),
+                              (ValueError(sentinel), "invalid-options")):
+            with self.subTest(kind=kind), patch.object(subprocess, "Popen", side_effect=failure):
+                self.assert_public_start_failure(["synthetic", sentinel], kind,
+                                                 env={"SYNTHETIC": sentinel})
+
+    def test_start_sanitizes_real_launch_and_option_errors(self):
+        missing = self.temp / "synthetic-private-sentinel-missing"
+        denied = self.temp / "synthetic-private-sentinel-denied"
+        denied.write_text("synthetic fixture")
+        denied.chmod(0o600)
+        for program, kind in ((missing, "not-found"), (denied, "os-error")):
+            self.allow_program(program)
+            with self.subTest(kind=kind):
+                self.assert_public_start_failure([str(program)], kind)
+        self.allow_program("/bin/sleep")
+        for options in ({"bufsize": "synthetic-private-sentinel"},
+                        {"unknown_option": "synthetic-private-sentinel"},
+                        {"creationflags": 1}):
+            with self.subTest(options=options):
+                self.assert_public_start_failure(["/bin/sleep", "0"],
+                                                 "invalid-options", **options)
+
+    def test_start_preserves_guard_refusal(self):
+        with self.assertRaisesRegex(AssertionError, "offline guard"):
+            process.start(["/synthetic/bin/curl"])
+
+    def test_start_forwards_controls_without_defaults_or_handle_wrapping(self):
+        argv, handle = ["synthetic"], object()
+        controls = dict(env={"SYNTHETIC": "fixture"}, cwd=self.temp,
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, pass_fds=(7,), text=True,
+                        shell=False, start_new_session=True)
+        for kwargs in ({}, controls):
+            with self.subTest(kwargs=kwargs), patch.object(subprocess, "Popen", return_value=handle) as launch:
+                self.assertIs(process.start(argv, **kwargs), handle)
+                launch.assert_called_once_with(argv, **kwargs)
+
+    def test_start_returns_real_handle_with_streams_environment_cwd_and_fds(self):
+        script = self.temp / "start-child.py"
+        script.write_text(textwrap.dedent('''\
+            import json, os, sys
+            from pathlib import Path
+            print(json.dumps({'input': sys.stdin.read(), 'value': os.environ['SYNTHETIC'],
+                              'fd': os.read(int(sys.argv[1]), 100).decode(),
+                              'script': str(Path(__file__).resolve())}))
+            print('synthetic stderr', file=sys.stderr)
+            sys.exit(9)
+            '''))
+        payload = self.temp / "payload"
+        payload.write_bytes(b"synthetic inherited data")
+        with payload.open("rb") as inherited:
+            argv = [sys.executable, "-I", "-S", "-B", str(ROOT / "tests/support.py"),
+                    script.name, str(inherited.fileno())]
+            with process.start(argv, cwd=self.temp, env={"SYNTHETIC": "fixture"},
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True,
+                               pass_fds=(inherited.fileno(),)) as child:
+                self.assertIsInstance(child, PopenHandle)
+                stdout, stderr = child.communicate("synthetic input", timeout=10)
+                self.assertEqual(child.wait(timeout=10), 9)
+            self.assertTrue(child.stdout.closed)
+            self.assertTrue(child.stderr.closed)
+        self.assertEqual(json.loads(stdout), {"input": "synthetic input", "value": "fixture",
+                                             "fd": "synthetic inherited data", "script": str(script)})
+        self.assertEqual(stderr, "synthetic stderr\n")
+
+    def test_start_leaves_termination_and_waiting_to_caller(self):
+        self.allow_program("/bin/sleep")
+        with process.start(["/bin/sleep", "30"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as child:
+            self.assertIsNone(child.poll())
+            try:
+                child.terminate()
+                self.assertLess(child.wait(timeout=10), 0)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)

@@ -40,6 +40,20 @@ def run(argv, **kwargs):
         raise ProcessError("invalid-options") from None
 
 
+def start(argv, **kwargs):
+    """Start without a shell; the caller owns signals, waiting and cleanup."""
+    if not isinstance(argv, list) or not argv or kwargs.get("shell", False):
+        raise ProcessError("invalid-command")
+    try:
+        return subprocess.Popen(argv, **kwargs)
+    except FileNotFoundError:
+        raise ProcessError("not-found") from None
+    except OSError:
+        raise ProcessError("os-error") from None
+    except (TypeError, ValueError):
+        raise ProcessError("invalid-options") from None
+
+
 def helper_command(*args):
     """Construct the isolated invocation; launching remains the caller's choice."""
     return [sys.executable, "-I", "-S", "-B", str(ROOT / "bin/t3c"), *args]
