@@ -1,14 +1,9 @@
 # Record format and schema contract
 
-> **Status: RC-1b (part 2 of 3).** Implements the durable store and preserves
-> RC-1a's record layout, `work.json`
-> schema, event envelope schema, the 21 event-kind data schemas, explicit
-> unknown rules and the pure validation API in `t3compose.schema`. RC-1 is
-> complete only after RC-1c merges: RC-1a implements pure schema validation;
-> RC-1b adds durable persistence, dispatch/routing history enforcement and
-> `work new|show|list` plus `event add`; RC-1c adds checkpoint
-> computation/verification, CD-4 review/finding/lead history, recovery and
-> `work snapshot|reconcile|repair`.
+> **Status: RC-1c (part 3 of 3).** Adds checkpoints, recovery and CD-4
+> history to the durable store. RC-1 dependents and Stage 2 remain gated until
+> this Task merges after lead review. These commands record and validate facts;
+> they do not perform EV-1 acceptance or query T3.
 
 ## Storage layout and identities
 
@@ -140,24 +135,14 @@ Every `events/<seq>.json` envelope requires exact keys:
 21. **`writer-transfer`**:
     - `from` (`writer_id`), `to` (`writer_id` distinct from `from` on the same repository), `reconciliationRef` (`pos_int <= checkpoint.lastSeq`), `checkpoint` (`checkpoint_obj`).
 
-## Public Python API (`t3compose.schema`) and RC-1b/1c boundary
+## Public Python API (`t3compose.schema`)
 
 - `SCHEMA_VERSION = 1`, `MAX_ROUTING_INPUT_BYTES = 16384`, `EVENT_KINDS`, `EVENT_SCHEMAS`.
 - `SchemaError(path, rule)`: `ValueError` subclass with `.path` and `.rule`; never echoes raw input values or secrets.
 - `validate_work(value) -> None`, `validate_event(value) -> None`, `validate_event_data(kind, data, path="event.data") -> None`, `validate_routing_input(value, path="routingInput") -> str`.
-- **RC-1b/RC-1c boundary:** Durable APIs and implemented history are specified
-  below. Review/finding/lead history, checkpoint verification and recovery await c.
+- Durable APIs and cross-event validation are specified below.
 
 ## Durable store API and history
-
-RC-1b implements part 2 of 3. The Engineering manager's revised boundary of
-**2026-10-28** assigns CD-4 history enforcement to RC-1c: review event-sequence
-references, finding identities across rounds, disposition joins, author and
-current-lead provenance/currency. The store refuses `review`,
-`finding-disposition`, `lead-assignment`, `restart`, `handoff`, `writer-transfer`
-on append AND load with a sanitized RC-1c error. These shapes remain validated
-by `schema`. Check sources, including Feature lead and Worker, remain recorded;
-EV-1 decides verification after c. All downstream gates still wait for c.
 
 Public functions in `t3compose.records` (all arguments are Python values):
 
@@ -175,10 +160,10 @@ Public functions in `t3compose.records` (all arguments are Python values):
 
 Create/load return `{work, events, effectiveWork}`. `work` is immutable;
 `effectiveWork` applies successive non-null scope/acceptance/requiredChecks
-replacements. Every load/append validates schema and the complete contiguous
+replacements and writer transfers. Every load/append validates schema and the complete contiguous
 prefix starting at 1. Filenames are unpadded decimal sequence plus `.json`;
 nonmatching envelopes, gaps, aliases and unknown files fail that work. Recognized
-helper temporaries are ignored, never removed by b. Work list isolates damaged
+helper temporaries are ignored by history loading. Work list isolates damaged
 work. Each path component below the selected state root is opened without
 following symlinks; files must be regular, private, owned by the current user.
 A new work directory is reserved exclusively; its events directory is durable
@@ -188,8 +173,8 @@ cannot be silently adopted by another create. No index file exists.
 
 History rules:
 
-- Every envelope uses the work's writer. Request identity must match stored
-  repository/work/writer. Transfers remain refused until prefix verification.
+- Every envelope uses the writer effective at that sequence. Request identity
+  must match stored repository/work and the current writer, including retries.
 - Dispatch request IDs are unique. Exact payload retries return their existing
   intent; stored duplicate intents are corruption. Worker and Feature lead
   intents block another writer until a completed result or proven preservation.
@@ -213,6 +198,10 @@ History rules:
   and `worktreePath` (matching the confirmation when known). These are recorded
   coordinator observations, not a live T3 query. Unknown/other outcomes do not
   clear. Unsupported preservation claims are refused, never trusted by label.
+  Any later non-preservation dispatch observation revokes clearance, including
+  after a result; replacement writers and transfers remain blocked until fresh
+  valid preservation or a completed result resolves it. Both intent sequence and
+  request-ID references identify the same dispatch.
 - Classifications/judgments/selections join existing routing input with exact
   input/policy digests; selection's classification/judgment must name the same
   input and digests. Retry context references an existing classification.
@@ -237,11 +226,118 @@ Reserved temporary names are `.t3c-tmp-<positive PID>-<32 lowercase hex>.tmp`.
 Creation briefly serializes a private umask override and restores the prior
 mask even if open fails, so mode is 0600 from first visibility. The creator
 holds an exclusive advisory `flock` on the inode through writing,
-publication and cleanup. Future c repair must require this exact name, regular
+publication and cleanup. Repair requires this exact name, regular
 file, current UID, mode 0600, link count 1 or 2, proof the named PID is dead
 (`kill(pid, 0)` yields ESRCH), AND a nonblocking exclusive inode lock, then
 recheck path/inode identity before unlinking. A live/reused PID, permission error,
 symlink, unknown name or lock conflict is never an orphan. Dead-PID evidence
 closes the create-before-inode-lock window. Unrelated files are never removed;
 this reserved namespace is a cooperative protocol, not protection from hostile
-same-user filesystem edits. b implements no repair or crash-recovery command.
+same-user filesystem edits. Recovery scans both the work root and its events directory.
+
+## Checkpoints and coordinator history
+
+`snapshot(local_dir, repo, work_id, *, through_seq=None)` returns exactly
+`{lastSeq, digest}`. The digest is `sha256:` plus SHA-256 of
+`jsonio.canonical_json({"work": work, "events": events[:lastSeq]})`, including
+complete immutable metadata and complete ordered event envelopes. The default
+is the loaded event count; an explicit integer must be between zero and that
+count. Full history is validated even when requesting an earlier prefix. No
+snapshot/index file is written. JSON formatting is not part of this digest.
+
+Handoff, before-restart and transfer require the immediate pre-event prefix;
+after-restart requires the same checkpoint as its referenced prior before event.
+All checkpoints are recomputed against their own prefix, never the latest digest.
+The before reference must name a before-phase restart, and may be consumed once.
+Handoff's repository must match the work. A changed saved prefix refuses replay
+and append; preserve the files and reconcile against the saved evidence.
+
+`effectiveWork.writer` follows validated transfers; `work.writer` never changes.
+The latest `lead-assignment` in `events` identifies the lead (none initially).
+Only `manager@<repository>`, while current writer, can assign; `assignedBy` must
+match. Assignment does not transfer ownership. Transfers are only between that
+manager and `lead:<workId>@<repository>`; transfer to a lead requires assignment.
+To replace an active lead, reconcile and transfer back to the manager, append
+assignment, then reconcile and transfer to the lead. No nested lead assignment.
+
+Transfer's `reconciliationRef` must name a `stopped-and-preserved` event in the
+current writer tenure, with `item: {kind: "takeover", ref: <old writer>}`.
+`t3Facts` requires `writer: <old writer>`, `state: "stopped"`,
+`childrenReconciled: true`, and nonempty `evidence`; when the old writer is a
+known lead it also requires its current `thread`. `gitFacts` requires
+`commitsPreserved: true`, `uncommittedPreserved: true`, nonempty `evidence` and
+`worktreePath`. These use dispatch clearance's existing observation convention.
+Every recorded dispatch, including Reviewers, must separately have a completed
+result or valid stopped-and-preserved clearance. A new dispatch after the writer
+reconciliation invalidates that proof, as does any later reconciliation of the
+same writer. Reusing proof from an older tenure fails.
+These are coordinator attestations, not automatic liveness discovery or authority
+for another thread to manage children. Preserve unknown outcomes until reconciled.
+
+## CD-4 review and finding history
+
+A task review must join an actual reviewer-role intent, confirmation and completed
+result by task ID: base equals work/intent review base; head equals the reviewer's
+start and result commit; known confirmation/result worktree paths match. A Worker
+result cannot stand in for a Reviewer. Both review forms must name the work base
+and a head already recorded as a Worker result (or the original base). A lead
+review must name the lead current at that event and include its path/digest.
+Historical valid reviews remain valid when assignments change. EV-1 must compare
+that historical assignment with the current assignment again at verification.
+
+Review evidence is a recorded descriptor, not read from disk during replay;
+paths and SHA-256 digests follow the schema. This keeps historical records usable
+when artifacts move; callers retain the artifacts and verify their bytes before
+recording. Checks retain distinct source labels, including `feature-lead` and
+`worker`; storing a check never makes a Worker claim verified.
+
+Findings key on `(review event sequence, finding ID)`. `by` identifies a review
+author as `task:<native taskId>` or `lead:<thread>` (prefixes are literal, even
+when the native ID already contains a colon). Withdrawal requires that exact
+review author, including historical leads. Declining requires minor severity
+and a reason. Fixed requires its full commit SHA and evidence. Evidence must be
+concrete nonempty text or a concrete nonempty mapping, without nested unknowns.
+For `rejected-by-second-review`, use `{reviewRef: <later task review sequence>}`
+from a distinct independent Reviewer covering the same base/head; for
+`owner-decided`, use `{decisionRef: <resolved decision sequence>}` whose
+`decidedBy` is exactly `"owner"`, the reserved value for Shawn. The recorder
+quotes Shawn's words in `answer` and identifies where and when he gave them.
+This is recorded provenance, not authentication; writers must follow this rule.
+Other authors remain valid for general decisions but cannot supply owner
+disposition authority. Other
+mappings/text record the artifact or explanation; these are assertions, not EV-1
+acceptance. No disposition overwrites an earlier attempt or review.
+
+## Reconciliation and repair API
+
+`reconcile(local_dir, repo, work_id=None, *, repair=False)` returns
+`{works, damaged}`. Each work report has `workId`, `uncertain`, `temporaries`.
+Uncertain entries have `kind`, `ref` (intent sequence), `intent`, `confirmation`
+(null if absent), and `observations` (related reconciliation/result envelopes).
+Dispatch entries remain until completed result or valid preservation, never just
+confirmation. Operation entries remain without a concrete result; `unknown`
+outcomes and a started child with unknown status remain uncertain regardless of
+an outcome label. Retained intents, confirmations and observations allow later
+unknown/in-flight reconciliations to reopen resolved items, by sequence or ID;
+a subsequent concrete operation result clears its uncertainty again. Operation
+reconciliations with unknown native/artifact facts also reopen the item.
+Results retain confirmation evidence for caller inspection.
+The helper never polls T3/Git to resolve an uncertain item. Callers inspect native
+request/task/thread/worktree references and artifacts, then append the facts.
+
+Each temporary entry has a work-relative `path` and `state`: `orphan`, `retained`,
+`removed`, or `error`. Only exact reserved names are inspected; other names are
+never removed. Retained means at least one ownership/liveness/lock predicate
+could not be proven. Missing files during concurrent cleanup are omitted. Repair
+uses the same proof as reconciliation, pins directories and files, takes the
+nonblocking inode lock, rechecks path/inode and metadata, unlinks only that name,
+and fsyncs the directory. It never unlinks the event even with a second hard link.
+A removal followed by failed fsync is reported as error; inspect and retry.
+
+Damaged entries use the list command's sanitized `workId`/`error` shape. A damaged
+work still receives a temporary scan when its directories can be safely pinned,
+including a partially created work with no metadata/events. Repair cannot complete
+creation, adopt it, or remove its reservation; preserve artifacts for manual
+reconciliation. Other valid work remains usable. An unsafe directory is not
+traversed. Reports are observations of a cooperative filesystem, not a transaction
+across all works or protection from hostile same-user mutation.

@@ -1,4 +1,4 @@
-# Records commands (RC-1b, part 2 of 3)
+# Records commands
 
 Use the [common invocation and global options](../cli.md). All commands use
 `args.local_dir`; tests pass `--local-dir` explicitly before the command.
@@ -14,6 +14,9 @@ is performed. No state is written into the checkout.
 | `work new` | `--repo REPO --work ID --file WORK.json --writer W` | none | `{"work": <immutable metadata>, "events": [], "effectiveWork": <metadata>}` |
 | `work show` | `--repo REPO --work ID` | none | `{"work": <metadata>, "events": [<ordered envelopes>], "effectiveWork": <scope-adjusted metadata>}` |
 | `work list` | `--repo REPO` | none | `{"works": [<valid metadata>], "damaged": []}` |
+| `work snapshot` | `--repo REPO --work ID` | `--through-seq N` | `{lastSeq, digest}` |
+| `work reconcile` | `--repo REPO` | `--work ID` | `{works, damaged}` recovery report |
+| `work repair` | `--repo REPO` | `--work ID` | same report with removed temporary names |
 | `event add` | `--repo REPO --work ID --kind KIND --file DATA.json --writer W` | `--checkout PATH` | appended envelope, or the existing envelope for an exact intent retry |
 
 `--file` holds a JSON object, not an envelope for `event add`. Work metadata
@@ -43,17 +46,38 @@ checkout path and an existing `startCommit` Git commit object. Using `--checkout
 for any other kind exits 2. Git reads use argument lists through `process.run`.
 
 Expected failures have empty stdout and sanitized stderr; exception details,
-input values and Git output are never echoed. Structured damaged-work lists
-are the sole exit-2 result with stdout. Handlers return data/`Outcome` or raise
+input values and Git output are never echoed. Structured list/recovery reports
+may also carry exit 2 with stdout. Handlers return data/`Outcome` or raise
 `CommandError`; they do not print or exit. Exit codes are only 0 and 2.
 
-The revised Engineering manager boundary of **2026-10-28** moves CD-4 history
-(review sequence references, finding joins, author/current-lead provenance and
-currency) to RC-1c. `review`, `finding-disposition`, `lead-assignment`, `restart`,
-`handoff` and `writer-transfer` are refused with a diagnostic naming RC-1c,
-including when found in stored history. Schema validation remains available.
-`work snapshot`, `work reconcile` and `work repair` are not registered yet.
-Dispatch reconciliation that proves stopped-and-preserved work is supported now;
-see the [store contract](../records.md#durable-store-api-and-history).
-RC-1 dependents and Stage 2 remain gated until RC-1c merges. No live or Task
-verification decision is made by these commands.
+Snapshot defaults to the whole validated history. `--through-seq` selects an
+inclusive prefix ending at N, including zero for metadata only; negative,
+noninteger or beyond-end values exit 2. This option is accepted only by snapshot,
+which requires `--work`. Recompute a saved prefix after later appends using the
+same N. Snapshot writes nothing and cannot certify an uncheckpointed history
+against an external original; compare the returned digest with saved evidence.
+
+Reconcile and repair scan the selected work or every work under the normalized
+identity. An absent identity yields empty arrays; a missing selected work is a
+structured damaged report with exit 2. The [recovery API](../records.md#reconciliation-and-repair-api)
+defines every report field. Uncertain dispatches/operations and retained temporary
+files are reported with exit 0: this is an inventory, not an acceptance decision.
+Invalid works or temporary I/O errors yield a partial structured report and exit
+2; inspect affected entries while continuing unrelated valid work. Repair reports
+its proven removals in the returned JSON after unlink/fsync; handlers never print.
+It neither clears dispatches nor edits/deletes events or work metadata.
+
+On refusal: correct malformed input/options; reconcile T3 and Git facts before
+retrying unresolved dispatches or transferring ownership; use the current writer;
+retain commits and uncommitted artifacts. For checkpoint/history corruption,
+preserve the record and compare saved evidence, never renumber or rewrite events.
+For a sequence collision, reload and inspect the winning event before deciding a
+new action; the helper does not retry. For retained temporaries, establish creator
+termination and filesystem ownership/lock facts, then rerun repair; never infer
+death from silence or permission failure. Partial creation requires manual
+artifact reconciliation, not a second `work new` over the same reservation.
+
+All 21 event kinds now undergo schema and history validation on append and load.
+The [store contract](../records.md) defines checkpoint, transfer and CD-4 evidence
+requirements. RC-1 dependents and Stage 2 remain gated until RC-1c merges after
+lead review. No live or EV-1 Task verification decision is made here.
