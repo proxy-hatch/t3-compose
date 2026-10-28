@@ -100,3 +100,110 @@ class OfflineJSON(OfflineTestCase):
                 with self.subTest(sign=sign, fn=fn.__name__), \
                         self.assertRaisesRegex(ValueError, "invalid JSON data"):
                     fn(path)
+
+
+class OfflineAtomicJSON(OfflineTestCase):
+    def test_publication_order_private_mode_and_collision(self):
+        import fcntl
+        import os
+        import stat
+        from t3compose import jsonio
+        self.assertTrue(hasattr(jsonio, "atomic_create"), "exclusive JSON API missing")
+        path = self.temp / "record.json"
+        for method in (jsonio.atomic_create, jsonio.atomic_replace):
+            path.unlink(missing_ok=True)
+            order, real_sync, real_link, real_replace = [], os.fsync, os.link, os.replace
+            real_lock = fcntl.flock
+            def lock(fd, flags):
+                if isinstance(fd, int) and flags == fcntl.LOCK_EX:
+                    self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o600)
+                return real_lock(fd, flags)
+            def sync(fd):
+                order.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+                return real_sync(fd)
+            def publish(src, dst, **kw):
+                self.assertEqual(order, ["file"])
+                temp = self.temp / src
+                self.assertEqual(stat.S_IMODE(temp.stat().st_mode), 0o600)
+                self.assertRegex(temp.name, r"^\.t3c-tmp-[1-9][0-9]*-[0-9a-f]{32}\.tmp$")
+                with temp.open("rb") as stream:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                order.append("publish")
+                return (real_link if method == jsonio.atomic_create else real_replace)(src, dst, **kw)
+            previous = os.umask(0o277)
+            try:
+                with patch.object(os, "fsync", sync), patch.object(os, "link", publish), \
+                        patch.object(os, "replace", publish), patch.object(fcntl, "flock", lock):
+                    method(path, {"z": "é", "a": 1})
+            finally:
+                self.assertEqual(os.umask(previous), 0o277)
+            self.assertEqual(order, ["file", "publish", "directory", "directory"])
+            self.assertEqual(path.read_bytes(), b'{"a":1,"z":"\xc3\xa9"}')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(list(self.temp.glob(".t3c-tmp-*")), [])
+        before = path.read_bytes()
+        with self.assertRaises(FileExistsError):
+            jsonio.atomic_create(path, {"loser": True})
+        self.assertEqual(path.read_bytes(), before)
+        jsonio.atomic_replace(path, {"new": True})
+        self.assertEqual(path.read_bytes(), b'{"new":true}')
+
+    def test_each_failed_atomic_step_never_exposes_partial_json(self):
+        import os
+        from t3compose import jsonio
+        self.assertTrue(hasattr(jsonio, "atomic_replace"), "atomic JSON API missing")
+        for exclusive in (False, True):
+            for step in ("open", "fchmod", "write", "fsync-file", "publish", "fsync-dir", "unlink", "fsync-cleanup"):
+                with self.subTest(exclusive=exclusive, step=step):
+                    folder = self.temp / (str(exclusive) + step)
+                    folder.mkdir()
+                    target = folder / "value.json"
+                    if not exclusive:
+                        target.write_bytes(b'{"old":true}')
+                    symbol = {"fsync-file": "fsync", "fsync-dir": "fsync", "fsync-cleanup": "fsync",
+                              "publish": "link" if exclusive else "replace"}.get(step, step)
+                    original, calls = getattr(os, symbol), 0
+                    def fail(*args, **kwargs):
+                        nonlocal calls
+                        calls += 1
+                        which = {"fsync-dir": 2, "fsync-cleanup": 3}.get(step, 1)
+                        # Parent directory opens precede the temporary-file open.
+                        if (step == "open" and str(args[0]).startswith(".t3c-tmp-")) or (step != "open" and calls == which):
+                            raise OSError("synthetic injected failure")
+                        return original(*args, **kwargs)
+                    previous = os.umask(0o277)
+                    try:
+                        with patch.object(os, symbol, fail), self.assertRaises(OSError):
+                            (jsonio.atomic_create if exclusive else jsonio.atomic_replace)(target, {"new": True})
+                    finally:
+                        self.assertEqual(os.umask(previous), 0o277)
+                    if target.exists():
+                        self.assertIn(target.read_bytes(), (b'{"old":true}', b'{"new":true}'))
+                    elif not exclusive:
+                        self.fail("replacement lost the old file")
+                    for temp in folder.glob(".t3c-tmp-*"):
+                        self.assertEqual(temp.stat().st_mode & 0o777, 0o600)
+
+    def test_partial_writes_and_descriptor_basename_validation(self):
+        import os
+        from t3compose import jsonio
+        self.assertTrue(hasattr(jsonio, "atomic_create"), "exclusive JSON API missing")
+        original = os.write
+        with patch.object(os, "write", lambda fd, data: original(fd, data[:2])):
+            jsonio.atomic_create(self.temp / "short.json", {"complete": True})
+        self.assertEqual((self.temp / "short.json").read_bytes(), b'{"complete":true}')
+        with patch.object(os, "write", return_value=0), self.assertRaises(OSError):
+            jsonio.atomic_create(self.temp / "zero.json", {})
+        self.assertFalse((self.temp / "zero.json").exists())
+        with patch.object(jsonio.fcntl, "flock", side_effect=OSError("synthetic lock failure")), self.assertRaises(OSError):
+            jsonio.atomic_create(self.temp / "unlocked.json", {})
+        self.assertFalse((self.temp / "unlocked.json").exists())
+        self.assertEqual(list(self.temp.glob(".t3c-tmp-*")), [])
+        fd = os.open(self.temp, os.O_RDONLY)
+        try:
+            for name in ("../outside.json", "/outside.json", "a/b.json", ".", ".."):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    jsonio.atomic_create(name, {}, dir_fd=fd)
+        finally:
+            os.close(fd)

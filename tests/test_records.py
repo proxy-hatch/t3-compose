@@ -419,3 +419,502 @@ class OfflineRecordSchema(OfflineTestCase):
         with self.assertRaises(SchemaError) as caught:
             validate_event_data("dispatch-intent", {**payloads["dispatch-intent"], "selection": selection})
         self.assertNotIn(secret, str(caught.exception) + caught.exception.path + caught.exception.rule)
+
+
+class OfflineRecordStore(OfflineTestCase):
+    def setUp(self):
+        import importlib.util
+        self.assertIsNotNone(importlib.util.find_spec("t3compose.records"), "durable store missing")
+        from t3compose import records, cli
+        self.r = records
+        self.enterContext(patch.object(cli, "helper_info", return_value={"commit": SHA_C}))
+        self.local = self.temp / "synthetic-local"
+        self.work = _valid_work()
+        self.payloads = _valid_event_payloads()
+        self.r.create_work(self.local, REPO_ID, "WORK-1", self.work, writer=MANAGER_WRITER)
+        self.directory = self.local / "state/records" / REPO_ID / "work/WORK-1"
+
+    def add(self, kind, data=None, **kwargs):
+        import subprocess
+        from t3compose import process
+        from tests.support import FakeRunner
+        fake = FakeRunner({"git": lambda argv, **kw: subprocess.CompletedProcess(argv, 0, SHA_A + "\n", "")})
+        with patch.object(process, "run", fake):
+            return self.r.append_event(self.local, REPO_ID, "WORK-1", kind,
+                                       self.payloads[kind] if data is None else data,
+                                       writer=kwargs.pop("writer", MANAGER_WRITER), **kwargs)
+
+    def load(self):
+        return self.r.load_work(self.local, REPO_ID, "WORK-1")
+
+    def command(self, *args):
+        from t3compose import process
+        from tests.support import guarded_helper_command
+        return process.run(guarded_helper_command("--local-dir", str(self.local), *args),
+                           capture_output=True, text=True, timeout=15)
+
+    def test_identity_immutable_work_and_unsafe_paths(self):
+        import os
+        for origin in (REPO_ID, "https://" + REPO_ID + ".git", "git@github.com:example-org/example-repo.git",
+                       "ssh://git@github.com/example-org/example-repo.git"):
+            self.assertEqual(self.r.normalize_repository(origin), REPO_ID)
+        self.assertEqual(self.r.normalize_repository(SYNTH_REPO), SYNTH_REPO)
+        before = (self.directory / "work.json").read_bytes()
+        for repo, work_id, writer in ((REPO_ID, "../escape", MANAGER_WRITER),
+                                     (REPO_ID, "WORK-1", LEAD_WRITER),
+                                     (SYNTH_REPO, "WORK-1", MANAGER_WRITER),
+                                     (REPO_ID, "WORK-1", MANAGER_WRITER)):
+            with self.subTest(repo=repo, work=work_id), self.assertRaises(ValueError):
+                self.r.create_work(self.local, repo, work_id, self.work, writer=writer)
+        for repo in ("../escape", "host/a/b", "https://host.test/a/../escape", "https://host.test/a/b?secret=x"):
+            with self.subTest(repo=repo), self.assertRaises(ValueError):
+                self.r.normalize_repository(repo)
+        self.assertEqual((self.directory / "work.json").read_bytes(), before)
+        for relative in ("state", "state/records", "state/records/" + REPO_ID + "/work/WORK-1/events"):
+            path = self.local / relative
+            saved = path.with_name(path.name + "-saved")
+            path.rename(saved)
+            path.symlink_to(saved, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                self.load()
+            path.unlink()
+            saved.rename(path)
+        event = self.add("next-action")
+        file = self.directory / "events/1.json"
+        file.unlink()
+        file.symlink_to(self.directory / "work.json")
+        with self.assertRaises(ValueError):
+            self.load()
+        file.unlink()
+        file.write_bytes(canonical_json(event))
+        os.chmod(file, 0o600)
+        self.assertEqual(self.load()["events"], [event])
+        with self.assertRaises(ValueError):
+            self.add("next-action", writer=LEAD_WRITER)
+
+    def test_failed_ancestor_sync_is_not_skipped_on_retry(self):
+        import os
+        local, parent = self.temp / "synthetic-retry-local", self.temp.stat()
+        original, attempts = os.fsync, []
+        def sync(fd):
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) == (parent.st_dev, parent.st_ino):
+                attempts.append(fd)
+                raise OSError("synthetic parent sync failure")
+            return original(fd)
+        with patch.object(os, "fsync", sync):
+            for count in (1, 2):
+                with self.assertRaises(ValueError):
+                    self.r.create_work(local, REPO_ID, "WORK-1", self.work, writer=MANAGER_WRITER)
+                self.assertEqual(len(attempts), count)
+        self.assertEqual(self.r.create_work(local, REPO_ID, "WORK-1", self.work, writer=MANAGER_WRITER)["work"], self.work)
+
+    def test_canonical_git_suffix_identities_round_trip(self):
+        import json
+        for repo in ("https://example.invalid/synthetic-owner/synthetic-repo.git.git", "synthetic/name.git"):
+            identity = self.r.normalize_repository(repo)
+            Path(identity).mkdir(parents=True)
+            self.assertEqual(self.r.normalize_repository(identity), identity)
+            writer = "manager@" + identity
+            work = {**self.work, "repository": identity, "writer": writer}
+            self.r.create_work(self.local, repo, "WORK-1", work, writer=writer)
+            self.assertEqual(self.r.load_work(self.local, identity, "WORK-1")["work"], work)
+            self.assertEqual(self.r.list_work(self.local, repo), {"works": [work], "damaged": []})
+            for action, extra in (("show", ("--work", "WORK-1")), ("list", ())):
+                result = self.command("work", action, "--repo", identity, *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(work, [json.loads(result.stdout)["work"]] if action == "show" else json.loads(result.stdout)["works"])
+
+    def test_corruption_isolation_full_history_and_partial_creation(self):
+        import json
+        event = self.add("next-action")
+        file = self.directory / "events/1.json"
+        for mutation in ({**event, "seq": 2}, {**event, "writer": LEAD_WRITER},
+                         {**event, "data": {}}, {**event, "helperCommit": "short"}):
+            file.write_bytes(canonical_json(mutation))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.load()
+            with self.assertRaises(ValueError):
+                self.add("decision")
+        file.write_bytes(canonical_json(event))
+        for name in ("2.json", "01.json", "unexpected.json"):
+            file.rename(file.with_name(name))
+            with self.assertRaises(ValueError):
+                self.load()
+            file.with_name(name).rename(file)
+        good = {**self.work, "workId": "WORK-2"}
+        self.r.create_work(self.local, REPO_ID, "WORK-2", good, writer=MANAGER_WRITER)
+        file.write_text("{broken")
+        listed = self.r.list_work(self.local, REPO_ID)
+        self.assertEqual([w["workId"] for w in listed["works"]], ["WORK-2"])
+        self.assertEqual(listed["damaged"][0]["workId"], "WORK-1")
+        result = self.command("work", "list", "--repo", REPO_ID)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout), listed)
+        partial = {**self.work, "workId": "WORK-3"}
+        with patch.object(self.r.jsonio, "atomic_create", side_effect=OSError("synthetic")), self.assertRaises(ValueError):
+            self.r.create_work(self.local, REPO_ID, "WORK-3", partial, writer=MANAGER_WRITER)
+        with self.assertRaises(ValueError):
+            self.r.load_work(self.local, REPO_ID, "WORK-3")
+        with self.assertRaises(ValueError):
+            self.r.create_work(self.local, REPO_ID, "WORK-3", partial, writer=MANAGER_WRITER)
+        self.assertEqual(self.r.list_work(self.local, SYNTH_REPO), {"works": [], "damaged": []})
+
+    def test_duplicate_dispatch_rounds_and_completed_native_provenance(self):
+        intent = self.add("dispatch-intent")
+        self.assertEqual(self.add("dispatch-intent"), intent)
+        for mutation in ({"briefDigest": DIGEST_B}, {"startCommit": SHA_B}, {"clientRequestId": "synthetic-second", "round": 2}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("dispatch-intent", {**self.payloads["dispatch-intent"], **mutation})
+        for kind in ("result", "dispatch-confirmed"):
+            with self.assertRaises(ValueError):
+                self.add(kind, {**self.payloads[kind], "taskId": "synthetic-wrong", "clientRequestId": "synthetic-missing"})
+        self.add("dispatch-confirmed")
+        second = {**self.payloads["dispatch-intent"], "clientRequestId": "synthetic-second", "round": 2, "startCommit": SHA_B}
+        with self.assertRaises(ValueError):
+            self.add("dispatch-intent", second)
+        for mutation in ({"taskId": "synthetic-wrong"}, {"worktreePath": "/tmp/synthetic-wrong"},
+                         *({"t3Status": {"state": state, "summary": "synthetic"}} for state in ("failed", "cancelled", "interrupted"))):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("result", {**self.payloads["result"], **mutation})
+        self.add("result")
+        for mutation in ({"startCommit": SHA_A}, {"reviewBase": SHA_B}, {"round": 3}, {"provisionedCommit": SHA_B}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.add("dispatch-intent", {**second, **mutation})
+        self.add("dispatch-intent", second)
+        with self.assertRaises(ValueError):
+            self.add("result")
+        with self.assertRaises(ValueError):
+            self.add("dispatch-confirmed", {**self.payloads["dispatch-confirmed"], "clientRequestId": "synthetic-second"})
+        self.assertEqual(len(self.load()["events"]), 4)
+
+    def test_reconciliation_only_proven_preservation_clears(self):
+        self.add("dispatch-intent")
+        reconciliation = {
+            "item": {"kind": "dispatch", "ref": 1}, "outcome": "stopped-and-preserved",
+            "t3Facts": {"clientRequestId": self.payloads["dispatch-intent"]["clientRequestId"],
+                        "state": "stopped", "childrenReconciled": True, "evidence": "synthetic T3 status"},
+            "gitFacts": {"commitsPreserved": True, "uncommittedPreserved": True,
+                         "evidence": "synthetic preservation record", "worktreePath": "/tmp/synthetic-preserved"},
+        }
+        second = {**self.payloads["dispatch-intent"], "clientRequestId": "synthetic-second", "round": 2}
+        for outcome in ("unknown-liveness", "in-flight", "not-started", "completed"):
+            self.add("reconciliation", {**reconciliation, "outcome": outcome, "t3Facts": {"unknown": "synthetic unknown"}})
+            with self.assertRaises(ValueError):
+                self.add("dispatch-intent", second)
+        for group, key, value in (("t3Facts", "childrenReconciled", False), ("t3Facts", "state", "running"),
+                                  ("gitFacts", "commitsPreserved", False), ("gitFacts", "uncommittedPreserved", False),
+                                  ("t3Facts", "clientRequestId", "synthetic-wrong"), ("gitFacts", "evidence", "")):
+            bad = copy.deepcopy(reconciliation)
+            bad[group][key] = value
+            with self.subTest(group=group, key=key), self.assertRaises(ValueError):
+                self.add("reconciliation", bad)
+        self.add("reconciliation", reconciliation)
+        self.add("dispatch-intent", second)
+        confirmed = {**self.payloads["dispatch-confirmed"], "clientRequestId": "synthetic-second"}
+        self.add("dispatch-confirmed", confirmed)
+        reconciliation["item"]["ref"] = "synthetic-second"
+        reconciliation["t3Facts"]["clientRequestId"] = "synthetic-second"
+        with self.assertRaises(ValueError):
+            self.add("reconciliation", reconciliation)
+        reconciliation["t3Facts"]["taskId"] = confirmed["taskId"]
+        reconciliation["gitFacts"]["worktreePath"] = confirmed["worktreePath"]
+        self.add("reconciliation", reconciliation)
+        self.add("dispatch-intent", {**second, "clientRequestId": "synthetic-third", "round": 3})
+
+    def test_deferred_transitions_refused_by_store_entrypoint_and_load(self):
+        import os
+        for kind in ("review", "finding-disposition", "lead-assignment", "restart", "handoff", "writer-transfer"):
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(ValueError, "RC-1c"):
+                    self.add(kind)
+                data = self.temp / "synthetic-data.json"
+                data.write_bytes(canonical_json(self.payloads[kind]))
+                result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--kind", kind,
+                                      "--file", str(data), "--writer", MANAGER_WRITER)
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertIn("RC-1c", result.stderr)
+                payload = copy.deepcopy(self.payloads[kind])
+                if "checkpoint" in payload:
+                    payload["checkpoint"]["lastSeq"] = 0
+                if kind == "writer-transfer":
+                    payload["checkpoint"]["lastSeq"] = 1
+                event = {"schemaVersion": 1, "seq": 1, "kind": kind, "data": payload,
+                         "at": "2026-10-28T00:00:00Z", "writer": MANAGER_WRITER, "helperCommit": SHA_C}
+                file = self.directory / "events/1.json"
+                file.write_bytes(canonical_json(event))
+                os.chmod(file, 0o600)
+                with self.assertRaises(ValueError):
+                    self.load()
+                file.unlink()
+
+    def test_routing_input_recorder_and_reference_mismatches(self):
+        refs = self.r.record_routing_input(self.local, REPO_ID, "WORK-1", task=_routing_task(), context=None,
+                                           policy_digest=DIGEST_A, writer=MANAGER_WRITER)
+        self.assertEqual(refs, {"inputRef": 1, "inputDigest": _routing_input_data()["inputDigest"], "policyDigest": DIGEST_A})
+        for kind in ("routing-classification", "routing-judgment"):
+            data = {**self.payloads[kind], **refs}
+            if kind == "routing-classification":
+                data["criteriaDigest"] = "sha256:" + hashlib.sha256(canonical_json(data["criteria"])).hexdigest()
+            for key, value in (("inputRef", 99), ("inputDigest", DIGEST_B), ("policyDigest", DIGEST_B)):
+                with self.subTest(kind=kind, key=key), self.assertRaises(ValueError):
+                    self.add(kind, {**data, key: value})
+            self.add(kind, data)
+        selection = {**self.payloads["routing-selection"], **refs}
+        self.add("routing-selection", selection)
+        with self.assertRaises(ValueError):
+            self.add("routing-selection", {**selection, "classificationRef": 1})
+        for task, context in (({**_routing_task(), "extra": True}, None),
+                              ({**_routing_task(), "intent": "x" * 16385}, None),
+                              (_routing_task(), {"priorClassificationRef": 99})):
+            with self.subTest(context=context), self.assertRaises(ValueError):
+                self.r.record_routing_input(self.local, REPO_ID, "WORK-1", task=task, context=context,
+                                             policy_digest=DIGEST_A, writer=MANAGER_WRITER)
+        self.assertEqual(len(self.load()["events"]), 4)
+
+    def git_fixture(self):
+        from t3compose import process
+        checkout = self.temp / "synthetic-checkout"
+        checkout.mkdir()
+        def git(*args):
+            return process.run(["git", "-C", str(checkout), *args], check=True, capture_output=True, text=True).stdout.strip()
+        git("init", "-b", "synthetic-main")
+        git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "--allow-empty", "-m", "synthetic base")
+        base = git("rev-parse", "HEAD")
+        git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "--allow-empty", "-m", "synthetic head")
+        head = git("rev-parse", "HEAD")
+        git("remote", "add", "origin", "git@github.com:example-org/example-repo.git")
+        return checkout, base, head
+
+    def test_checkout_head_and_start_object_with_real_git(self):
+        checkout, base, head = self.git_fixture()
+        self.assertEqual(self.r.normalize_repository(str(checkout)), REPO_ID)
+        reviewer = {**self.payloads["dispatch-intent"], "role": "reviewer", "provisionedCommit": head,
+                    "startCommit": base, "dispatchingCheckout": str(checkout)}
+        for mutation, override in (({"provisionedCommit": base}, checkout), ({"startCommit": SHA_C}, checkout), ({}, self.temp)):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.r.append_event(self.local, REPO_ID, "WORK-1", "dispatch-intent", {**reviewer, **mutation},
+                                    writer=MANAGER_WRITER, checkout=override)
+        self.r.append_event(self.local, REPO_ID, "WORK-1", "dispatch-intent", reviewer,
+                            writer=MANAGER_WRITER, checkout=checkout)
+        self.assertEqual(self.load()["events"][0]["data"]["startCommit"], base)
+
+    def test_all_supported_kinds_through_store_and_actual_commands(self):
+        import json
+        checkout, base, head = self.git_fixture()
+        payloads = self.payloads
+        refs = {"inputRef": 1, "inputDigest": payloads["routing-input"]["inputDigest"], "policyDigest": DIGEST_A}
+        for kind in ("routing-classification", "routing-judgment", "routing-selection"):
+            payloads[kind].update(refs)
+        payloads["routing-classification"]["criteriaDigest"] = "sha256:" + hashlib.sha256(canonical_json(payloads["routing-classification"]["criteria"])).hexdigest()
+        payloads["dispatch-intent"].update(dispatchingCheckout=str(checkout), provisionedCommit=head)
+        payloads["op-result"]["intentRef"] = 10
+        payloads["scope"]["decisionRef"] = 12
+        kinds = [k for k in payloads if k not in {"review", "finding-disposition", "lead-assignment", "restart", "handoff", "writer-transfer"}]
+        for via_cli in (False, True):
+            work_id = "WORK-cli" if via_cli else "WORK-api"
+            work = {**self.work, "workId": work_id}
+            data_file = self.temp / "synthetic-input.json"
+            data_file.write_bytes(canonical_json(work))
+            args = ("--repo", REPO_ID, "--work", work_id)
+            if via_cli:
+                result = self.command("work", "new", *args, "--file", str(data_file), "--writer", MANAGER_WRITER)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["work"], work)
+                self.assertEqual(self.command("work", "new", *args, "--file", str(data_file), "--writer", MANAGER_WRITER).returncode, 2)
+            else:
+                self.r.create_work(self.local, REPO_ID, work_id, work, writer=MANAGER_WRITER)
+            for seq, kind in enumerate(kinds, 1):
+                for valid in (False, True):
+                    data = payloads[kind] if valid else {**payloads[kind], "syntheticSecret": "do-not-echo"}
+                    if via_cli:
+                        data_file.write_bytes(canonical_json(data))
+                        result = self.command("event", "add", *args, "--file", str(data_file), "--kind", kind, "--writer", MANAGER_WRITER)
+                        self.assertEqual(result.returncode, 0 if valid else 2, (kind, result.stderr))
+                        self.assertNotIn("do-not-echo", result.stderr)
+                        if valid:
+                            self.assertEqual(json.loads(result.stdout)["seq"], seq)
+                    elif valid:
+                        self.r.append_event(self.local, REPO_ID, work_id, kind, data, writer=MANAGER_WRITER)
+                    else:
+                        with self.assertRaises(ValueError):
+                            self.r.append_event(self.local, REPO_ID, work_id, kind, data, writer=MANAGER_WRITER)
+                history_bad = {
+                    "routing-classification": {"inputRef": 99}, "routing-judgment": {"policyDigest": DIGEST_B},
+                    "routing-selection": {"classificationRef": 1}, "dispatch-intent": {"reviewBase": SHA_B},
+                    "dispatch-confirmed": {"clientRequestId": "synthetic-missing"}, "result": {"taskId": "synthetic-missing"},
+                    "check": {"checkId": "synthetic-missing"}, "criterion-evidence": {"criterionId": "synthetic-missing"},
+                    "op-intent": {}, "op-result": {"target": "synthetic-wrong"}, "scope": {"decisionRef": 1},
+                    "reconciliation": {"item": {"kind": "dispatch", "ref": 99}},
+                }
+                if kind in history_bad:
+                    bad = {**payloads[kind], **history_bad[kind]}
+                    if via_cli:
+                        data_file.write_bytes(canonical_json(bad))
+                        result = self.command("event", "add", *args, "--file", str(data_file), "--kind", kind, "--writer", MANAGER_WRITER)
+                        self.assertEqual((result.returncode, result.stdout), (2, ""), kind)
+                    else:
+                        with self.assertRaises(ValueError):
+                            self.r.append_event(self.local, REPO_ID, work_id, kind, bad, writer=MANAGER_WRITER)
+            shown = self.command("work", "show", *args)
+            self.assertEqual(shown.returncode, 0, shown.stderr)
+            self.assertEqual(len(json.loads(shown.stdout)["events"]), 15)
+        self.assertEqual(self.command("work", "list", "--repo", REPO_ID).returncode, 0)
+        self.assertEqual(self.command("work", "show", "--repo", REPO_ID, "--work", "missing").returncode, 2)
+
+    def test_two_real_processes_same_sequence_different_kinds(self):
+        import os
+        import subprocess
+        import sys
+        from tests.support import BOOTSTRAP_PATH
+        script = self.temp / "synthetic-racer.py"
+        script.write_text('''import os, sys
+from t3compose import cli, records
+from pathlib import Path
+local, kind, ready, release = sys.argv[1:]
+original = records.jsonio.atomic_create
+def publish(path, value, **kwargs):
+    os.write(int(ready), b"R")
+    os.read(int(release), 1)
+    return original(path, value, **kwargs)
+records.jsonio.atomic_create = publish
+cli.helper_info = lambda: {"commit": "3" * 40}
+try:
+    data = {"action": "synthetic next"} if kind == "next-action" else {"question": "synthetic?", "answer": "yes", "decidedBy": "synthetic owner", "date": "2026-10-28"}
+    records.append_event(Path(local), "github.com/example-org/example-repo", "WORK-1", kind, data, writer="manager@github.com/example-org/example-repo")
+except ValueError:
+    sys.exit(2)
+''')
+        ready_r, ready_w = os.pipe()
+        release_r, release_w = os.pipe()
+        children = []
+        try:
+            for kind in ("next-action", "decision"):
+                children.append(subprocess.Popen([sys.executable, "-I", "-S", "-B", str(BOOTSTRAP_PATH),
+                    str(script), str(self.local), kind, str(ready_w), str(release_r)],
+                    pass_fds=(ready_w, release_r), stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+            import select
+            for _ in children:
+                self.assertTrue(select.select([ready_r], [], [], 15)[0], "writer barrier timed out")
+                self.assertEqual(os.read(ready_r, 1), b"R")
+            os.write(release_w, b"GG")
+            outputs = [child.communicate(timeout=15) for child in children]
+            self.assertEqual(sorted(c.returncode for c in children), [0, 2], outputs)
+            files = list((self.directory / "events").iterdir())
+            self.assertEqual([p.name for p in files], ["1.json"])
+            before = files[0].read_bytes()
+            winner = self.load()["events"][0]
+            self.assertEqual(winner["kind"], ("next-action", "decision")[[c.returncode for c in children].index(0)])
+            self.assertEqual(files[0].read_bytes(), before)
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate()
+            for fd in (ready_r, ready_w, release_r, release_w):
+                os.close(fd)
+
+    def test_import_and_register_have_no_state_or_process_effects(self):
+        from t3compose import cli, process
+        with patch("builtins.open", side_effect=AssertionError("read")), \
+                patch.object(Path, "open", side_effect=AssertionError("read")), \
+                patch.object(process, "run", side_effect=AssertionError("process")):
+            importlib.reload(self.r)
+            registry = cli.Registry(cli.Parser(prog="synthetic"))
+            self.r.register(registry)
+            self.assertEqual(set(registry.validate()), {("work", "new"), ("work", "show"), ("work", "list"), ("event", "add")})
+
+    def test_nonobject_corruption_and_unsafe_temporary_isolate_work(self):
+        import os
+        event = self.add("next-action")
+        file = self.directory / "events/1.json"
+        for invalid in ([], None, "synthetic-invalid"):
+            file.write_bytes(canonical_json(invalid))
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    self.load()
+                self.assertEqual(len(self.r.list_work(self.local, REPO_ID)["damaged"]), 1)
+        file.write_bytes(canonical_json(event))
+        temporary = file.with_name(".t3c-tmp-99999999-" + "a" * 32 + ".tmp")
+        temporary.symlink_to(file)
+        with self.assertRaises(ValueError):
+            self.load()
+        temporary.unlink()
+        temporary.write_bytes(b"partial helper temporary")
+        os.chmod(temporary, 0o600)
+        self.assertEqual(self.load()["events"], [event])
+        self.assertTrue(temporary.exists())
+        original_stat = os.stat
+        def disappear(name, *args, **kwargs):
+            if name == temporary.name:
+                temporary.unlink()
+            return original_stat(name, *args, **kwargs)
+        with patch.object(os, "stat", disappear):
+            self.assertEqual(self.load()["events"], [event])
+
+    def test_history_joins_and_fabricated_stored_dispatch_retry(self):
+        import os
+        for kind in ("op-result", "scope", "reconciliation", "dispatch-confirmed", "result"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                self.add(kind)
+        for kind, key in (("check", "checkId"), ("criterion-evidence", "criterionId")):
+            with self.assertRaises(ValueError):
+                self.add(kind, {**self.payloads[kind], key: "synthetic-missing"})
+        intent = self.add("op-intent")
+        for key, value in (("opId", "synthetic-wrong"), ("target", "synthetic-wrong"), ("commit", SHA_A), ("intentRef", 99)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.add("op-result", {**self.payloads["op-result"], "intentRef": intent["seq"], key: value})
+        decision = self.add("decision", {"question": "synthetic?", "answer": {"unknown": "pending"},
+                                         "decidedBy": {"unknown": "pending"}, "date": {"unknown": "pending"}})
+        with self.assertRaises(ValueError):
+            self.add("scope", {**self.payloads["scope"], "decisionRef": decision["seq"]})
+        self.add("scope", {"decisionRef": "synthetic-external-decision", "scope": "synthetic changed scope"})
+        self.assertEqual(self.load()["effectiveWork"]["scope"], "synthetic changed scope")
+        self.assertEqual(self.load()["work"], self.work)
+        dispatch = self.add("dispatch-intent")
+        with self.assertRaises(ValueError):
+            self.add("dispatch-intent", {**self.payloads["dispatch-intent"], "role": "feature-lead", "clientRequestId": "synthetic-lead"})
+        file = self.directory / "events/5.json"
+        file.write_bytes(canonical_json({**dispatch, "seq": 5}))
+        os.chmod(file, 0o600)
+        with self.assertRaises(ValueError):
+            self.load()
+
+    def test_actual_command_duplicate_writer_retry_and_preservation(self):
+        import json
+        checkout, _, head = self.git_fixture()
+        intent = {**self.payloads["dispatch-intent"], "dispatchingCheckout": str(checkout), "provisionedCommit": head}
+        data_file = self.temp / "synthetic-dispatch.json"
+        def add(kind, data, expected, extra=()):
+            data_file.write_bytes(canonical_json(data))
+            result = self.command("event", "add", "--repo", REPO_ID, "--work", "WORK-1", "--writer", MANAGER_WRITER,
+                                  "--kind", kind, "--file", str(data_file), *extra)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            return json.loads(result.stdout) if expected == 0 else None
+        first = add("dispatch-intent", intent, 0)
+        self.assertEqual(add("dispatch-intent", intent, 0), first)
+        from t3compose import process
+        for target in (checkout, self.temp / "synthetic-missing-checkout"):
+            self.assertEqual(add("dispatch-intent", intent, 0, ("--checkout", str(target))), first)
+        process.run(["git", "-C", str(checkout), "update-ref", "HEAD", head + "^"], check=True, capture_output=True)
+        self.assertEqual(add("dispatch-intent", intent, 0, ("--checkout", str(checkout))), first)
+        add("dispatch-intent", {**intent, "clientRequestId": "synthetic-stale", "round": 2}, 2)
+        process.run(["git", "-C", str(checkout), "update-ref", "HEAD", head], check=True, capture_output=True)
+        second = {**intent, "clientRequestId": "synthetic-second", "round": 2}
+        add("dispatch-intent", second, 2)
+        add("dispatch-confirmed", self.payloads["dispatch-confirmed"], 0)
+        add("dispatch-intent", second, 2)
+        preservation = {
+            "item": {"kind": "dispatch", "ref": 1}, "outcome": "stopped-and-preserved",
+            "t3Facts": {"clientRequestId": intent["clientRequestId"], "state": "stopped",
+                        "childrenReconciled": True, "evidence": "synthetic T3 facts",
+                        "taskId": self.payloads["dispatch-confirmed"]["taskId"]},
+            "gitFacts": {"commitsPreserved": True, "uncommittedPreserved": True,
+                         "evidence": "synthetic artifact archive", "worktreePath": self.payloads["result"]["worktreePath"]},
+        }
+        add("reconciliation", {**preservation, "t3Facts": {"unknown": "synthetic unknown"}}, 2)
+        add("dispatch-intent", second, 2)
+        add("reconciliation", preservation, 0)
+        self.assertEqual(add("dispatch-intent", second, 0)["seq"], 4)
+        add("dispatch-intent", {**second, "briefDigest": DIGEST_B}, 2)
+        self.assertEqual(len(self.load()["events"]), 4)

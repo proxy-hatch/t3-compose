@@ -1,12 +1,14 @@
 # Record format and schema contract
 
-> **Status: RC-1a (part 1 of 3).** Defines the record layout, `work.json`
+> **Status: RC-1b (part 2 of 3).** Implements the durable store and preserves
+> RC-1a's record layout, `work.json`
 > schema, event envelope schema, the 21 event-kind data schemas, explicit
 > unknown rules and the pure validation API in `t3compose.schema`. RC-1 is
 > complete only after RC-1c merges: RC-1a implements pure schema validation;
-> RC-1b adds durable persistence, history/provenance enforcement and
+> RC-1b adds durable persistence, dispatch/routing history enforcement and
 > `work new|show|list` plus `event add`; RC-1c adds checkpoint
-> computation/verification, recovery and `work snapshot|reconcile|repair`.
+> computation/verification, CD-4 review/finding/lead history, recovery and
+> `work snapshot|reconcile|repair`.
 
 ## Storage layout and identities
 
@@ -143,4 +145,103 @@ Every `events/<seq>.json` envelope requires exact keys:
 - `SCHEMA_VERSION = 1`, `MAX_ROUTING_INPUT_BYTES = 16384`, `EVENT_KINDS`, `EVENT_SCHEMAS`.
 - `SchemaError(path, rule)`: `ValueError` subclass with `.path` and `.rule`; never echoes raw input values or secrets.
 - `validate_work(value) -> None`, `validate_event(value) -> None`, `validate_event_data(kind, data, path="event.data") -> None`, `validate_routing_input(value, path="routingInput") -> str`.
-- **Deferred to RC-1b/RC-1c:** Persistence, atomic/exclusive file writes, cross-event history/provenance enforcement (writer ownership, active lead lookup, review/finding existence, input/policy freshness, duplicate-writer block, checkout HEAD checks), checkpoint digest computation/verification, recovery, and CLI registration.
+- **RC-1b/RC-1c boundary:** Durable APIs and implemented history are specified
+  below. Review/finding/lead history, checkpoint verification and recovery await c.
+
+## Durable store API and history
+
+RC-1b implements part 2 of 3. The Engineering manager's revised boundary of
+**2026-10-28** assigns CD-4 history enforcement to RC-1c: review event-sequence
+references, finding identities across rounds, disposition joins, author and
+current-lead provenance/currency. The store refuses `review`,
+`finding-disposition`, `lead-assignment`, `restart`, `handoff`, `writer-transfer`
+on append AND load with a sanitized RC-1c error. These shapes remain validated
+by `schema`. Check sources, including Feature lead and Worker, remain recorded;
+EV-1 decides verification after c. All downstream gates still wait for c.
+
+Public functions in `t3compose.records` (all arguments are Python values):
+
+- `normalize_repository(repo) -> str`: identity, HTTPS/SSH origin or checkout path.
+- `create_work(local_dir, repo, work_id, value, *, writer) -> dict`.
+- `load_work(local_dir, repo, work_id) -> dict`.
+- `list_work(local_dir, repo) -> {works, damaged}`; caller checks `damaged`.
+- `append_event(local_dir, repo, work_id, kind, data, *, writer, checkout=None)`
+  returns the stored envelope. No retry after exclusive collision.
+- `record_routing_input(local_dir, repo, work_id, *, task, context, policy_digest,
+  writer) -> {inputRef, inputDigest, policyDigest}` computes the digest using
+  `schema.validate_routing_input` and appends the canonical input.
+- `RecordError` is a sanitized `ValueError`; schema failures use `SchemaError`.
+  Filesystem/process failures become sanitized `RecordError` at the store edge.
+
+Create/load return `{work, events, effectiveWork}`. `work` is immutable;
+`effectiveWork` applies successive non-null scope/acceptance/requiredChecks
+replacements. Every load/append validates schema and the complete contiguous
+prefix starting at 1. Filenames are unpadded decimal sequence plus `.json`;
+nonmatching envelopes, gaps, aliases and unknown files fail that work. Recognized
+helper temporaries are ignored, never removed by b. Work list isolates damaged
+work. Each path component below the selected state root is opened without
+following symlinks; files must be regular, private, owned by the current user.
+A new work directory is reserved exclusively; its events directory is durable
+before `work.json` is published. Creation also syncs reused ancestors, since
+a previous creator may have failed before syncing them. Incomplete creation lacks usable metadata and
+cannot be silently adopted by another create. No index file exists.
+
+History rules:
+
+- Every envelope uses the work's writer. Request identity must match stored
+  repository/work/writer. Transfers remain refused until prefix verification.
+- Dispatch request IDs are unique. Exact payload retries return their existing
+  intent; stored duplicate intents are corruption. Worker and Feature lead
+  intents block another writer until a completed result or proven preservation.
+  Confirmation binds a unique native task/thread and never clears the block.
+- Every intent's review base equals work.reviewBase. Worker round 1 starts there;
+  subsequent Worker rounds increment by one and start at the latest Worker
+  result commit, or the preceding Worker start when no result exists. A Reviewer
+  uses `reviewBase` as reviewed base and `startCommit` as reviewed head;
+  `provisionedCommit` always records the actual dispatching checkout HEAD.
+  HEAD is checked on new append, not re-read while replaying historical events.
+  Optional checkout verification also checks the start commit object.
+- Results join a confirmation by task ID, require completed status evidence and
+  matching known worktree path, and carry full result/parent commits. A task has
+  one completed result. Interrupted/failed/cancelled result shapes are supported
+  by schema but refused by this store, and never clear duplicate-writer blocks.
+- Dispatch reconciliation `item.ref` names an intent sequence or request ID.
+  Only `stopped-and-preserved` clears: `t3Facts` requires matching
+  `clientRequestId`, `state: "stopped"`, `childrenReconciled: true`, nonempty
+  `evidence`, and matching `taskId` when confirmed. `gitFacts` requires
+  `commitsPreserved: true`, `uncommittedPreserved: true`, nonempty `evidence`
+  and `worktreePath` (matching the confirmation when known). These are recorded
+  coordinator observations, not a live T3 query. Unknown/other outcomes do not
+  clear. Unsupported preservation claims are refused, never trusted by label.
+- Classifications/judgments/selections join existing routing input with exact
+  input/policy digests; selection's classification/judgment must name the same
+  input and digests. Retry context references an existing classification.
+  Classification criteria digest and input risk facts must agree. No routing
+  policy choice or network call occurs here.
+- Operation IDs are unique; results join their intent's ID/operation/target/commit.
+  Integer scope decision references name a resolved prior decision; text refs
+  name external decisions. Check/criterion IDs must exist in effective scope.
+
+## Atomic JSON APIs and temporary ownership
+
+`jsonio.atomic_replace(path, value, *, dir_fd=None)` and
+`jsonio.atomic_create(path, value, *, dir_fd=None)` write canonical UTF-8 JSON
+and return None. With `dir_fd`, path is one basename in that open directory;
+otherwise its parent must exist. Create uses an exclusive hard link and raises
+`FileExistsError` on collision; replace uses rename. Both use a same-directory
+0600 regular temporary, file fsync before publication, directory fsync afterward,
+then temporary cleanup and another directory fsync. An error after publication
+may leave the complete new file; callers must inspect before retrying.
+
+Reserved temporary names are `.t3c-tmp-<positive PID>-<32 lowercase hex>.tmp`.
+Creation briefly serializes a private umask override and restores the prior
+mask even if open fails, so mode is 0600 from first visibility. The creator
+holds an exclusive advisory `flock` on the inode through writing,
+publication and cleanup. Future c repair must require this exact name, regular
+file, current UID, mode 0600, link count 1 or 2, proof the named PID is dead
+(`kill(pid, 0)` yields ESRCH), AND a nonblocking exclusive inode lock, then
+recheck path/inode identity before unlinking. A live/reused PID, permission error,
+symlink, unknown name or lock conflict is never an orphan. Dead-PID evidence
+closes the create-before-inode-lock window. Unrelated files are never removed;
+this reserved namespace is a cooperative protocol, not protection from hostile
+same-user filesystem edits. b implements no repair or crash-recovery command.
