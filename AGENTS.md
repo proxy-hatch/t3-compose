@@ -45,8 +45,10 @@ requests as the rapid-ship Worker App, with a short-lived installation token
 scoped to t3-compose, never under Shawn's account. It confirms that GitHub
 records the App as each pull request's author. The App lacks the workflows
 permission (known from its use in rapid-ship), so Shawn pushes changes under
-`.github/workflows/`. Shawn merges t3-compose pull requests, squash only; agents
-never merge. On a managed repository, that repository's identity rules apply;
+`.github/workflows/`. Shawn merges t3-compose pull requests today, squash only.
+That is not a standing rule: a managed repository's own rules decide who
+merges, and rapid-ship's flight mode lets agents approve and merge pull
+requests. On a managed repository, that repository's identity rules apply;
 for rapid-ship, its Worker App commands.
 
 These rules are instructional. A child can still push other branches with
