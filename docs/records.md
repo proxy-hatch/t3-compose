@@ -100,6 +100,11 @@ Every `events/<seq>.json` envelope requires exact keys:
    - `inputRef` (`pos_int`), `inputDigest` (`sha256_digest`), `policyDigest` (`sha256_digest`), `domain` (`"SOFTWARE_ENGINEERING" | "OTHER"`), `difficulty` (`"EASY" | "MEDIUM" | "CHALLENGING"`), `reason` (`text`), `basis` (`"jev-failure" | "low-confidence" | "mixed-or-unclear" | "manual"`).
 4. **`routing-selection`**:
    - `inputRef` (`pos_int`), `inputDigest` (`sha256_digest`), `policyDigest` (`sha256_digest`), `classificationRef` (`pos_int | null`, null only for `role == "text-helper"`), `role` (`"worker" | "reviewer" | "feature-lead" | "text-helper"`), `round` (`"first" | "corrections"`), `reviewScope` (`"code" | "document" | "corrections-delta" | null`, non-null iff `role == "reviewer"`), `tier` (`"easy" | "medium" | "challenging"`, never `"easy"` for `reviewer` or `feature-lead`), `floorsApplied` (`list[fact_id]`), `escalation` (`bool`), `selection` (`selection_obj`, never pool for `reviewer` or `feature-lead`), `chosenPoolAccount` (`text | null`, non-null iff pool `selection`), `skippedPoolAccounts` (`list[{"providerInstanceId": <text>, "reason": <text>}]`), `availabilityReason` (`text`), `fallbackReason` (`text | null`), `configDigest` (`sha256_digest`), `catalogReadAt` (`utc_timestamp`), `catalogDigest` (`sha256_digest`), `quotaStateDigest` (`sha256_digest`).
+   - Optional `billing`: exactly `"per-token"` or absent. Null and other values
+     are invalid. Existing subscription records without it remain valid.
+     Routing sets it for every final metered Worker selection and reports it
+     in `route select` output. Schema validation adds no instance/model naming
+     heuristic; driver eligibility is enforced by routing against the catalog.
 5. **`dispatch-intent`**:
    - `role` (`worker|reviewer|feature-lead|text-helper`), `round` (`pos_int`), `clientRequestId` (`work_id`), `briefPath` (`text`), `briefDigest` (`sha256_digest`), `selection` (`selection_obj`), `provisionedCommit` (`commit_sha`), `startCommit` (`commit_sha`), `reviewBase` (`commit_sha`), `dispatchingCheckout` (`text`), `isolation` (`"worktree" | "shared"`).
 6. **`dispatch-confirmed`**:

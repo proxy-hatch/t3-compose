@@ -145,6 +145,8 @@ class OfflineRoutingFixture(OfflineTestCase):
         self.assertEqual(output['providerInstanceId'], data['chosenPoolAccount'] or data['selection']['providerInstanceId'])
         self.assertEqual(output['options'], data['selection']['options'])
         self.assertEqual(output['model'], data['selection']['model'])
+        self.assertEqual(output.get('billing'), data.get('billing'))
+        self.assertEqual('billing' in output, 'billing' in data)
         self.assertEqual(self.state_path.read_bytes(), state)
         self.assertEqual(data['configDigest'], digest(self.cfg_path))
         self.assertEqual(data['catalogDigest'], digest(self.catalog_path))
@@ -386,7 +388,13 @@ class OfflineRouting(OfflineRoutingFixture):
             self.save()
             for role in ('worker', 'reviewer', 'feature-lead'):
                 if role == 'worker':
-                    self.assertIsNotNone(self.selected(role=role)['fallbackReason'])
+                    selected = self.selected(role=role)
+                    if driver == 'pi':
+                        self.assertIsNone(selected['fallbackReason'])
+                        self.assertEqual(selected['billing'], 'per-token')
+                    else:
+                        self.assertIsNotNone(selected['fallbackReason'])
+                        self.assertNotIn('billing', selected)
                 else:
                     self.refused(role=role, code=5)
             self.provider(MASTER)['driverKind'] = driver
@@ -529,6 +537,7 @@ class OfflineRouting(OfflineRoutingFixture):
         from t3compose.routing import CatalogError, parse_catalog
         self.judge(domain='OTHER')
         preference = self.cfg['modelPreferences']['non-engineering']['medium']
+        self.cfg['availabilityFallback']['chains'] = []
         preference['options'] = {'fastMode': False}
         model = next(m for m in self.provider(MASTER)['models'] if m['id'] == preference['model'])
         model['options'] = [{'id': 'fastMode', 'values': ['false']}]
@@ -621,3 +630,153 @@ class SimulatedRoutingQuota(OfflineRoutingFixture):
         self.assertEqual(data['chosenPoolAccount'], ACCOUNTS[1])
         self.assertIsNotNone(data['fallbackReason'])
         self.assertEqual(len(data['skippedPoolAccounts']), 1)
+
+
+class OfflineMeteredRouting(OfflineRoutingFixture):
+    def setUp(self):
+        super().setUp()
+        # A subscription-looking instance and model must still be metered by driver.
+        self.metered = copy.deepcopy(self.cfg['availabilityFallback']['chains'][0]['to'][0])
+        self.subscription = copy.deepcopy(self.cfg['modelPreferences']['non-engineering']['medium'])
+        self.provider(DIRECT)['driverKind'] = 'pi'
+        self.cfg['modelPreferences']['software-engineering']['medium'] = self.metered
+        self.cfg['availabilityFallback']['chains'] = [
+            {'tier': 'medium', 'from': self.metered, 'to': [self.subscription]}]
+        self.save()
+        self.judge()
+
+    def test_metered_preference_records_and_reports_billing_via_real_cli(self):
+        data = self.selected(child=True)
+        self.assertEqual(data['selection'], self.metered)
+        self.assertEqual(data['billing'], 'per-token')
+        self.assertIsNone(data['fallbackReason'])
+        self.assertIsNone(data['chosenPoolAccount'])
+        self.assertEqual(data['skippedPoolAccounts'], [])
+        self.assertEqual(self.events()[-1]['data'], data)
+
+    def test_metered_fallback_records_billing_and_retains_pool_skips(self):
+        pool = {**self.cfg['easyWorker'], 'roles': ['worker']}
+        self.cfg['modelPreferences']['software-engineering']['medium'] = pool
+        self.cfg['availabilityFallback']['chains'] = [
+            {'tier': 'medium', 'from': pool, 'to': [self.metered]}]
+        for account in ACCOUNTS:
+            self.provider(account)['models'] = []
+        self.save()
+        data = self.selected(child=True)
+        self.assertEqual(data['billing'], 'per-token')
+        self.assertEqual(data['selection'], self.metered)
+        self.assertTrue(data['fallbackReason'])
+        self.assertEqual([s['providerInstanceId'] for s in data['skippedPoolAccounts']], ACCOUNTS)
+
+    def test_subscription_looking_metered_and_metered_looking_subscription(self):
+        self.assertEqual(self.selected()['billing'], 'per-token')
+        instance = 'pi-synth-openrouter'
+        selection = {'providerInstanceId': instance, 'model': 'glm-5.3', 'options': {}}
+        self.cfg['modelPreferences']['software-engineering']['medium'] = selection
+        for driver in ('codex', 'claudeAgent', 'antigravity'):
+            with self.subTest(driver=driver):
+                self.provider(instance)['driverKind'] = driver
+                self.save()
+                self.assertNotIn('billing', self.selected())
+
+    def test_other_roles_use_one_subscription_fallback_or_refuse(self):
+        for role in ('reviewer', 'feature-lead'):
+            with self.subTest(role=role):
+                data = self.selected(role=role)
+                self.assertEqual(data['selection'], self.subscription)
+                self.assertIn('medium Worker', data['fallbackReason'])
+                self.assertNotIn('billing', data)
+        self.provider(MASTER)['constraints'] = ['synthetic capacity refusal']
+        self.save()
+        for role in ('reviewer', 'feature-lead'):
+            output = self.refused(role=role, code=5)
+            self.assertIn('fallbackReason', output)
+            self.assertNotIn('billing', output)
+
+    def test_metered_target_excludes_roles_and_never_follows_its_own_chain(self):
+        self.cfg['modelPreferences']['software-engineering']['medium'] = self.subscription
+        self.cfg['availabilityFallback']['chains'].insert(0,
+            {'tier': 'medium', 'from': self.subscription, 'to': [self.metered]})
+        self.provider(MASTER)['canRunChildTask'] = False
+        self.save()
+        self.assertEqual(self.selected()['billing'], 'per-token')
+        for role in ('reviewer', 'feature-lead'):
+            self.refused(role=role, code=5)
+        self.provider(DIRECT)['canRunCrossProviderChildTask'] = False
+        self.save()
+        self.refused(code=5)
+
+    def test_challenging_pi_preference_and_target_cannot_authorize_worker(self):
+        self.cfg['modelPreferences']['software-engineering']['challenging'] = self.metered
+        self.cfg['availabilityFallback']['chains'] = [
+            {'tier': 'challenging', 'from': self.metered, 'to': [self.subscription]}]
+        self.save()
+        self.judge('CHALLENGING')
+        data = self.selected()
+        self.assertEqual(data['selection'], self.subscription)
+        self.assertNotIn('billing', data)
+        self.cfg['modelPreferences']['software-engineering']['challenging'] = self.subscription
+        self.cfg['availabilityFallback']['chains'].insert(0,
+            {'tier': 'challenging', 'from': self.subscription, 'to': [self.metered]})
+        self.provider(MASTER)['canRunChildTask'] = False
+        self.save()
+        self.refused(code=5)
+
+    def test_pool_pi_is_unavailable_for_medium_easy_and_text_helper(self):
+        pool = {**self.cfg['easyWorker'], 'roles': ['worker']}
+        self.cfg['modelPreferences']['software-engineering']['medium'] = pool
+        self.cfg['availabilityFallback']['chains'] = []
+        for account in ACCOUNTS:
+            self.provider(account)['driverKind'] = 'pi'
+        self.save()
+        self.refused(code=5)
+        self.refused(role='text-helper', code=5)
+        self.judge('EASY')
+        self.refused(code=5)
+
+    def test_direct_role_limit_still_applies_to_metered_worker(self):
+        self.cfg['modelPreferences']['software-engineering']['medium'] = {
+            **self.metered, 'roles': ['reviewer']}
+        self.save()
+        data = self.selected()
+        self.assertEqual(data['selection'], self.subscription)
+        self.assertNotIn('billing', data)
+        self.assertIn('role', data['fallbackReason'])
+
+    def test_pi_master_still_invalid_and_unknown_driver_still_unavailable(self):
+        self.provider(MASTER)['driverKind'] = 'pi'
+        self.save()
+        self.refused(code=3)
+        self.provider(MASTER)['driverKind'] = 'claudeAgent'
+        self.provider(DIRECT)['driverKind'] = 'synthetic-unknown'
+        self.save()
+        self.assertNotIn('billing', self.selected())
+        self.cfg['availabilityFallback']['chains'] = []
+        self.save()
+        self.refused(code=5)
+
+    def test_metered_catalog_checks_remain_exact(self):
+        original = copy.deepcopy(self.provider(DIRECT))
+        for field, value in [('canRunChildTask', False), ('canRunCrossProviderChildTask', False),
+                             ('constraints', ['synthetic capacity']), ('models', [])]:
+            with self.subTest(field=field):
+                self.provider(DIRECT).update(original)
+                self.provider(DIRECT)[field] = value
+                self.save()
+                data = self.selected()
+                self.assertEqual(data['selection'], self.subscription)
+                self.assertNotIn('billing', data)
+                self.assertTrue(data['fallbackReason'])
+        self.provider(DIRECT).update(original)
+        self.metered['options'] = {'fastMode': False}
+        model = next(m for m in self.provider(DIRECT)['models'] if m['id'] == self.metered['model'])
+        model['options'] = [{'id': 'fastMode', 'values': ['false']}]
+        self.save()
+        self.assertNotIn('billing', self.selected())
+        model['options'][0]['values'] = [False]
+        self.save()
+        self.assertEqual(self.selected()['billing'], 'per-token')
+
+    def test_failed_durable_append_never_reports_selection(self):
+        with patch.object(records, 'append_event', side_effect=records.RecordError('synthetic failure')):
+            self.refused(code=2, child=False)
