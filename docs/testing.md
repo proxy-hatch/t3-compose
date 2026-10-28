@@ -5,22 +5,20 @@ This spec describes HS-1's `tests/support.py` and test conventions. The
 
 ## Suite and labels
 
-`SUITE` means this command, run from the repository root:
+`SUITE` means this command, run from the repository root with the stable
+CPython 3.15 interpreter selected by uv's global pin:
 
 ```sh
-python3 -I -S -B -m unittest discover -s tests -t . -v
+PY="$(uv python find 3.15)"
+"$PY" -I -S -B -m unittest discover -s tests -t . -v
 ```
 
-Run it under both interpreters:
-
-```sh
-/usr/bin/python3 -I -S -B -m unittest discover -s tests -t . -v
-/opt/homebrew/bin/python3 -I -S -B -m unittest discover -s tests -t . -v
-```
-
-The supported floor is Python 3.9. `SUITE -p 'test_x.py'` selects one file.
-`-B` disables bytecode writes from startup. Importing `tests.support` also sets
-`sys.dont_write_bytecode = True`. Test runs leave no `__pycache__` directories.
+There is one interpreter: the supported floor is stable CPython 3.15
+(`sys.implementation.name == "cpython"`, `sys.version_info >= (3, 15)` and
+`sys.version_info.releaselevel == "final"`). `SUITE -p 'test_x.py'` selects one
+file. `-B` disables bytecode writes from startup. Importing `tests.support`
+also sets `sys.dont_write_bytecode = True`. Test runs leave no `__pycache__`
+directories.
 
 Every test class derives from `tests.support.OfflineTestCase`. Its name starts
 with `Offline`, or `Simulated` when it injects quota responses. Tests cover
@@ -37,8 +35,7 @@ path and guard. This includes `setUp`, the test, `tearDown` and registered
 cleanups, even when `setUp` omits `super()` or raises. Existing subclasses may
 still call `super().setUp()`. Nested runs get independent contexts and restore
 the outer guard, allowlist, environment, directory and default state on exit.
-`enterContextCompat(context)` remains the Python 3.9 equivalent of
-`TestCase.enterContext`: it registers a context exit with `addCleanup`.
+Tests use standard `TestCase.enterContext` and `contextlib` context managers.
 
 `self.temp` is a resolved directory created under the system `/tmp`, outside
 the checkout. Execution starts in its `work/` subdirectory. The harness

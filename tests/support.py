@@ -290,12 +290,6 @@ class OfflineTestCase(unittest.TestCase):
         """Allow a program for this test; never a blocked name, env or Python."""
         self._allow_program(program)
 
-    def enterContextCompat(self, context):
-        """TestCase.enterContext for the supported Python 3.9 interpreter."""
-        value = context.__enter__()
-        self.addCleanup(context.__exit__, None, None, None)
-        return value
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

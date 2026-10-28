@@ -2,8 +2,14 @@
 
 Read the [design](docs/superpowers/specs/2026-10-27-t3-compose-design.md) before
 planning or changing the package. Use the terms in [GLOSSARY.md](GLOSSARY.md).
-`SUITE` is `python3 -I -S -B -m unittest discover -s tests -t . -v`, run from
-the repository root under both the system and Homebrew Python interpreters.
+Resolve the stable CPython 3.15 interpreter selected by uv's global pin and run
+`SUITE` from the repository root:
+
+```sh
+PY="$(uv python find 3.15)"
+"$PY" -I -S -B -m unittest discover -s tests -t . -v
+```
+
 The [CLI spec](docs/cli.md) and [testing spec](docs/testing.md) describe the
 helper and its test harness.
 Every test class derives from the offline guard in `tests/support.py` and is
@@ -31,15 +37,21 @@ configuration directories, agy account or provider-instance names, T3 or Session
 IDs, or rapid-ship's task list. The one exception is the `Co-authored-by`
 trailer that GitHub generates on a squash commit when Shawn merges: it may
 carry his commit email ([plan decision 7](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md#decisions)),
-and agents never write it. Before it publishes, the Engineering manager checks
+and agents never write it. Before it publishes, the coordinator checks
 the commit messages and the pull request's title and body against the private
 identifier list in `.local/`.
 
 t3-compose is a public GitHub repository. Tasks land through pull requests after
-independent review of the final head. The Engineering manager coordinates, checks
-evidence and publishes. Workers edit project files and commit on their branch
-only. Workers and Reviewers do not push, open, edit or merge pull requests, or
-post to GitHub. Implementation and live pilots are pending.
+review and required check evidence on the final head. When a Task has a Feature
+lead, the lead's own review is the final-head review, with no separate Reviewer
+on that head, and the lead owns final-head review coordination and check
+evidence. Earlier-head Worker and Corrections reviews use independent Reviewers;
+a Task without a Feature lead also uses an independent Reviewer on its final
+head. The Engineering manager owns priorities across Tasks, shared interfaces,
+and delivery, operational and integration readiness. Workers edit project files
+and commit on their branch only. Workers and Reviewers do not push, open, edit
+or merge pull requests, or post to GitHub. Implementation and live pilots are
+pending.
 
 Shawn decided how t3-compose is published on 2026-10-27; see the
 [publication decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md#decisions-on-t3-compose-publication).

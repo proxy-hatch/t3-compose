@@ -9,25 +9,34 @@ guard.
 
 ## Invocation and root
 
-Run the entry point with Python 3.9 or later:
+Run the entry point with the stable CPython 3.15 interpreter selected by uv's
+global pin:
 
 ```sh
-python3 -I -S <root>/bin/t3c version
+PY="$(uv python find 3.15)"
+"$PY" -I -S <root>/bin/t3c version
 ```
 
-`bin/t3c` checks `sys.version_info >= (3, 9)`, `sys.flags.isolated` and
-`sys.flags.no_site`. Both `-I` and `-S` are required. Isolation excludes the
-usual environment and user path influences; `-S` disables site initialization.
-Calling the executable through its shebang alone does not supply these flags.
-An old interpreter or either missing flag causes exit 2. Stdout is empty.
-Stderr contains this line:
+`bin/t3c` checks `sys.implementation.name == "cpython"`,
+`sys.version_info >= (3, 15)`, `sys.version_info.releaselevel == "final"`,
+`sys.flags.isolated` and `sys.flags.no_site`. Both `-I` and `-S` are required.
+Isolation excludes the usual environment and user path influences; `-S`
+disables site initialization. Calling the executable through its shebang alone
+does not supply these flags and is not the documented invocation. An older
+interpreter, a pre-release (`alpha`, `beta` or `candidate`), a non-CPython
+runtime or either missing flag causes exit 2 before loading helper modules.
+Stdout is empty. Stderr contains this line:
 
 ```text
-Python 3.9+ with isolation and no site required; run: <python> -I -S <entry> version
+Stable CPython 3.15+ with isolation and no site required; run: PY="$(uv python find 3.15)" && "$PY" -I -S <entry> version
 ```
 
-`<python>` is `sys.executable`. `<entry>` is the resolved path of `bin/t3c`.
-Each is shell-quoted with `shlex.quote`. The suggestion always ends in `version`.
+`<entry>` is the resolved path of `bin/t3c`, shell-quoted with `shlex.quote`.
+The suggested command resolves `PY` through uv rather than repeating an
+unsupported `sys.executable`, and the helper never invokes uv or installs
+anything itself. The suggestion always ends in `version`. Moving to a newer
+stable minor release requires a deliberate global pin update and a Task that
+updates the floor and documented command.
 
 After the checks, the entry point sets `sys.dont_write_bytecode = True`.
 An additional `-B` is not required for the helper. It resolves its own path,
@@ -83,10 +92,11 @@ The root parser, group parsers and leaf parsers have help. These invocations
 succeed:
 
 ```sh
-python3 -I -S <root>/bin/t3c --help
-python3 -I -S <root>/bin/t3c version --help
-python3 -I -S <root>/bin/t3c --text --help
-python3 -I -S <root>/bin/t3c --text version --help
+PY="$(uv python find 3.15)"
+"$PY" -I -S <root>/bin/t3c --help
+"$PY" -I -S <root>/bin/t3c version --help
+"$PY" -I -S <root>/bin/t3c --text --help
+"$PY" -I -S <root>/bin/t3c --text version --help
 ```
 
 Help normally has the form `{"help":"<argparse help text>"}` on stdout.
@@ -190,7 +200,8 @@ Only `publish run` may exit with an arbitrary child status (`0`..`255`) via
 ## version and helper_info
 
 ```sh
-python3 -I -S <root>/bin/t3c version
+PY="$(uv python find 3.15)"
+"$PY" -I -S <root>/bin/t3c version
 ```
 
 `t3compose.cli.helper_info()` returns a new dictionary with the helper's
@@ -238,13 +249,12 @@ For each module name in `MODULES`, `Registry.load()` checks
 `importlib.util.find_spec("t3compose." + name)`. A `None` result skips that
 module. Found modules are imported and their `register(registry)` function is
 called once per parser build. Module imports and `register(registry)` must be
-cheap, deterministic, compatible with Python 3.9+, and free of side effects:
-they must not read configuration or state files, start subprocesses, write
-files or perform network/external calls. Every invocation (including `version`
-and `--help`) loads all present modules.
+cheap, deterministic, compatible with stable CPython 3.15+, and free of side
+effects: they must not read configuration or state files, start subprocesses,
+write files or perform network/external calls. Every invocation (including
+`version` and `--help`) loads all present modules.
 
-`Registry` enforces deterministic registration checks across Python 3.9 and
-later interpreters:
+`Registry` enforces deterministic registration checks:
 
 - Duplicate root command names, duplicate leaf names within a group, a group
   colliding with `version` (or an existing leaf), or a root leaf colliding with
@@ -374,10 +384,10 @@ both functions is 16 KiB (`16384` bytes), and a file of exactly `max_bytes`
 bytes is allowed. Neither function requires a top-level JSON object or validates
 a higher-level schema.
 
-To ensure deterministic behavior across Python 3.9 and Python 3.14+ without
-changing the process-wide Python integer string conversion limit, both JSON read
-functions reject any JSON integer token whose decimal digit count (excluding an
-optional leading `-` sign) exceeds 4,300 digits before converting it to `int`.
+To enforce an explicit integer token bound without changing the process-wide
+Python integer string conversion limit, both JSON read functions reject any
+JSON integer token whose decimal digit count (excluding an optional leading `-`
+sign) exceeds 4,300 digits before converting it to `int`.
 
 | Rejection | Result |
 |---|---|

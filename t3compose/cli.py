@@ -82,8 +82,6 @@ class _SubparsersAction(argparse._SubParsersAction):
     def add_parser(self, name, **kwargs):
         if "aliases" in kwargs:
             raise ValueError("command aliases are not supported")
-        if name in self._name_parser_map:
-            raise ValueError("duplicate command or group: " + name)
         return super().add_parser(name, **kwargs)
 
 

@@ -1,3 +1,4 @@
+import contextlib
 import unittest
 
 from tests.support import OfflineTestCase, ROOT
@@ -39,11 +40,21 @@ class OfflineLifecycle(OfflineTestCase):
         import urllib.request
         from t3compose.paths import local_dir
 
+        self.assertFalse(hasattr(OfflineTestCase, "enterContextCompat"))
         outer_temp, outer_cwd = self.temp, Path.cwd()
         outer_env, outer_local = dict(os.environ), local_dir()
         outer_socket, outer_popen = socket.socket, subprocess.Popen
         seen = []
+        entered_events = []
         owner = self
+
+        @contextlib.contextmanager
+        def sample_context(tag):
+            entered_events.append(("enter", tag))
+            try:
+                yield tag
+            finally:
+                entered_events.append(("exit", tag))
 
         class OfflineNested(OfflineTestCase):
             def setUp(self):
@@ -72,6 +83,8 @@ class OfflineLifecycle(OfflineTestCase):
                              lambda: subprocess.run(["/synthetic/bin/gh"])):
                     with owner.assertRaisesRegex(AssertionError, "offline guard"):
                         call()
+                owner.assertEqual(self.enterContext(sample_context(self._testMethodName)),
+                                  self._testMethodName)
                 self.addCleanup(lambda: owner.assertEqual(local_dir(), self.temp / ".local"))
                 if self._testMethodName == "test_setup_failure":
                     raise RuntimeError("synthetic setup failure")
@@ -110,6 +123,7 @@ class OfflineLifecycle(OfflineTestCase):
             self.assertEqual(len(result.errors), errors)
             self.assertEqual(len(seen), count)
             self.assertFalse(seen[-1].exists())
+            self.assertEqual(entered_events[-2:], [("enter", method), ("exit", method)])
             self.assertEqual(Path.cwd(), outer_cwd)
             self.assertEqual(dict(os.environ), outer_env)
             self.assertEqual(local_dir(), outer_local)

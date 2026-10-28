@@ -1,17 +1,27 @@
+from collections import namedtuple
 import contextlib
 import io
 import json
 import os
 import runpy
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.request
 
 from tests.support import AllowedPrograms, OfflineTestCase, ROOT
+
+
+_VersionInfo = namedtuple("_VersionInfo", ("major", "minor", "micro", "releaselevel", "serial"))
+
+
+def _synthetic_version_info(major, minor, micro, releaselevel, serial=0):
+    return _VersionInfo(major, minor, micro, releaselevel, serial)
 
 
 class OfflineCLI(OfflineTestCase):
@@ -35,13 +45,17 @@ class OfflineCLI(OfflineTestCase):
         self.assertEqual(result.stderr, "")
 
     def test_missing_either_flag_refuses_with_correct_command(self):
+        expected_entry = shlex.quote(str((ROOT / "bin/t3c").resolve()))
+        expected_message = (
+            "Stable CPython 3.15+ with isolation and no site required; "
+            f'run: PY="$(uv python find 3.15)" && "$PY" -I -S {expected_entry} version\n'
+        )
         for flags in ((), ("-I",), ("-S",)):
             with self.subTest(flags=flags):
                 result = self.run_cli("version", flags=flags)
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
-                self.assertIn("-I -S", result.stderr)
-                self.assertIn(str(ROOT / "bin/t3c"), result.stderr)
+                self.assertEqual(result.stderr, expected_message)
 
     def test_text_and_invalid_input(self):
         result = self.run_cli("--text", "version")
@@ -53,19 +67,65 @@ class OfflineCLI(OfflineTestCase):
             self.assertEqual(result.stdout, "")
             self.assertNotIn("synthetic-secret", result.stderr)
 
-    def test_help_respects_output_mode_and_old_python_refuses(self):
+    def test_help_respects_output_mode_and_entrypoint_runtime_policy(self):
+        from t3compose import cli
         for args in (("--help",), ("version", "--help")):
             result = self.run_cli(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage:", json.loads(result.stdout)["help"])
         result = self.run_cli("--text", "--help")
         self.assertTrue(result.stdout.startswith("usage:"))
-        err = io.StringIO()
-        with patch.object(sys, "version_info", (3, 8)), contextlib.redirect_stderr(err):
+
+        entry_path = ROOT / "bin/t3c"
+        expected_entry = shlex.quote(str(entry_path.resolve()))
+        expected_refusal = (
+            "Stable CPython 3.15+ with isolation and no site required; "
+            f'run: PY="$(uv python find 3.15)" && "$PY" -I -S {expected_entry} version\n'
+        )
+
+        refused_cases = (
+            ("older_3_14_final", "cpython", _synthetic_version_info(3, 14, 10, "final", 0), True, True),
+            ("alpha_3_15", "cpython", _synthetic_version_info(3, 15, 0, "alpha", 7), True, True),
+            ("beta_3_15", "cpython", _synthetic_version_info(3, 15, 0, "beta", 1), True, True),
+            ("candidate_3_15", "cpython", _synthetic_version_info(3, 15, 0, "candidate", 1), True, True),
+            ("non_cpython_pypy", "pypy", _synthetic_version_info(3, 15, 2, "final", 0), True, True),
+            ("missing_isolated", "cpython", _synthetic_version_info(3, 15, 2, "final", 0), False, True),
+            ("missing_no_site", "cpython", _synthetic_version_info(3, 15, 2, "final", 0), True, False),
+            ("missing_both_flags", "cpython", _synthetic_version_info(3, 15, 2, "final", 0), False, False),
+        )
+        for label, impl_name, ver_info, isolated, no_site in refused_cases:
+            with self.subTest(case=label):
+                out, err = io.StringIO(), io.StringIO()
+                fake_impl = SimpleNamespace(name=impl_name)
+                fake_flags = SimpleNamespace(isolated=int(isolated), no_site=int(no_site))
+                with patch.object(sys, "implementation", fake_impl), \
+                        patch.object(sys, "version_info", ver_info), \
+                        patch.object(sys, "flags", fake_flags), \
+                        patch.object(sys, "executable", "/synthetic/unsupported/python3"), \
+                        patch.object(cli, "main", side_effect=AssertionError("must not call main on refusal")), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as stopped:
+                        runpy.run_path(str(entry_path), run_name="__main__")
+                self.assertEqual(stopped.exception.code, 2)
+                self.assertEqual(out.getvalue(), "")
+                self.assertEqual(err.getvalue(), expected_refusal)
+                self.assertNotIn("/synthetic/unsupported/python3", err.getvalue())
+
+        # Stable final CPython 3.15 with both flags is accepted and dispatches to cli.main.
+        out, err = io.StringIO(), io.StringIO()
+        fake_impl = SimpleNamespace(name="cpython")
+        fake_flags = SimpleNamespace(isolated=1, no_site=1)
+        stable_ver = _synthetic_version_info(3, 15, 2, "final", 0)
+        with patch.object(sys, "implementation", fake_impl), \
+                patch.object(sys, "version_info", stable_ver), \
+                patch.object(sys, "flags", fake_flags), \
+                patch.object(cli, "main", return_value=0) as mocked_main, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             with self.assertRaises(SystemExit) as stopped:
-                runpy.run_path(str(ROOT / "bin/t3c"))
-        self.assertEqual(stopped.exception.code, 2)
-        self.assertIn("3.9+", err.getvalue())
+                runpy.run_path(str(entry_path), run_name="__main__")
+        self.assertEqual(stopped.exception.code, 0)
+        mocked_main.assert_called_once_with()
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
 
     def test_registry_missing_shared_groups_and_broken_modules(self):
         import t3compose
@@ -349,7 +409,7 @@ class OfflineCLI(OfflineTestCase):
                 self.assertIn("invalid arguments for " + expected_prog + "; use --help", err.getvalue())
                 self.assertNotIn("W1", err.getvalue())
 
-            # Invalid registrations fail deterministically across Python versions.
+            # Invalid registrations fail deterministically.
             bad_modules = (
                 # Duplicate leaf in shared group across modules
                 "def register(registry):\n"
@@ -745,7 +805,7 @@ class OfflineGuard(OfflineTestCase):
     def test_allowance_refuses_blocked_names_env_and_python(self):
         for name in ("security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish",
                      "claude", "codex", "agy", "pi",
-                     "env", "python", "python3", "python3.14"):
+                     "env", "python", "python3", "python3.15"):
             path = self.temp / name
             path.write_text("#!/bin/sh\nexit 0\n")
             path.chmod(0o755)

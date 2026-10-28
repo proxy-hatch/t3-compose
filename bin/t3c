@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Run explicitly as python3 -I -S /path/to/bin/t3c."""
+"""Run explicitly as PY="$(uv python find 3.15)" && "$PY" -I -S /path/to/bin/t3c."""
 import sys
 from pathlib import Path
 import shlex
 
-if sys.version_info < (3, 9) or not (sys.flags.isolated and sys.flags.no_site):
-    command = "{} -I -S {}".format(shlex.quote(sys.executable),
-                                    shlex.quote(str(Path(__file__).resolve())))
-    print("Python 3.9+ with isolation and no site required; run: " + command + " version",
+if (sys.implementation.name != "cpython" or
+        sys.version_info < (3, 15) or
+        sys.version_info.releaselevel != "final" or
+        not (sys.flags.isolated and sys.flags.no_site)):
+    command = 'PY="$(uv python find 3.15)" && "$PY" -I -S {}'.format(
+        shlex.quote(str(Path(__file__).resolve())))
+    print("Stable CPython 3.15+ with isolation and no site required; run: " + command + " version",
           file=sys.stderr)
     sys.exit(2)
 
