@@ -19,10 +19,12 @@ quality of the existing Claude-managed work while assigning bounded implementati
 to cheaper Workers. These goals and the quality criterion are owner requirements.
 
 Quality is evaluated against the applicable repository rules, approved designs,
-required checks, independent review of the final commit, and resolved review
-findings. A cheaper model never reduces those requirements. One successful pilot
-can demonstrate the workflow, but cannot establish general quality equivalence
-between models. The owner judges the pilot against the existing standard.
+required checks, review of the final commit (by the assigned Feature lead when a
+Task has one, or by a separate independent Reviewer when it does not; plan
+decision 13), and resolved review findings. A cheaper model never reduces those
+requirements. One successful pilot can demonstrate the workflow, but cannot
+establish general quality equivalence between models. The owner judges the pilot
+against the existing standard.
 
 ## Decision and alternatives
 
@@ -80,14 +82,23 @@ continue to supply those capabilities when required.
 
 The manager is the owner-facing Opus Session. It reads context, refines priorities,
 identifies dependencies, commissions design work, delegates edits, reconciles
-results and explains decisions. It may write task records and briefs. Project
-code, tests, configuration and documentation edits go to Workers, including small
-fixes and integration conflicts. Reading diffs and running checks remain allowed.
+results, explains decisions, and owns overall delivery accountability across
+features: cross-feature integration, integration tests in place and their
+evidence on the intended integrated result, operational readiness, dependencies
+and risks resolved or surfaced, and final delivery readiness to Shawn
+(plan decision 13). When no Feature lead is assigned, the manager also performs
+Task-level coordination, required-check execution or assignment, independent
+review coordination through the final head, and publication of the Task's pull
+request. It may write task records and briefs.
+Project code, tests, configuration and documentation edits go to Workers,
+including small fixes and integration conflicts. Coordinators make no project
+edits; reading diffs and running checks remain allowed.
 
 Workers own one brief and its named paths. They preserve other work, follow the
 project's test-first rules, report evidence and surface decisions outside the
 approved scope. They do not broaden their assignment or claim review authority.
-They commit on their branch only; the manager publishes (see
+They commit on their branch only; an assigned Feature lead publishes its Task's
+own pull request, and the manager publishes for Tasks without a lead (see
 [Checks and publication](#checks-and-publication)).
 
 Reviewers are separate Claude or Codex agents. They assess specification
@@ -95,10 +106,17 @@ compliance, repository standards, correctness and test adequacy against an exact
 base and head. They report findings without editing the reviewed tree. agy is
 never a Reviewer.
 
-Include an optional feature-lead role in version one. Use direct children for
-bounded independent tasks. Enable real feature leads only after the nested pilot.
-The package does not impose a new agent-count cap; the owner, runtime capacity,
-dependencies and exclusive file ownership determine safe parallelism.
+Include an optional feature-lead role in version one. When a Feature lead is
+assigned, it coordinates earlier independent reviews, runs or assigns required
+checks, personally reviews and clears the Task's final head (with no separate
+Reviewer dispatched for that final head), maintains current evidence and finding
+dispositions, publishes its Task's own pull request (without authority to merge
+or to change other Tasks' pull requests), and reports Task readiness to the
+manager; because a lead makes no project edits, its final-head review does not
+approve its own implementation (plan decision 13). Use direct children for
+bounded independent tasks. Enable real feature leads only after the nested
+pilot. The package does not impose a new agent-count cap; the owner, runtime
+capacity, dependencies and exclusive file ownership determine safe parallelism.
 
 ## Feature lead options
 
@@ -122,19 +140,42 @@ continues through direct delegation. One lead level is enough; leads do not crea
 other leads.
 
 The manager owns cross-feature priorities, shared interfaces, owner decisions,
-the global assignment record and final readiness reporting. A feature lead owns
-one approved feature brief, decomposition within that scope, its Worker/Reviewer
-dispatches and local integration coordination. It reports outcomes, blockers,
-changed interfaces and evidence to the manager. It delegates project edits and
-cannot approve its own implementation. Its software-engineering coordination
-route uses the configured selection at the Task's tier, at least medium;
-challenging engineering decisions use the challenging tier.
+the global assignment record, assigning feature leads, and overall delivery
+accountability: cross-feature integration, integration tests in place and their
+evidence on the intended integrated result, operational readiness, dependencies
+and risks resolved or surfaced, and final delivery readiness to Shawn
+(plan decision 13). A feature lead owns one approved feature brief,
+decomposition within that scope, its Worker and earlier-round Reviewer
+dispatches, local integration coordination, its Task's final-head review and
+verification, and publishing its Task's own pull request. When a feature lead is
+assigned, it must hold the original requirements, relevant designs and
+interfaces, the final diff, callers and tests, and the check and review evidence
+needed to personally review the final head. Under plan decision 13, when a Task
+has a feature lead, the lead's own review is the final-head review and no
+separate Reviewer reviews that head; reviews of earlier heads (Worker rounds and
+Corrections re-reviews) still use separate Reviewers, and Tasks without a
+feature lead still require a separate Reviewer on the final head. The lead runs
+or assigns required checks (including the repository's heavy required check),
+records its final-head review and finding dispositions, publishes its Task's own
+pull request under the repository's identity and privacy gates (without
+authority to merge or to change other Tasks' pull requests; the manager
+publishes for Tasks without a lead), and reports Task readiness, outcomes,
+blockers, changed interfaces and verified evidence to the manager. The manager
+uses a feature lead's verified Task evidence without routinely repeating the
+same final-head review. A Verified Task or PR-ready Task is distinct from
+integrated delivery readiness; no new deployment or merge authority or automatic
+readiness rule is introduced. A feature lead delegates project edits and makes
+no implementation edits itself, so it cannot approve its own implementation when
+it reviews a Worker's final head. Its software-engineering coordination route
+uses the configured selection at the Task's tier, at least medium; challenging
+engineering decisions use the challenging tier.
 
 Only the parent that created a T3 child manages that child's task lifecycle. Thus
-the lead manages its Workers; the master manages the lead. Leads own their feature's
-work records and return child task references and evidence; the manager alone owns
-the global assignment index. These are linked records, not competing copies of a
-global state store. A parent
+the lead manages its Workers; the master manages the lead. A lead cannot manage a
+child created by the manager merely because the lead owns final-head verification.
+Leads own their feature's work records and return child task references and
+evidence; the manager alone owns the global assignment index. These are linked
+records, not competing copies of a global state store. A parent
 completion wake is not assumed while a lead still has live children; important
 owner questions and cross-feature blockers must use T3's supported pending-question
 mechanism or a verified upward-report path. Native nested delegation, escalation
@@ -142,7 +183,7 @@ delivery and recovery must pass a scratch pilot before real feature leads are en
 On lead failure, reconcile its thread, child statuses and artifacts before replacing
 it. An existing child is never duplicated because a new lead cannot find its state.
 
-The manager's no-project-edit rule is instructional in version one. Existing
+The coordinator no-project-edit rule is instructional in version one. Existing
 repository hooks and CI keep their actual enforcement. Do not claim the package
 creates a security boundary or that full-access agents cannot bypass its records.
 
@@ -349,7 +390,12 @@ A local work record stores only coordination and acceptance facts:
 - Dispatch intent ID, T3 task IDs, selected role/model, provisioned and start
   commits, and returned worktree path.
 - Result commits, check commands/outcomes and links or paths to their evidence.
-- Review task ID, reviewed base/head, findings, responses and review verdict.
+- Review event reference (its sequence number), reviewer provenance (an
+  independent Reviewer's T3 task ID, or the assigned Feature lead's thread
+  without a fabricated task ID), reviewed base/head, review evidence path and
+  digest (required for a lead review, optional for a task review), findings,
+  responses, dispositions and review verdict, plus manager-recorded Feature lead
+  assignments (plan decision 13).
 - External operation intent and confirmed result for each push and pull request,
   and for other operations where the repository requires it.
 - Owner decisions and next action, with an explicit unknown value where unresolved.
@@ -359,22 +405,41 @@ by a branch name, because T3 can rename a child's branch after provisioning (F8)
 Read a branch name from the worktree when one is needed.
 
 Each record has exactly one coordinator writer. For direct tasks that is the
-manager; for lead-owned tasks it is the assigned feature lead. The lead persists
-intent in its own feature record before dispatch, without waiting for a manager
-round trip. The manager owns the global index and reads linked feature records
-for readiness decisions; it does not rewrite a live lead's record. Workers return
-their evidence through T3. Ownership transfer requires reconciling the old writer
+manager; for lead-owned tasks it is the assigned feature lead. The manager alone
+assigns a feature lead in the record; the latest assignment event names the
+current lead. Assignments obey the same single-writer and reconciled-transfer
+rules; manager-only assignment does not permit editing a live lead's record.
+The lead persists intent in its own feature record before dispatch, without
+waiting for a manager round trip. The manager owns the global index and reads linked feature records
+for delivery readiness decisions; it does not rewrite a live lead's record.
+Workers return their claims and artifacts through T3; a Worker's claim alone is
+insufficient for check verification, whereas check evidence verified by the
+manager, the current feature lead, a Reviewer or an assigned Session counts
+(plan decision 13). Ownership transfer requires reconciling the old writer
 and its children first; uncertain liveness blocks that transfer. The nested pilot
 must test interrupted record writes and recovery without duplicate dispatches.
 Keep runtime records out of tracked source and out of the managed project,
 under t3-compose's Git-ignored `.local/state/`, keyed by repository identity. Existing account policy/state files
 remain canonical; the new record refers to them rather than copying their contents.
 
-Use a small Python standard-library helper that handles the bounded
-Jev request, writes records atomically, validates required fields and checks whether
-evidence covers the current commit. It launches no agents and polls nothing. The exact storage format
-and command names are builder choices. Preserve historical attempts and reviews.
-Missing or invalid records block the affected acceptance decision, not unrelated work.
+Use a small Python standard-library helper on CPython 3.15 or later (stable
+releases only, `sys.version_info.releaselevel == "final"`, selected through `uv`'s
+global pin `uv python pin 3.15 --global` and resolved with
+`PY="$(uv python find 3.15)"`; plan decision 14), run with `-I -S`, that handles
+the bounded Jev request, writes records atomically, validates required fields and
+checks whether evidence covers the current commit. Invocation uses
+`"$PY" -I -S <root>/bin/t3c version`; the suite uses
+`"$PY" -I -S -B -m unittest discover -s tests -t . -v`. On 2026-10-28, Python.org's
+[official downloads listing](https://www.python.org/downloads/) lists stable
+CPython 3.15.2, released 2026-10-25
+([Python 3.15.2](https://www.python.org/downloads/release/python-3152/)), making 3.15 the
+current stable minor; the runtime floor is 3.15, and Python 3.9 and the macOS
+system interpreter are not supported. The helper launches no agents, polls
+nothing, and performs no runtime network lookup to discover Python releases; a
+move to a newer stable minor is an explicit owner pin and Task update. The exact
+storage format and command names are fixed in the implementation plan (including
+plan decision 15). Preserve historical attempts and reviews. Missing or invalid
+records block the affected acceptance decision, not unrelated work.
 
 ## Manager threads and bases
 
@@ -437,7 +502,14 @@ the takeover exception under
 
 1. Reconcile existing work before assigning anything. Read the applicable guides,
    run the repository's settings doctor, inspect the approved plan and check that
-   no other manager or Worker owns the work being assigned.
+   no other manager, Feature lead or Worker owns the work being assigned. When a
+   Feature lead is assigned to a Task, it runs the Task's local dispatch,
+   earlier-round independent reviews, required checks, its own final-head review
+   and its Task's pull request publication below with the original requirements,
+   relevant designs and interfaces, callers and tests in context; when there is
+   no Feature lead, the manager performs that Task-level coordination,
+   commissions an independent Reviewer through the final head, and publishes the
+   Task's pull request (plan decision 13).
 2. Write a brief with objective, scope, the provisioned commit, start commit and
    review base, owned paths, acceptance criteria, interfaces, dependencies, the
    fast checks to run and return format. Unknown product decisions go to Shawn;
@@ -452,46 +524,80 @@ the takeover exception under
    commit. T3 starts the worktree at that HEAD and copies no uncommitted changes.
    Before any edit, the Worker checks HEAD as
    [Manager threads and bases](#manager-threads-and-bases) describes.
-5. On completion, inspect the returned artifacts and commit. A completed T3 turn
-   does not prove the brief is complete. Reconcile uncertain dispatches before
-   launching another writer; use T3 status/history rather than blind retries.
-6. Commission independent review of the exact review base and head. Every review
-   round gets a new T3 delegated task containing the brief, prior findings,
-   responses and unresolved objections. Never use the child's backing thread to
-   start that round.
+5. On completion, the responsible coordinator (the assigned Feature lead, or the
+   manager when there is no lead) inspects the returned artifacts and commit. A
+   completed T3 turn does not prove the brief is complete. Reconcile uncertain
+   dispatches before launching another writer; use T3 status/history rather than
+   blind retries. Only the parent that created a T3 child manages that child's
+   lifecycle.
+6. Commission independent review of the exact review base and head for earlier
+   Worker rounds and Corrections re-reviews, and for the final head when the
+   Task has no Feature lead. Every delegated review round gets a new T3
+   delegated task containing the brief, prior findings, responses and unresolved
+   objections; never use the child's backing thread to start that round. When a
+   Task has an assigned Feature lead, the lead personally reviews the exact
+   final head against the original requirements, relevant designs and
+   interfaces, the final diff, callers and tests, and the check and review
+   evidence, records its review evidence and clears that head; no separate
+   Reviewer reviews that final head, and because the lead makes no project
+   edits, this does not approve its own implementation (plan decision 13).
 7. Send Corrections to a Worker with a brief whose start commit is the previous
    head; the review base does not change. Any new commit invalidates prior final
-   acceptance until its required checks and review are current. The manager never
-   marks an unresolved finding resolved merely because the Worker disagrees. For a
-   factual dispute, obtain one second independent review of the original finding
-   and evidence. Unresolved acceptance-blocking disputes and product decisions go
-   to Shawn.
-8. Mark work verified only when all acceptance criteria have evidence, required
-   checks passed on the current head and independent review cleared it. Keep
-   verified, PR-ready and merged distinct. Integration and publishing follow the
-   repository's existing authority and identity rules, and the manager publishes
-   (see [Checks and publication](#checks-and-publication)). The package grants no
-   new authority.
+   acceptance until its required checks and review are current. Neither the
+   manager nor a Feature lead marks an unresolved finding resolved merely because
+   the Worker disagrees. For a factual dispute, obtain one second independent
+   review of the original finding and evidence. Unresolved acceptance-blocking
+   disputes and product decisions go to Shawn.
+8. Mark work verified only when all acceptance criteria have current evidence,
+   required checks passed on the current head, and the current head is cleared
+   by the current Feature lead's final-head review (when the Task has a lead) or
+   by an independent Reviewer (when it does not). An assigned Feature lead
+   publishes its Task's own pull request (without authority to merge or to
+   change other Tasks' pull requests) and reports Task readiness and verified
+   evidence to the manager; the manager publishes for Tasks without a lead. The
+   manager retains overall delivery accountability across features—cross-feature
+   integration, integration tests in place and their evidence on the intended
+   integrated result, operational readiness, and resolved or surfaced
+   dependencies and risks—and reports final delivery readiness to Shawn, using
+   lead evidence without routinely repeating the same Task-level final-head
+   review (plan decision 13). Delivery readiness is not a per-Task verification
+   input. Keep verified, PR-ready, merged and integrated delivery readiness
+   distinct. Integration and publishing follow the repository's existing
+   authority and identity rules (see
+   [Checks and publication](#checks-and-publication)). The package grants no
+   new deployment or merge authority and introduces no automatic readiness rule.
 
-T3 notifications wake the manager. There are no parallel watcher processes or
-polling loops. An interrupted manager reconstructs decisions from the local record
-and reconciles actual T3/Git state before continuing.
+T3 notifications wake the dispatching parent. There are no parallel watcher
+processes or polling loops. An interrupted manager or Feature lead reconstructs
+decisions from the local record and reconciles actual T3/Git state before
+continuing.
 
 ## Checks and publication
 
-Workers run the fast checks that the brief names. The manager runs a repository's
-heavy required check on the final head, or assigns one Session at a time to run
-it. The check runs in a worktree whose HEAD is the commit under check and where no
-writer is active, normally the Worker's worktree after its turn ends; it never
-moves or writes the owner's checkout. Heavy checks run one at a time on the whole
-machine, across all manager threads (F6); how managers coordinate this is left to
-the implementation plan. A check on another commit does not cover the head. For
-the heavy check, this refines step 1 of the
-[accepted review policy](#accepted-review-policy); required checks still cover the
-final head.
+Workers run the fast checks that the brief names. When a Feature lead is
+assigned, the lead runs a repository's heavy required check on the final head,
+or assigns one Session at a time to run it; when there is no Feature lead, the
+manager does so (plan decision 13). The check runs in a clean linked worktree
+whose HEAD is the commit under check and where no writer is active, normally the
+Worker's worktree after its turn ends; it never moves or writes the owner's
+checkout. Before running or assigning the check in a writer's worktree, the
+parent that created that writer confirms that it has completed; only the parent
+that created a T3 child manages its lifecycle, so a Feature lead cannot manage a
+child created by the manager merely because the lead owns final-head
+verification. Heavy checks run one at a time on the whole machine, across all
+manager threads, Feature leads and assigned Sessions (F6); how coordinators
+serialize this is left to the implementation plan. A check on another commit
+does not cover the head, and a Worker's claim alone does not satisfy check
+verification; verified check evidence from the manager, the current Feature
+lead, a Reviewer or an assigned Session is required. For the heavy check, this
+refines step 1 of the [accepted review policy](#accepted-review-policy);
+required checks still cover the final head.
 
 Workers commit on their branch only. Workers and Reviewers do not push, open, edit
-or merge pull requests, or post to GitHub. The manager records each publication
+or merge pull requests, or post to GitHub. An assigned Feature lead publishes
+its Task's own pull request, and the manager publishes for Tasks without a lead
+(plan decision 13); lead publication grants no authority to merge or to change
+other Tasks' pull requests. The publishing coordinator records each publication
 intent and its confirmed result. It publishes under the repository's identity
 rules (for rapid-ship, its Worker App commands), from a Session rooted in that
 repository or in t3-compose, as those rules require (F4). It publishes the
@@ -506,8 +612,10 @@ with `link_pull_request`.
 A private-identifier match blocks publication in every repository until
 Corrections or Shawn resolves it. A match in a commit's message or tree returns
 to the Worker in a Corrections round whose brief permits rewriting only the
-unpublished commits needed to remove it. The manager fixes its own branch name,
-pull request title and body. Shawn decides when an identifier seems necessary.
+unpublished commits needed to remove it. The publishing coordinator (the
+assigned Feature lead for its Task, or the manager when there is no lead) fixes
+its own branch name, pull request title and body. Shawn decides when an
+identifier seems necessary.
 
 These rules are instructional. Every child inherits full access and the owner's
 local `gh` login, and Codex and agy children run without rapid-ship's hook until
@@ -520,29 +628,33 @@ boundary. For t3-compose's `main` ruleset, see [t3-compose repository workflow](
 
 t3-compose is the public GitHub repository `proxy-hatch/t3-compose`, created on
 2026-10-27 (re-home decision 4), under the MIT License (publication decision 3).
-Its build manager publishes from its t3-compose-rooted Session, because a
-rapid-ship-rooted Claude Session cannot push to it (F4). Tasks land through pull
-requests after independent review of the final head. Workers commit on their
-branch only. `AGENTS.md` describes this workflow and, once the helper exists, its
-test command.
+Its build manager (or an assigned Feature lead for its Task's own pull request)
+publishes from its t3-compose-rooted Session, because a rapid-ship-rooted Claude
+Session cannot push to it (F4). Tasks land through pull requests after
+final-head review (by the assigned Feature lead when a Task has one, or by a
+separate independent Reviewer when it does not; plan decision 13).
+Workers commit on their branch only. `AGENTS.md` describes this workflow and,
+once the helper exists, its test command.
 
-On t3-compose, only the manager publishes, as the rapid-ship Worker App and never
-under Shawn's account (publication decision 1). On a managed repository, that
-repository's identity rules apply instead, as
+On t3-compose, only the manager or an assigned Feature lead (for its Task's own
+pull request, without authority to merge or to change other Tasks' pull
+requests) publishes, as the rapid-ship Worker App and never under Shawn's
+account (publication decision 1; plan decision 13). On a managed repository,
+that repository's identity rules apply instead, as
 [Checks and publication](#checks-and-publication) describes. To publish to
-t3-compose, the manager mints a short-lived installation token for the Worker
-App, scoped to t3-compose, and runs `git push` and `gh` with the token only in
-their environment. The App's ID, installation account and Keychain item are
-personal configuration in `.local/`. An interim token step in `.local/` serves
-until the implementation plan decides where the helper provides it. The token
-step clears Git's other credential helpers and refuses SSH transport for the
-push, so a push cannot fall back to Shawn's stored credentials or SSH key.
+t3-compose, the publishing coordinator mints a short-lived installation token
+for the Worker App, scoped to t3-compose, and runs `git push` and `gh` with the
+token only in their environment. The App's ID, installation account and Keychain
+item are personal configuration in `.local/`. An interim token step in `.local/`
+serves until the implementation plan decides where the helper provides it. The
+token step clears Git's other credential helpers and refuses SSH transport for
+the push, so a push cannot fall back to Shawn's stored credentials or SSH key.
 
-When the manager opens a pull request, it names the repository, head branch and
-base branch explicitly. Before it reports a Task PR-ready, it also confirms that
-GitHub records the Worker App as the pull request's author. If this check fails,
-or the pull request's head commit differs from the reviewed head, the manager
-reports the failure to Shawn and does not report the Task PR-ready.
+When the publishing coordinator opens a pull request, it names the repository,
+head branch and base branch explicitly. Before it reports a Task PR-ready, it
+also confirms that GitHub records the Worker App as the pull request's author.
+If this check fails, or the pull request's head commit differs from the reviewed
+head, it reports the failure to Shawn and does not report the Task PR-ready.
 
 The Worker App lacks the workflows permission, so it cannot push changes under
 `.github/workflows/`; Shawn pushes those changes. This is known from the same
@@ -551,10 +663,11 @@ App's use in rapid-ship and not yet observed on t3-compose.
 Shawn merges t3-compose pull requests today, squash only (publication decision
 2). A managed repository's own rules decide who merges; rapid-ship's flight
 mode lets agents approve and merge pull requests. Workers and Reviewers still
-never merge. On 2026-10-28, the manager read the repository settings
-through the GitHub API: only squash merges are allowed, and GitHub deletes a
-pull request's branch when it merges. `main` has a GitHub ruleset (publication
-decision 4): a pull request is required, force
+never merge, and a Feature lead's publication of its Task's pull request grants
+no authority to merge on t3-compose. On 2026-10-28, the manager read the
+repository settings through the GitHub API: only squash merges are allowed, and
+GitHub deletes a pull request's branch when it merges. `main` has a GitHub
+ruleset (publication decision 4): a pull request is required, force
 pushes and deletion are blocked, and there are no bypass actors. A child can
 still push other branches with Shawn's login, and `main` accepts changes only
 through pull requests. Someone holding Shawn's login could still edit the
@@ -566,13 +679,13 @@ such as pull request titles, bodies and comments, never hold the owner's email,
 keys or tokens, the Jev key file's path, paths under the owner's configuration
 directories, agy account or provider-instance names, T3 or Session IDs, or
 rapid-ship's task list; write "recorded in `.local/`" instead. Before it
-publishes, the manager checks the commit messages and the pull request's title
-and body against the private identifier list in `.local/`. Commit author and
-committer fields do carry the owner's email, which F7 found already public.
-On 2026-10-28, Shawn accepted the `Co-authored-by` trailers that GitHub generates
-on a squash commit when he merges (plan decision 7). They may carry his commit
-email; agents never write it. These trailers are the only exception for
-commit-message text. They sit on the base branch, normally
+publishes, the publishing coordinator checks the commit messages and the pull
+request's title and body against the private identifier list in `.local/`.
+Commit author and committer fields do carry the owner's email, which F7 found
+already public. On 2026-10-28, Shawn accepted the `Co-authored-by` trailers that
+GitHub generates on a squash commit when he merges (plan decision 7). They may
+carry his commit email; agents never write it. These trailers are the only
+exception for commit-message text. They sit on the base branch, normally
 outside the review ranges that privacy checks cover. A match in a squash commit
 that a branch update brings into a range goes to Shawn.
 
@@ -582,7 +695,9 @@ Approved designs are the starting point. A new finding can justify a revision;
 record the evidence and the affected decision. Commission difficult software design
 work to the configured challenging software-engineering selection, and difficult
 non-engineering design work to the configured challenging non-engineering selection.
-Use an independent reviewer to check the proposed change.
+Use independent review for earlier design heads and Corrections re-reviews.
+The current Feature lead reviews a led Task's exact final design head; without a
+lead an independent Reviewer does so, under plan decision 13.
 Refinements that change product scope or an owner decision go to Shawn before
 dependent implementation. Unaffected tasks can continue.
 
@@ -599,13 +714,22 @@ and its task list are recorded in `.local/`; tracked files do not copy them.
 rapid-ship work waits for the pilot (re-home decision 2). Until t3-compose is
 built and the pilot starts in the rapid-ship-bound manager thread, do not resume,
 review, check or publish any rapid-ship task, and do not choose the pilot task.
-t3-compose design, planning and implementation continue.
+t3-compose design, planning and implementation continue. On 2026-10-28
+(plan decision 16), Shawn scoped a temporary exception while `t3c` is built:
+rapid-ship development is temporarily unblocked under a private prose setup run
+by a rapid-ship-bound manager thread. That rapid-ship-bound prose manager first
+reconciles the old Claude work as below and dispatches nothing without Shawn's
+approval. t3-compose agents still do no rapid-ship work (they read and run
+nothing in any rapid-ship checkout), and the formal helper-backed pilot (L9)
+still waits for `t3c` and its existing handoff gates.
 
-At pilot start, reconcile the recorded state with live Git and T3 state before
-taking over any work: the old Claude manager's workflow journals, worktrees,
-branches, commits, dirty files, PRs, review heads and unanswered decisions.
-Quota-blocked or quiet does not prove all its children have stopped. Establish
-that old dispatch has ceased and resolve active writers before T3 takes ownership.
+At pilot start (and before the temporary rapid-ship-bound prose manager takes
+over any work under plan decision 16), reconcile the recorded state with live
+Git and T3 state before taking over any work: the old Claude manager's workflow
+journals, worktrees, branches, commits, dirty files, PRs, review heads and
+unanswered decisions. Quota-blocked or quiet does not prove all its children
+have stopped. Establish that old dispatch has ceased and resolve active writers
+before T3 takes ownership.
 
 Preserve every worktree and uncommitted change. Failed or null workflow results
 are incomplete evidence, not proof that nothing was written. Existing dirty trees
@@ -624,10 +748,12 @@ pilot start, test the exception before any recovery brief relies on it.
 
 ## Pilot and validation
 
-The pilot runs from the rapid-ship-bound manager thread once t3-compose is built
-(re-home decisions 1 and 2). Starting it there is a first manager context
-restart: that thread reconstructs state from the records. It then reconciles
-existing work, as described under
+The formal helper-backed pilot (L9) runs from the rapid-ship-bound manager
+thread once t3-compose is built and its handoff gates pass (re-home decisions 1
+and 2; plan decision 16's temporary prose setup in a rapid-ship-bound manager
+thread does not replace `t3c` or satisfy L9). Starting the formal pilot there is
+a first manager context restart: that thread reconstructs state from the
+records. It then reconciles existing work, as described under
 [Taking over existing Claude work](#taking-over-existing-claude-work), and chooses
 one bounded unfinished task whose requirements are approved and whose files have
 no active writer. Choose the Worker tier from its risk; preserve the challenging
@@ -636,7 +762,8 @@ under plan decision 12 does not lower any first-round floor.
 
 The first live pilot must demonstrate:
 
-- A real T3 writer on the intended branch/base, followed by a separate reviewer.
+- A real T3 writer on the intended branch/base, followed by a separate Reviewer
+  in this first pilot without a Feature lead; lead enablement follows L10/FL-2.
 - The repository's required checks and evidence for every acceptance criterion.
 - A recorded outcome for every review finding, with re-review after edits.
 - Preserved unrelated work and no manager-authored project edits.
@@ -658,10 +785,10 @@ dispatch reconciliation. Label them offline. During the pilot, inspect
 Jev decisions on examples covering engineering/non-engineering,
 mixed scope and easy-but-sensitive tasks. Record mistaken cheap routes separately
 from unnecessary expensive routes. Use Shawn's qualitative feedback to tune the
-configured threshold; no pre-pilot accuracy study is required. Until the pilot
-starts, pilot the router with public or synthetic examples. Once the pilot starts
-and lifts the rapid-ship hold, router pilots may also use real task inputs,
-recorded with each decision. Label synthetic evaluation explicitly.
+configured threshold; no pre-pilot accuracy study is required. Until the formal
+pilot starts, pilot the `t3c` router with public or synthetic examples. Once the
+formal pilot starts and lifts the `t3c` hold, router pilots may also use real
+task inputs, recorded with each decision. Label synthetic evaluation explicitly.
 Use injected quota responses to test rotation without deliberately exhausting an
 account; label that test simulated. Live quota failover remains unverified until
 an actual exhaustion event is observed. Test failure and refusal paths as well as
@@ -675,22 +802,52 @@ and a Compose upstream adapter for later. Treat the pilot as evidence for
 proceeding, not proof of universal quality parity.
 
 The implementation plan is merged. The runtime helper, manager skill and live
-pilots remain to be built. Moving the project does not authorize takeover of
-rapid-ship work.
+pilots remain to be built. Moving the project does not by itself authorize
+takeover of rapid-ship work; on 2026-10-28 Shawn scoped a temporary private
+prose setup in a rapid-ship-bound manager thread while `t3c` is built (plan
+decision 16), while t3-compose agents still do no rapid-ship work and the formal
+`t3c` pilot remains gated.
 
 ## Accepted review policy
 
 Shawn approved choice 1 on 2026-10-27: independently review every Task.
+On 2026-10-28, Shawn refined step 4 and step 5 for Tasks that have a Feature
+lead (plan decision 13): when a Task has a Feature lead, earlier heads (Worker
+rounds and Corrections re-reviews) still go to separate Reviewers, and the
+Feature lead's own review is the final-head review, with no separate Reviewer
+dispatched for that head; when a Task has no Feature lead, a separate Reviewer
+still reviews the final head.
 A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
 
 1. The Worker implements the Task and runs the required checks.
-2. A separate Reviewer reads the diff and relevant callers and tests against the
-   approved brief and repository standards.
+2. Earlier-head reviews and Corrections re-reviews use a separate Reviewer,
+   reading the diff, callers and tests against the approved brief and repository
+   standards. Final-head review follows step 4; a led Task gets no separate
+   Reviewer on that head.
 3. The Worker makes required Corrections. Each finding receives an explicit disposition.
-4. The Reviewer checks the final head commit after Corrections. Required checks
-   must also cover that commit.
-5. The manager checks the review result and check evidence, then reports readiness.
-   It investigates unresolved findings and decisions without duplicating every review.
+4. After Corrections, when the Task has an assigned Feature lead, the lead holds
+   the original requirements, relevant designs and interfaces, the final diff,
+   callers and tests, and the check and review evidence, personally reviews the
+   exact final head commit, records its review evidence and clears it; no
+   separate Reviewer reviews that final head. When the Task has no Feature lead,
+   a separate Reviewer checks the final head commit after Corrections. Because a
+   Feature lead makes no project edits, its final-head review does not approve
+   its own implementation. Required checks must also cover that exact final
+   commit.
+5. For a Task with a Feature lead, the lead verifies that required checks, its
+   final-head review and all finding dispositions are current on the exact final
+   commit, publishes its Task's own pull request under the repository's identity
+   and privacy gates (without authority to merge or to change other Tasks' pull
+   requests), and reports Task readiness and verified evidence to the manager.
+   The manager uses the lead's verified Task evidence without routinely
+   repeating the same final-head review, investigates unresolved findings and
+   cross-feature decisions, and owns overall delivery readiness to Shawn:
+   cross-feature integration, integration tests in place and their evidence on
+   the intended integrated result, operational readiness, and resolved or
+   surfaced dependencies and risks. When there is no Feature lead, the manager
+   checks the independent review result and check evidence, publishes the Task's
+   pull request, and reports readiness. Task verification and PR-ready remain
+   distinct from integrated delivery readiness.
 
 For who runs a repository's heavy required check, see
 [Checks and publication](#checks-and-publication).
@@ -702,8 +859,9 @@ including escalations; other first reviews are at least medium. agy is never
 a Reviewer. Review independence requires a separate Session that did not implement
 the change; it does not require a different model vendor.
 
-There is no initial quick-scan stage. A quick scan cannot replace independent
-review. Merge authority and all repository acceptance requirements remain unchanged.
+There is no initial quick-scan stage. A quick scan cannot replace the required
+review, whether by the current lead or an independent Reviewer. Merge authority
+and all repository acceptance requirements remain unchanged.
 
 ## Decisions accepted after grill-with-docs
 
@@ -722,9 +880,11 @@ Shawn accepted all four recommendations on 2026-10-27:
    Record the original finding and evidence. Remaining disputes that prevent
    clearance, and product decisions, return to Shawn.
 
-Storage format and helper command names remain builder choices. Runtime capability
+Storage format and helper command names were left to the builder on 2026-10-27;
+the implementation plan now fixes them, including CD-2/3/4. Runtime capability
 and recovery behavior require implementation tests. Takeover of rapid-ship work
-now waits for the pilot (re-home decision 2).
+now waits for the pilot (re-home decision 2, with the 2026-10-28 temporary prose
+exception in plan decision 16).
 
 ## Decisions accepted at the re-home
 
@@ -736,6 +896,16 @@ to manager threads bound to each repository's checkout:
 2. rapid-ship work waits for the pilot. Do not resume, review, check or publish
    any rapid-ship task, and do not choose the pilot task, until t3-compose is
    built and the pilot starts in the rapid-ship-bound manager thread.
+
+   Exception note, 2026-10-28 (plan decision 16): Shawn said, "we have the design down. While waiting for t3c impl, create a prose prompt for this manager/feature lead/worker setup with multi-model in t3 code, so we can temporarily unblock rapid-ship dev".
+   This scopes a temporary exception while `t3c` is built: rapid-ship
+   development may proceed under a private prose setup run by a
+   rapid-ship-bound manager thread, which first reconciles the old Claude work
+   and dispatches nothing without Shawn's approval. t3-compose agents still do
+   no rapid-ship work (they read and run nothing in any rapid-ship checkout),
+   and the formal helper-backed pilot (L9) still waits for `t3c` and its
+   existing handoff gates. The private prompt is not a runtime implementation
+   and no formal pilot pass is claimed.
 3. Add reverse availability fallbacks for Workers, Reviewers and Feature leads
    at the medium and challenging tiers, in addition to the existing forward
    chains. The personal config in `.local/` holds the selections in each
@@ -754,6 +924,12 @@ Shawn made these decisions on 2026-10-27, after the re-home:
    pull request write access, and pushes and opens pull requests with it. Agents
    never push or post under Shawn's account. Workers and Reviewers never push or
    post.
+
+   Role clarification, 2026-10-28: under plan decision 13, when a Task has an
+   assigned Feature lead, that lead publishes its Task's own pull request as the
+   Worker App under the same identity, privacy and head/author verification
+   rules, without authority to merge or to change other Tasks' pull requests;
+   the manager publishes for Tasks without a lead.
 2. Merge authority. Shawn merges t3-compose pull requests, squash only. Agents
    never merge.
 
@@ -850,6 +1026,105 @@ numbers match the plan's Decisions section.
   Account walking is not a fallback; one fallback at most remains the rule.
   Quota observations stay per account for all its pool models. L11 verifies
   both supported choices after Shawn places each; it is not a handoff gate.
+- **Decision 13, 2026-10-28: Feature lead final-head review, lead publication and manager delivery readiness.**
+  On the design sentence "The manager runs a repository's heavy required check on the final head, or assigns one Session at a time to run it", Shawn first said: "feature lead should have enough context to review the final head, when there is a feature lead. Manager should be in charge of ensuring delivery success (operational readiness, integ test in place, etc)". When asked whether the lead's own review replaces a separate final-head Reviewer, Shawn answered: "Yes, the lead reviews the final head", selecting "When a Task has a lead, the lead's own review is the final-head review. No separate Reviewer reviews that head."
+  When a Feature lead is assigned, it must hold the original requirements,
+  relevant designs and interfaces, the final diff, callers and tests, and the
+  check and review evidence needed to personally review the final head. Its own
+  review is the final-head review, and no separate Reviewer is dispatched for
+  that final head; earlier heads (Worker rounds and Corrections re-reviews)
+  continue to use separate Reviewers, and Tasks without a Feature lead still
+  require a separate Reviewer on the final head. Because a Feature lead makes no
+  project edits, reviewing a Worker's final head does not approve its own
+  implementation. The lead runs or assigns required checks (including the
+  repository's heavy required check) on the exact final commit, maintains
+  current evidence and finding dispositions, publishes its Task's own pull
+  request under the repository's identity and privacy gates (without authority
+  to merge or to change other Tasks' pull requests), and reports Task readiness
+  and verified evidence to the Engineering manager; when there is no Feature
+  lead, the manager performs that Task-level coordination and publishes the
+  Task's pull request. Workers and Reviewers still never push, open pull
+  requests, post or merge. Heavy checks still run one at a time on the whole
+  machine with a stable lock, in a clean linked worktree at the exact commit
+  under check after its writer has finished, never moving or writing the owner's
+  checkout. T3 lifecycle ownership is unchanged: only the parent that created a
+  child manages it, so a lead cannot manage a child created by the manager
+  merely because the lead owns final-head verification.
+  Under the Engineering manager's shared contract CD-4, every review is
+  referenced by its `review` event's sequence number (replacing "review task
+  reference"); `reviewer` is either `{"kind": "task", "taskId": "<T3 task>"}` or
+  `{"kind": "lead", "thread": "<lead thread>"}` (never with a fabricated
+  `taskId`); `evidence` (path and digest) is required for a lead review and
+  optional for a task review; a manager-only `lead-assignment` event names the
+  work's current lead (thread, assigned-by, date and reason; latest assignment
+  wins, under the existing writer/transfer invariants); findings key on
+  `(review reference, finding ID)` with every later same ID distinct; EV-1
+  requires the final-head review to come from the current lead when the work has a lead and from an independent task review
+  otherwise (a lead must be current both at review and verification); `check`
+  sources include Feature lead while Worker-only claims remain insufficient; and `withdrawn` is by the review's author (the Reviewer
+  or the lead). The Engineering manager retains overall delivery accountability:
+  cross-feature integration, integration tests in place and their evidence on
+  the intended integrated result, operational readiness, dependencies and risks
+  resolved or surfaced, and final delivery readiness to Shawn. It uses the
+  lead's verified Task evidence without routinely repeating the same Task-level
+  final-head review. Delivery readiness is not an EV-1 input, and Task
+  verification and PR-ready remain distinct from integrated delivery readiness.
+  No new deployment or merge authority or automatic readiness rule is
+  introduced, and this documentation revision claims no integration or live
+  pass.
+- **Decision 14, 2026-10-28: Python 3.15 runtime through uv's global pin.**
+  Shawn first said: "use latest stable python instead of python 3.9"
+  He corrected: "correction: uv python pin 3.15 --global". He then authorized:
+  "Upgrade uv, install 3.15.2, remove alpha".
+  Under the Engineering manager's shared contract CD-3, the helper runtime and
+  offline test suite require CPython 3.15 or later, stable releases only
+  (`sys.version_info.releaselevel == "final"`), selected through `uv`'s global
+  pin (`uv python pin 3.15 --global` is Shawn's setup choice) and resolved as
+  one interpreter with `PY="$(uv python find 3.15)"`. On 2026-10-28,
+  Python.org's [official downloads listing](https://www.python.org/downloads/)
+  lists stable CPython 3.15.2, released 2026-10-25
+  ([Python 3.15.2](https://www.python.org/downloads/release/python-3152/)), after 3.15.0 on
+  2026-10-09; the runtime floor is 3.15, not 3.15.2. Python 3.9 and the macOS
+  system interpreter are no longer supported, and the dual-interpreter suite
+  requirement ends. Standard-library-only execution and `-I -S` (`-I -S -B` for
+  `SUITE`) remain required. `bin/t3c` exits 2 in its existing message form when
+  invoked on an interpreter older than 3.15 or on a pre-release. Tests that
+  start Python child processes keep using `sys.executable`. Moving to a newer
+  stable minor is an explicit change (Shawn's pin plus a Task raising the floor
+  and documented invocation), with no runtime network discovery or automatic
+  upgrade policy. `uv python find 3.15` alone does not prove a final release; on
+  2026-10-28 the manager upgraded `uv` to 0.13.6, installed final CPython
+  3.15.2, removed the 3.15.0a7 alpha and confirmed that `uv python find 3.15`
+  resolves to final 3.15.2. No runtime suite exists in this documentation-only
+  head, so no helper test pass is claimed here. The pinned interim Worker App
+  token tool in `.local/` stays unchanged outside the helper on its reviewed
+  interpreter until retired after L5.
+- **Decision 15, 2026-10-28: CLI status contract, shared helper modules and HS-1 size exception.**
+  Shawn approved the HS-1 design-review package with "Approve" and wrote
+  "Overflowing 1200 line is fine for this pr" for PR #4 (HS-1). The Engineering
+  manager's shared contract CD-2 fixes the helper's structured nonzero outcomes,
+  sanitized exit-2 handling for unexpected exceptions, `--status-file` on
+  `t3c publish run` as the sole stdout/stderr pass-through command, JSON summary
+  exits for `t3c heavy run`, reserved global option names and `--text-file` on
+  `t3c privacy check`, contextual `--repo` documentation, `t3compose/process.py`
+  and `tests/test_process.py` as the only new HS-1 shared files, the reusable
+  `t3compose.cli.helper_info()` metadata API, explicit brief ownership for
+  post-HS-1 edits to shared helper files and `MODULES`, and the PR #4 size
+  exception while Stage 1 (`CF-1`, `RC-1`, `PV-1a`) waits for both PR #3 (DOC-1)
+  and PR #4 (HS-1) to merge. The implementation plan records the detailed
+  command and module contracts. The manager withdrew the separate follow-up
+  docs Task; DOC-1 includes CD-2 section 6 now. No other size waiver is granted.
+- **Decision 16, 2026-10-28: temporary prose setup for rapid-ship.**
+  Shawn said: "we have the design down. While waiting for t3c impl, create a prose prompt for this manager/feature lead/worker setup with multi-model in t3 code, so we can temporarily unblock rapid-ship dev".
+  While `t3c` is being implemented, Shawn temporarily unblocked rapid-ship
+  development under a private prose setup run by a rapid-ship-bound manager
+  thread; the private prompt's path, thread ID and contents stay in `.local/`
+  and never appear in tracked files. That rapid-ship-bound prose manager first
+  reconciles the old Claude work and dispatches nothing without Shawn's
+  approval. t3-compose agents still do no rapid-ship work (they read and run
+  nothing in any rapid-ship checkout), and the formal helper-backed pilot (L9)
+  still waits for `t3c` and its existing handoff gates. No formal pilot pass or
+  runtime implementation of the private prompt is claimed.
 
 ## Findings
 
