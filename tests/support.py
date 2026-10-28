@@ -22,11 +22,13 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_PATH = Path(__file__).resolve()
 
-# Credential, network and shell programs, and the agent harnesses that T3
-# runs. The helper never starts an agent, so tests can never allow these.
+# The agent harnesses that T3 runs. The helper never starts an agent.
+HARNESSES = ("claude", "codex", "agy", "pi")
+# Credential, network and shell programs, and the harnesses: tests can never
+# allow these.
 FORBIDDEN = {
     "security", "gh", "ssh", "curl", "sh", "bash", "zsh", "dash", "ksh", "fish",
-    "claude", "codex", "agy", "pi",
+    *HARNESSES,
 }
 ALLOWED_PYTHON_OPTIONS = {"-I", "-S", "-B", "-E", "-s", "-u"}
 
@@ -61,6 +63,17 @@ def resolve_program(program, cwd=None, env=None, search_path=True):
         return (directory / program).resolve()
     except (TypeError, ValueError, OSError, RuntimeError):
         refuse()
+
+
+def harness_paths():
+    """Real paths of the harnesses on the current PATH; looked up, never run."""
+    paths = set()
+    for name in HARNESSES:
+        try:
+            paths.add(resolve_program(name))
+        except AssertionError:
+            pass
+    return paths
 
 
 def is_bootstrap(path_str):
@@ -143,6 +156,7 @@ def install_guard(enter_context=None):
         resolved = resolve_program(program)
         if (Path(os.fsdecode(program)).name in FORBIDDEN | {"env"} or
                 resolved.name in FORBIDDEN | {"env"} or
+                resolved in harness_paths() or
                 is_python_interpreter(program) or is_python_interpreter(resolved)):
             refuse()
         allowed_programs.add(resolved)

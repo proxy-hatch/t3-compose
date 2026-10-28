@@ -225,6 +225,23 @@ class OfflineGuard(OfflineTestCase):
             with self.subTest(name=name), self.assertRaisesRegex(AssertionError, "offline guard"):
                 self.allow_program(alias)
 
+    def test_allowance_refuses_resolved_harness_paths(self):
+        marker = self.temp / "ran"
+        target = self.temp / "1.2.3"
+        target.write_text("#!/bin/sh\ntouch '%s'\n" % marker)
+        target.chmod(0o755)
+        (self.temp / "claude").symlink_to(target)
+        (self.temp / "alias").symlink_to(target)
+        path = str(self.temp) + os.pathsep + os.environ.get("PATH", "")
+        with patch.dict(os.environ, {"PATH": path}):
+            for program in (target, self.temp / "alias", self.temp / "claude"):
+                with self.subTest(program=program.name), \
+                        self.assertRaisesRegex(AssertionError, "offline guard"):
+                    self.allow_program(program)
+            with self.assertRaisesRegex(AssertionError, "offline guard"):
+                subprocess.run([str(self.temp / "alias")])
+        self.assertFalse(marker.exists())
+
     def test_program_resolution_uses_child_path_and_cwd(self):
         marker = self.temp / "marker"
         decoy = self.temp / "git"
