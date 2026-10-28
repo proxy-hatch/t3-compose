@@ -38,7 +38,8 @@ That count describes coupling, not an estimate that all 28 files require edits.
 A complete T3 backend would also need to address implementer execution, reporting,
 recovery and agy routing. The owner's later Jev/OpenRouter authorization removes
 the routing model's API-authentication conflict, but does not authorize API-backed
-Worker models or Compose's entire verification stack. Its skill's
+Worker models beyond the limited fallback in plan decision 9, or Compose's
+entire verification stack. Its skill's
 required Linear CLI conflicts with rapid-ship's official MCP/API rule.
 
 A Compose fork is a reasonable upstream contribution when adopting its full
@@ -206,19 +207,25 @@ correctness failures escalate to a medium-tier Worker. An unavailable master is
 reported to the owner; the package does not replace the Engineering manager
 without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
 the configured availability fallback at the selected tier. The config names
-each source and target selection and its options; re-home decision 3 added
-reverse chains. When the fallback target is also unavailable, report it to
-Shawn; never fall back twice. Record and report
+each source selection and its ordered target selections and options; re-home
+decision 3 added reverse chains. A target may name the roles it serves; absent
+role limits, it serves all configured fallback roles. A selection uses its
+chain once, taking the first available target eligible for the role. It never
+follows a target's own chain. If no target qualifies, report to Shawn (exit 5).
+Plan decision 9 puts the GLM 5.3 Worker fallback last in medium Worker chains,
+after both Sol and Sonnet, whichever is primary. Record and report
 the reason, preserve all quality requirements, and resolve the original attempt
 before retrying. Availability fallback grants no extra permissions.
 
 ## Jev decision routing
 
 Use Jev through OpenRouter, as explicitly authorized by the owner on 2026-10-27.
-This exception is limited to the router. Claude, Codex and agy execution continues
-through the existing subscription Harnesses. Credentials stay in the existing
-private credential configuration; never place them in briefs, source, logs or argv.
-The adapter reads the key from the `OPENROUTER_API_KEY` environment variable
+The Jev exception is limited to the router. Claude, Codex and agy execution
+continues through the existing subscription Harnesses; plan decision 9 adds
+only the Pi/OpenRouter medium Worker fallback as a second exception.
+Jev credentials stay in the existing private credential configuration; never
+place them in briefs, source, logs or argv. The routing adapter reads its own
+key from the `OPENROUTER_API_KEY` environment variable
 first, else from a key file that personal config in `.local/` names.
 
 Compose's `fc_routejev.py` asks typed questions about workflow and depth, retries
@@ -404,7 +411,9 @@ the takeover exception under
 2. Write a brief with objective, scope, the provisioned commit, start commit and
    review base, owned paths, acceptance criteria, interfaces, dependencies, the
    fast checks to run and return format. Unknown product decisions go to Shawn;
-   routine implementation choices stay with the assigned agent.
+   routine implementation choices stay with the assigned agent. Carry agy
+   Workers' instructions inline. Under plan decision 9, do the same for Pi
+   Workers until its instruction-file handling is verified.
 3. Record dispatch intent before calling T3. Use a stable `clientRequestId` for
    retries of that same dispatch and retain the returned `taskId`.
 4. Dispatch asynchronously with explicit provider/model selection. Use T3-managed
@@ -472,9 +481,10 @@ pull request title and body. Shawn decides when an identifier seems necessary.
 
 These rules are instructional. Every child inherits full access and the owner's
 local `gh` login, and Codex and agy children run without rapid-ship's hook until
-its Codex and agy wiring merges (F5). A child can still push wherever that login
-can push; the package creates no security boundary. For t3-compose's `main`
-ruleset, see [t3-compose repository workflow](#t3-compose-repository-workflow).
+its Codex and agy wiring merges (F5). Plan decision 9 adds Pi Workers; their
+hook enforcement is unverified, so treat them as unguarded too. A child can
+still push wherever that login can push; the package creates no security
+boundary. For t3-compose's `main` ruleset, see [t3-compose repository workflow](#t3-compose-repository-workflow).
 
 ## t3-compose repository workflow
 
@@ -758,6 +768,25 @@ numbers match the plan's Decisions section.
   merges. They may carry his commit email, which F7 found already public.
   Agents never write it. The privacy rule above covers a match in a squash
   commit that a branch update brings into a review range.
+- **Decision 9, 2026-10-28: medium Worker fallback.** Shawn said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
+  GLM 5.3 through OpenRouter is the last medium Worker fallback, after both
+  Sol and Sonnet, whichever is primary. It serves Workers only, never a
+  Reviewer, Feature lead, text helper or the master. It runs in the Pi
+  Harness, which T3 offers as a provider and which calls OpenRouter with
+  Shawn's own key. This is a second exception to subscription-only execution,
+  limited to this fallback; the Jev exception still covers routing only.
+  Each use is billed per token and recorded and reported as a fallback.
+  Ordered targets replace the former "never fall back twice" rule: use one
+  chain once, take the first available target eligible for the role, and never
+  follow a target's own chain. Targets may limit their roles. If no target
+  qualifies, report to Shawn (exit 5).
+  Pi Workers carry their instructions inline, as for agy, until Pi's
+  instruction-file handling is verified. Pi's OpenRouter key stays in Pi's
+  own configuration. The helper never reads, passes or logs it; briefs,
+  source, logs and argv never hold it.
+  The target is available only when T3's live catalog lists the Pi instance
+  with GLM 5.3 and reports `canRunChildTask: true`. The config holds it only
+  with the catalog's exact instance and model IDs; never guess an ID.
 
 ## Findings
 
@@ -802,8 +831,11 @@ The build manager observed F8 the same day. The evidence is recorded in `.local/
 - **F5, unguarded Harnesses.** Codex and agy children run without rapid-ship's
   hook until its Codex and agy wiring merges. Every child inherits full access
   and the owner's local `gh` login, which is the owner's personal GitHub account.
-  - Status: a claim from the dump and the previous T3 manager's handoff, not
-    re-run.
+  Plan decision 9 adds Pi Workers; treat them as unguarded until hook
+  enforcement is verified.
+  - Status: the Codex and agy claim comes from the dump and the previous T3
+    manager's handoff, not re-run. Pi enforcement remains unverified under
+    plan decision 9.
   - Changes: [Checks and publication](#checks-and-publication).
 - **F6, machine load.** Two rapid-ship full checks run at the same time both
   failed, with a setup timeout followed by a process-group kill error.

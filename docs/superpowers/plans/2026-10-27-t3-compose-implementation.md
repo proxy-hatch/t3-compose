@@ -267,11 +267,12 @@ Finding dispositions are `fixed` (with its commit), `resolved-outside-tree`
         "roles": ["worker", "reviewer", "feature-lead"],
         "manager": "owner-choice",
         "chains": [{"tier": "medium" | "challenging",
-                    "from": Selection, "to": [Selection]}],
+                    "from": Selection, "to": [Target, ...]}],
         "recordReason": true, "reportReason": true}
     }
     Selection     = {"providerInstanceId": "<instance>", "model": "<model>",
                      "options": {"<id>": "<value>"}}
+    Target        = Selection plus optional "roles": ["<role>", ...]
     PoolSelection = {"providerPool": "<pool>", "model": "<model>",
                      "options": {"<id>": "<value>"}}
 
@@ -291,14 +292,17 @@ Validation rules:
   `uncertainResult` is `manager-judgment`.
 - No pool member appears in `modelPreferences` or in a fallback chain, so agy is
   never a Reviewer and never a fallback.
-- Each chain has an explicit tier and exactly one target. Each `(tier, from)`
-  appears once, and its target differs from its source. Both endpoints are
-  validated selections associated with that tier; neither must be a primary
-  preference. This allows a configured primary to fall back to a non-primary
-  selection and permits its reverse chain. A chain without its reverse is a
-  notice, not an error, because directions are owner values. RT-1 enforces role
-  eligibility, tier association and live availability at selection and uses no
-  second chain after a fallback.
+- Each chain has an explicit tier and one or more targets, in order. Each
+  `(tier, from)` appears once. No target selection equals its source or another
+  target selection in its chain, regardless of role limits. The source and
+  every target are validated selections associated with that tier; none must
+  be a primary preference. This allows a configured primary to fall back to a
+  non-primary selection and permits its reverse chain. A chain without its
+  reverse is a notice, not an error, because directions are owner values.
+  A target's optional `roles` is a non-empty subset of
+  `availabilityFallback.roles`; absent means all of them. RT-1 enforces role
+  eligibility, tier association and live availability, using one chain, once,
+  in order. It never follows a target's own chain ([decision 9](#decisions)).
 - `easyWorker` and `textHelper` name a configured pool.
 - The digest is `sha256:` and the hex SHA-256 of the file's bytes. Every routing
   record and dispatch intent stores it.
@@ -310,7 +314,7 @@ The quota state file beside the config keeps its current shape:
 
 ## Tasks
 
-Each Task is one pull request. Live checks (L1 to L10) and owner steps are
+Each Task is one pull request. Live checks (L1 to L11) and owner steps are
 listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 
 ### HS-1 Helper skeleton and offline harness
@@ -342,7 +346,8 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   2. A missing module is skipped; a broken module fails loudly.
   3. Canonical JSON and file digests are stable, and oversized reads fail.
   4. The offline guard blocks network sockets, `urllib`, and `security`, `gh`,
-     `ssh` and `curl` subprocesses. A test proves each block.
+     `ssh` and `curl` subprocesses, and the agent Harnesses `claude`, `codex`,
+     `agy` and `pi` ([decision 9](#decisions)). A test proves each block.
   5. `tests/test_labels.py` fails when a test class lacks the guard or the
      `Offline` or `Simulated` prefix.
   6. `AGENTS.md` names `SUITE` and says that only the manager runs `live/`.
@@ -364,12 +369,13 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   [Manager threads and bases][d-bases]; [Accepted review policy][d-review];
   [Feature lead options][d-leads]; [Design refinement][d-refine];
   [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow].
-- **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`
-  only.
-- **Interfaces.** None; design text only.
+- **Files.** Modify `docs/superpowers/specs/2026-10-27-t3-compose-design.md`.
+  Decision 9 adds `docs/superpowers/plans/2026-10-27-t3-compose-implementation.md`
+  to DOC-1 for the fallback contract.
+- **Interfaces.** None; design and plan text only.
 - **Changes.**
   - Record [decisions 1, 2 and 5](#decisions), dated 2026-10-27, and
-    decisions 6 and 7, dated 2026-10-28, in the design.
+    decisions 6, 7 and 9, dated 2026-10-28, in the design.
     Decision 1 replaces open decision 4. Keep a heading named "Open decisions"
     with one line saying no decisions remain open and linking to the sections
     recording them, so links to `#open-decisions` keep working. Update the
@@ -398,6 +404,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     Agents never write it. The trailers sit on the base branch, normally
     outside the review ranges that privacy checks cover. A match in a squash
     commit that a branch update brings into a range goes to Shawn (item 14).
+  - Apply [decision 9](#decisions) to both documents: ordered fallback chains,
+    role-limited targets, the last medium Worker fallback, the limited
+    subscription exception, inline instructions and catalog-gated setup.
 - **Easy carve-outs.** Reserve the following exact text for a sequential
   Assignment at the easy tier after the reconciling edits finish, with the
   decision date and exclusive ownership of the design for that Assignment:
@@ -405,17 +414,17 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   as software engineering. A floor applies to what a Task changes, not what it
   mentions." Any follow-up edits get current checks and a medium-tier
   re-review; they do not run beside DOC-1's writer.
-- **Acceptance.** Decisions 1, 2, 5, 6 and 7 replace the superseded text
+- **Acceptance.** Decisions 1, 2, 5, 6, 7 and 9 replace the superseded text
   without contradictions. Tier names replace fixed Worker, Reviewer and
-  Feature lead model names. Items 1 to 4, 13 and 14 have the dispositions
-  above. No other design decision changes. Tree and message privacy checks are
+  Feature lead model names outside decision 9 and sentences citing it. Items
+  1 to 4, 13 and 14 have the dispositions above. No other design decision changes. Tree and message privacy checks are
   clean; all links and anchors resolve, including `#open-decisions` with its
   heading and one-line pointer to the recorded decisions.
 - **Offline tests.** Link and privacy checks; after HS-1 merges, `SUITE`,
   unchanged. DOC-1 has no runtime prerequisite.
 - **Depends on.** This plan, merged.
-- **Parallel with.** HS-1 and later code Tasks; it owns only the design.
-- **Risk facts and tier.** Reconciliation across one document → the medium
+- **Parallel with.** HS-1 and later code Tasks; it owns the design and plan.
+- **Risk facts and tier.** Reconciliation across two documents → the medium
   tier. The exact-text carve-outs above use the easy tier. Reviewer: medium,
   never agy.
 - **Review focus.** Faithful decisions; no contradictory tier or checkout rule;
@@ -446,8 +455,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   2. The current version-1 shape fails with a message that names the missing
      sections.
   3. Both examples pass and use synthetic instance names. A primary with a
-     non-primary fallback and its reverse pass; missing tier associations,
-     duplicate sources in one tier and pool endpoints fail.
+     non-primary fallback and its reverse, an ordered chain and a role-limited
+     target pass. Missing tier associations, duplicate sources in one tier,
+     duplicate targets, an empty target `roles` list and a pool member as a
+     source or target fail.
   4. An error names the path and the rule, and never prints a value read from a
      key file.
   5. `docs/configuration.md` says that Shawn changes values, or the manager at
@@ -634,11 +645,14 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     model, the provider reports `canRunChildTask: true`, and the catalog
     advertises its options. A failed status check counts as unavailable. A
     catalog read more than 15 minutes earlier is refused.
-  - An unavailable selection uses the role's one configured fallback at the
-    selected tier, once. The target need not be a primary preference, but its
-    tier association, role eligibility and live availability are checked. If
-    the target is unavailable too, or no chain applies, the command exits 5
-    (report to Shawn). The master selection never falls back.
+  - An unavailable selection uses its configured chain at the selected tier
+    once, taking the first available target eligible for the role, in order
+    ([decision 9](#decisions)). A target may limit its roles; absent limits, it
+    serves all `availabilityFallback.roles`. It need not be a primary
+    preference, but its tier association, role eligibility and live
+    availability are checked. Never follow a target's own chain. If no target
+    qualifies, or no chain applies, exit 5 (report to Shawn). Record and report
+    every fallback. The master selection never falls back.
   - agy: use the active account until confirmed exhaustion, then the next
     non-exhausted account in pool order. An exhausted account returns only after
     its reset time passes or an `available` observation. Unknown quota is usable.
@@ -655,7 +669,10 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   and scoped re-review tiers; Corrections after a floored first round; an
   escalated Corrections round, including one after `roundTiers.corrections`
   rises and one with no recorded Corrections round; and changed `roundTiers`
-  values. `Simulated…` tests inject
+  values. Under [decision 9](#decisions), with Sol and Sonnet both unavailable,
+  a Worker gets the role-limited last target and a Reviewer exits 5. A target
+  that is itself the source of another chain is not followed further.
+  `Simulated…` tests inject
   quota observations to show rotation in order, wrap-around, reset evidence and
   all accounts exhausted. `live/catalog_shape.py` validates a saved real catalog
   (L3).
@@ -668,11 +685,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Depends on.** CF-1, RC-1.
 - **Parallel with.** JV-1; L1 and L2 as their prerequisites finish.
 - **Risk facts and tier.** Guardrail boundary (role exclusions, agy never a
-  Reviewer) and subtle invariants (one fallback, exhaustion order) →
+  Reviewer) and subtle invariants (one chain, once, in order; exhaustion order) →
   the challenging tier. Reviewer: challenging.
 - **Review focus.** Tier arithmetic; no path to agy for a Reviewer or a floored
-  first round; one fallback at most; the rotation rules; the config digest in
-  every record.
+  first round; one chain, once, in order; the rotation rules; the config
+  digest in every record.
 - **Size.** About 1,100 lines. If it grows past 1,200, `quota` moves to a
   follow-up Task.
 
@@ -856,7 +873,9 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 - **Worker template.** Sections, in order:
   - Role and routing: the tier, the model and the reason; stay on this
     Assignment and this model; start no agents or T3 tasks. A slot carries the
-    routing policy's text directly when the Worker is agy.
+    routing policy's text directly when the Worker is agy. Under
+    [decision 9](#decisions), Pi Workers also carry their instructions inline
+    until Pi's instruction-file handling is verified.
   - Not alone, and where to work: preserve all edits that are not yours. Work
     only in your own worktree; never touch the owner's checkout or another
     worktree. A slot names any owner hold that applies, such as rapid-ship's.
@@ -894,14 +913,15 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
   `t3c brief render --template worker|reviewer|PATH --values VALUES.json --out FILE`
   fills `{{NAME}}` placeholders; a `PATH` lets later Tasks render their own
   templates without changing this module. It refuses a missing value or a
-  leftover placeholder, requires the agy slot when a Worker's selection is agy,
+  leftover placeholder, requires the inline instructions slot for agy Workers
+  and, under [decision 9](#decisions), Pi Workers,
   refuses a Reviewer brief whose selection is agy, and prints the brief's
   digest for `dispatch-intent`. `t3c brief check FILE` checks the required
   sections and that the commits are full SHAs.
 - **Acceptance.** The templates hold no private identifier and pass the tree
   privacy check. Offline tests cover rendering, missing values, leftover
-  placeholders, the agy rules and digests. Every rule listed above appears in
-  its template.
+  placeholders, inline instructions, the agy rules and digests. Every rule
+  listed above appears in its template.
 - **Offline tests.** `SUITE -p 'test_briefs.py'`, then `SUITE`.
 - **Depends on.** HS-1, RC-1 (atomic data writes).
 - **Parallel with.** RP-1, EV-1, PV-1b, HC-1, GA-1 to GA-3.
@@ -1202,6 +1222,11 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
     The manager reissues the same call, with the same `clientRequestId` and
     brief, only when T3 shows no such task and L7 showed that T3 deduplicates
     by `clientRequestId`. Otherwise it reports to Shawn.
+  - Briefs carry agy Workers' instructions inline. Under
+    [decision 9](#decisions), Pi Workers also carry their instructions inline
+    until Pi's instruction-file handling is verified. Under decision 9, Pi's
+    OpenRouter key stays in its own configuration; the helper never reads, passes or logs it, and
+    briefs, source, logs and argv never hold it.
   - Results by worktree path and commit. Reviews: a new `delegate_task` for each
     round. Disputes: one second independent review, then Shawn.
   - Heavy checks through `t3c heavy run`. Verification through
@@ -1387,6 +1412,15 @@ listed under [Live checks and owner steps](#live-checks-and-owner-steps).
 | L8 | after RP-1 and L1 | manager | `live/router_pilot.py` | live, synthetic |
 | L9 | after the handoff | rapid-ship manager thread | The pilot | live |
 | L10 | after the pilot | manager | The nested scratch pilot (FL-1) | live |
+| L11 | after RT-1 and Shawn's setup | Shawn, then the manager at his instruction | Verify the last medium Worker fallback under [decision 9](#decisions), as described below | owner step, live |
+
+Under [decision 9](#decisions), L11 waits until Shawn installs Pi, gives it an
+OpenRouter key and enables it in T3. The manager saves a live catalog and
+confirms it lists the Pi instance with GLM 5.3 and `canRunChildTask: true`.
+At Shawn's instruction, it adds the target using only the catalog's exact
+instance and model IDs. It runs one `t3c route select` per role on synthetic
+work with Sol and Sonnet marked unavailable: the Worker gets GLM 5.3 and the
+Reviewer exits 5. Record and report the fallback and the results.
 
 L7 tests two behaviors in a scratch thread bound to the t3-compose root, with a
 trivial read-only child. First, the ways to clear the conversation while
@@ -1474,7 +1508,7 @@ step's reviews leave to this plan.
 |---|---|---|
 | Helper: bounded Jev request, atomic records, required fields, evidence on the current commit; no agents and no polling | [Sources of truth and local records][d-records] | HS-1, RC-1, EV-1, JV-1 |
 | Validated config schema and its digest | [Routing and personal configuration][d-routing] | CF-1 |
-| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, one fallback, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
+| Routing: Jev classification, floors, Reviewer tier, agy never a Reviewer, live catalog, one chain, in order, agy exhaustion in order, recorded judgment | [Routing and personal configuration][d-routing]; [Jev decision routing][d-jev] | JV-1, RT-1 |
 | Records: intent, the three commits, results by worktree path and commit, reviews, operations, decisions; one writer; history; recovery without duplicate dispatch | [Sources of truth and local records][d-records]; [Manager threads and bases][d-bases] | RC-1, EV-1 |
 | Publication by commit; Worker App token; privacy; head and author checks | [Checks and publication][d-publication]; [t3-compose repository workflow][d-workflow] | PV-1a, PV-1b, GA-1, GA-2, GA-3, PB-1 |
 | Heavy checks one at a time on the machine | [Checks and publication][d-publication] | HC-1 |
@@ -1520,6 +1554,23 @@ request:
 8. **Routing stays untuned.** Unoptimized routing is acceptable for now.
    Evaluating and tuning the thresholds that route work to each model and
    reasoning level is backlog work outside this plan.
+9. **Medium Worker fallback, 2026-10-28.** Shawn said: "we must also support openrouter GLM5.3 as a medium worker choice (fallback behind sonnet and sol). the BYO harness choice with it is Pi."
+   GLM 5.3 through OpenRouter is last in medium Worker chains, after both Sol
+   and Sonnet, whichever is primary. It serves Workers only, never a Reviewer,
+   Feature lead, text helper or the master. It runs in T3's Pi Harness with
+   Shawn's own OpenRouter key. This second subscription-only exception covers
+   only this Worker fallback; the Jev exception still covers routing only.
+   Each use is billed per token and recorded and reported as a fallback.
+   Ordered chains replace "never fall back twice": use one chain once, take
+   the first available target eligible for the role, and never follow its
+   own chain. Targets may limit roles; no qualifying target means exit 5,
+   report to Shawn. Pi Workers carry instructions inline, as for agy, until
+   Pi's instruction-file handling is verified. Pi's key stays in its own
+   configuration: the helper never reads, passes or logs it, and briefs,
+   source, logs and argv never hold it. The target is available only when
+   T3's live catalog lists the Pi instance with GLM 5.3 and
+   `canRunChildTask: true`. Add it to config only with the catalog's exact
+   instance and model IDs; never guess an ID. L11 verifies it after setup.
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md
