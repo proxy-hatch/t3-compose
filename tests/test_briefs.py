@@ -227,6 +227,17 @@ class OfflineBriefs(OfflineTestCase):
         self.output.write_text(self.output.read_text() + ' PP-2\n')
         self.refusal(self.invoke('brief', 'check', self.output))
 
+        for hidden in ('_PP-7_', '*PP-7*', '**PP-7**', '(PP-7)', 'PP-7a', 'PP-07'):
+            with self.subTest(hidden=hidden):
+                result = self.render('reviewer', CONTEXT=hidden)
+                self.refusal(result)
+                self.assertIn('pre-pass findings', result[2])
+                self.success(self.render('reviewer'))
+                self.output.write_text(self.output.read_text() + ' ' + hidden + '\n')
+                result = self.invoke('brief', 'check', self.output)
+                self.refusal(result)
+                self.assertIn('pre-pass findings', result[2])
+
         for accepted in ('PP-<number>', 'PP-x', 'APP-1'):
             with self.subTest(accepted=accepted):
                 self.success(self.render('reviewer', CONTEXT=accepted))
@@ -512,6 +523,15 @@ class OfflineBriefs(OfflineTestCase):
                 self.assertRaises(cli.CommandError, briefs.parse_escalation, text)
         briefs.parse_escalation(self.escalation(out=['  ' + 'x' * 198] * 30))
 
+    def test_escalation_byte_limit_is_exact(self):
+        from t3compose import briefs, cli
+        fixed = len(self.escalation(cause='x').rstrip('\n').encode('utf-8')) - 1
+        for cause in ('x' * (8192 - fixed), '\u00e9' * 100 + 'x' * (8192 - fixed - 200)):
+            with self.subTest(cause=cause[:3]):
+                briefs.parse_escalation(self.escalation(cause=cause))
+                self.assertRaises(cli.CommandError, briefs.parse_escalation,
+                                  self.escalation(cause=cause + 'x'))
+
     def test_check_escalation_entry_point(self):
         res = self.temp / 'res.txt'
         res.write_text('chatter\n' + self.escalation() + 'chatter\n')
@@ -548,6 +568,20 @@ class OfflineBriefs(OfflineTestCase):
         for forged in ('<ESCALATION_REQUEST>', '</ESCALATION_REQUEST>',
                        'Escalation-rule: hard-stop-v1'):
             self.refusal(self.render(OBJECTIVE='valid\n' + forged))
+
+    def test_hard_stop_blocks_must_sit_in_their_own_section(self):
+        from t3compose import briefs
+        self.success(self.render())
+        text = self.output.read_text()
+        self.assertEqual((text.count(briefs.HARD_STOP), text.count(briefs.ESCALATION)), (1, 1))
+        moved = text.replace(briefs.HARD_STOP, 'The rules are elsewhere.', 1)
+        moved = moved.replace(briefs.ESCALATION, 'The shape is elsewhere.', 1)
+        moved = moved.replace('## Return\n', briefs.HARD_STOP + '\n' + briefs.ESCALATION +
+                              '\n\n## Return\n', 1)
+        self.output.write_text(moved)
+        result = self.invoke('brief', 'check', self.output)
+        self.refusal(result)
+        self.assertIn('hard stop', result[2])
 
     def make_continuation(self, original_changes=None, **changes):
         original = self.temp / 'original.md'

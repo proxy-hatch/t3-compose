@@ -56,7 +56,8 @@ REVIEW_MODES = {
 }
 REVIEW_BLOCKS = {mode: re.compile('^' + re.escape(block) + '$', re.M)
                  for mode, block in REVIEW_MODES.items()}
-PRE_PASS_ID = re.compile(r'\bPP-[0-9]+\b')
+# PP- and a digit, with no ASCII letter or digit directly before: _PP-7_ and PP-7a are caught.
+PRE_PASS_ID = re.compile(r'(?<![A-Za-z0-9])PP-[0-9]')
 HARD_STOP = (
     'Escalation-rule: hard-stop-v1\n'
     "1. Budget: your first implementation, then at most 2 repair attempts against "

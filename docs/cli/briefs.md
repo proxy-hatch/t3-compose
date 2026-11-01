@@ -123,9 +123,11 @@ them as exact text.
 
 The pre-pass is advisory: findings use IDs `PP-<number>`, verdict is `blockers found`
 or `no blockers found`, and it cannot be used for `final-review`. A review-of-record
-brief is refused if any `PP-<number>` ID appears anywhere in it; in `final-review`,
-its `Review-head` is the head the lead will merge. These are format checks: a
-pre-pass finding with another ID format would not be caught.
+brief is refused if `PP-` followed by a digit appears anywhere in it, unless an
+ASCII letter or digit comes directly before the `P` (`APP-1` is accepted; `_PP-7_`,
+`(PP-7)` and `PP-7a` are refused). In `final-review`, its `Review-head` is the head
+the lead will merge. These are format checks: a pre-pass finding with another ID
+format would not be caught.
 
 ## Worker hard stop and the escalation block
 
@@ -143,8 +145,8 @@ cause`. A branch name has at most 200 characters from letters, digits, `.`, `_`,
 `/` and `-`, starts with a letter or digit, and has no `..`, no `//` and no
 trailing `/`, `.` or `.lock`. A path is not empty, does not start with `/` or
 `-`, holds no comma or backslash and has no `..` component. The block is at most
-8 KiB, with no doubled braces or control characters, and each tag stands alone
-on its line.
+8 KiB, with no doubled braces and no control characters other than LF and tab,
+and each tag stands alone on its line.
 
 Other modules call `briefs.parse_escalation(text)` to validate the block and
 return its twelve fields (`status`, `model`, `branch`, `wipCommit`, `reviewBase`,
