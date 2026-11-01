@@ -769,6 +769,10 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence(["review-verdict"])
         self.lead_review(verdict="approve-after-fixes")
         self.evidence([])
+        late = self.task(head=self.base)  # a later stale review of record stays the review of record
+        self.lead_review()
+        data = self.evidence(["review-record-stale"])
+        self.assertEqual(data["gaps"][0]["eventRef"], late["seq"])
 
     def test_core_two_gaps_at_once(self):
         self.route("CORE")
