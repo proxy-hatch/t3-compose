@@ -21,16 +21,33 @@ KEY = "synthetic-jev-secret-sentinel"
 REPO = "synthetic/jev-tests"
 
 
-def response():
-    answers = {}
-    for name, options, choice in (
-        ("domain", config.DOMAIN_CRITERIA_KEYS, "SOFTWARE_ENGINEERING"),
-        ("difficulty", config.DIFFICULTY_CRITERIA_KEYS, "MEDIUM"),
-    ):
-        answers[name] = {"type": "choice", "choice": choice, "confidence": .8,
-                         "probabilities": {k: 1 / len(options) for k in options}}
-    return {"model": "typesafe/synthetic-snapshot", "id": "dec-synthetic",
-            "answers": answers, "usage": {"cost": .000024}}
+def response(lane="BACKEND_LOGIC", criticality="CORE", scope="STANDARD",
+             lane_conf=0.8, crit_conf=0.8, scope_conf=0.8):
+    answers = {
+        "lane": {
+            "type": "choice", "choice": lane, "confidence": lane_conf,
+            "probabilities": {"BACKEND_LOGIC": 0.8, "UI_FRONTEND": 0.1, "MIXED": 0.1}
+            if lane == "BACKEND_LOGIC" else {"BACKEND_LOGIC": 0.1, "UI_FRONTEND": 0.8, "MIXED": 0.1}
+            if lane == "UI_FRONTEND" else {"BACKEND_LOGIC": 0.1, "UI_FRONTEND": 0.1, "MIXED": 0.8},
+        },
+        "criticality": {
+            "type": "choice", "choice": criticality, "confidence": crit_conf,
+            "probabilities": {"CORE": 0.8, "NON_CRITICAL": 0.2}
+            if criticality == "CORE" else {"CORE": 0.2, "NON_CRITICAL": 0.8},
+        },
+        "scope": {
+            "type": "choice", "choice": scope, "confidence": scope_conf,
+            "probabilities": {"STANDARD": 0.8, "COMPLEX": 0.1, "INSUFFICIENT_CONTEXT": 0.1}
+            if scope == "STANDARD" else {"STANDARD": 0.1, "COMPLEX": 0.8, "INSUFFICIENT_CONTEXT": 0.1}
+            if scope == "COMPLEX" else {"STANDARD": 0.1, "COMPLEX": 0.1, "INSUFFICIENT_CONTEXT": 0.8},
+        },
+    }
+    return {
+        "model": "typesafe/synthetic-snapshot",
+        "id": "dec-synthetic",
+        "answers": answers,
+        "usage": {"cost": 0.000024},
+    }
 
 
 class Reply(io.BytesIO):
@@ -48,7 +65,7 @@ class OfflineJev(OfflineTestCase):
         (self.local / "state").mkdir(parents=True)
         self.listfile = self.local / "state/private-identifiers.txt"
         self.listfile.write_text("private-synthetic-identifier\n")
-        self.cfg = json.loads((ROOT / "docs/examples/agent-routing.example.json").read_text())
+        self.cfg = json.loads((ROOT / "docs/examples/agent-routing.v3.example.json").read_text())
         self.keyfile = self.temp / "synthetic-key.json"
         self.keyfile.write_text(json.dumps({"apiKey": KEY}))
         self.cfg["jev"]["keyFile"] = {"path": str(self.keyfile), "field": "apiKey"}
@@ -80,7 +97,7 @@ class OfflineJev(OfflineTestCase):
     def events(self):
         return records.load_work(self.local, REPO, self.work)["events"]
 
-    def invoke(self, reply=None, *, context=None, fault=None, raw=None, during=None,
+    def invoke(self, reply=None, *, context=None, decline=False, fault=None, raw=None, during=None,
                raw_input=None, raw_context=None):
         self.input.write_bytes(raw_input if raw_input is not None else json.dumps(self.task).encode())
         argv = [str(ROOT / "bin/t3c"), "--local-dir", str(self.local), "route", "classify",
@@ -88,6 +105,8 @@ class OfflineJev(OfflineTestCase):
         if context is not None or raw_context is not None:
             self.extra.write_bytes(raw_context if raw_context is not None else json.dumps(context).encode())
             argv += ["--context", str(self.extra)]
+        if decline:
+            argv += ["--decline-retry"]
         jev = importlib.import_module("t3compose.jev")
         stream = Reply(raw if raw is not None else json.dumps(reply or response()).encode())
         calls = []
@@ -127,8 +146,10 @@ class OfflineJev(OfflineTestCase):
         self.assertEqual((code, err, len(calls)), (0, "", 1))
         initial, classified = self.events()
         data = classified["data"]
-        loaded = config.load_config(local=self.local)
+        loaded = config.load_matrix_config(local=self.local)
         self.assertEqual(result, {**data, "classificationRef": classified["seq"]})
+        self.assertNotIn("judgment", result)
+        self.assertEqual(data["configVersion"], 3)
         self.assertEqual(data["inputRef"], initial["seq"])
         self.assertEqual(data["inputDigest"], schema.validate_routing_input({"task": self.task, "context": None}))
         self.assertEqual(data["policyDigest"], loaded.policy_digest)
@@ -139,10 +160,12 @@ class OfflineJev(OfflineTestCase):
         body = json.loads(calls[0].data)
         self.assertEqual(set(body), {"model", "state", "questions"})
         self.assertEqual(body["state"], {"task": self.task, "context": None})
-        for name in ("domain", "difficulty"):
+        for name in ("lane", "criticality", "scope"):
             question = self.cfg["classification"][name]
             self.assertEqual(body["questions"][name], {"type": "choice", **question})
             self.assertEqual(data["criteria"][name], {**question["criteria"], "instructions": question["instructions"]})
+        for event in self.events():
+            schema.validate_event(event)
 
     def test_input_validation_and_screen_block_before_persistence(self):
         original = copy.deepcopy(self.task)
@@ -200,6 +223,11 @@ class OfflineJev(OfflineTestCase):
         self.cfg[KEY] = "invalid config key must not enter diagnostics"
         self.save_config()
         self.assertEqual(self.invoke()[:3], (3, None, []))
+        # Version-2 configuration must exit 3
+        self.new_work()
+        v2_cfg = json.loads((ROOT / "docs/examples/agent-routing.example.json").read_text())
+        (self.local / "agent-routing.json").write_bytes(jsonio.canonical_json(v2_cfg))
+        self.assertEqual(self.invoke()[:3], (3, None, []))
 
     def test_key_precedence_file_and_invalid_setup(self):
         for invalid in ("", "bad\nheader"):
@@ -227,8 +255,8 @@ class OfflineJev(OfflineTestCase):
     def test_corrections_metadata_preflight_precedes_records_and_http(self):
         original = copy.deepcopy(self.cfg)
         for path in (("classification", "ruleVersion"),
-                     ("classification", "domain", "instructions"),
-                     ("classification", "difficulty", "criteria", "EASY"),
+                     ("classification", "lane", "instructions"),
+                     ("classification", "scope", "criteria", "STANDARD"),
                      ("jev", "model")):
             with self.subTest(config_field=".".join(path)):
                 self.new_work()
@@ -238,7 +266,6 @@ class OfflineJev(OfflineTestCase):
                     target = target[field]
                 target[path[-1]] = "synthetic\x00metadata"
                 self.save_config()
-                config.load_config(local=self.local)
                 self.assertEqual(self.invoke()[:3], (3, None, []))
                 self.assertEqual(self.events(), [])
 
@@ -276,19 +303,26 @@ class OfflineJev(OfflineTestCase):
         mutations = [("type", "text"), ("choice", "UNKNOWN"), ("confidence", True),
                      ("confidence", -1), ("confidence", 1.1), ("confidence", "0.9"),
                      ("confidence", float("nan")), ("confidence", float("inf"))]
-        for name in ("domain", "difficulty"):
+        for name in ("lane", "criticality", "scope"):
             for field, value in mutations:
                 with self.subTest(answer=name, field=field, value=value):
                     self.new_work()
                     body = response()
                     body["answers"][name][field] = value
-                    self.assertEqual(self.invoke(body)[1]["outcome"], "manager-judgment")
-            for value in (True, -.1, 1.1, float("nan"), float("inf"), .8):
+                    code, data, _, _ = self.invoke(body)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(data["outcome"], "defaulted")
+                    self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
+                    self.assertEqual(data["judgment"]["defaulted"], ["lane", "criticality", "scope"])
+            for value in (True, -.1, 1.1, float("nan"), float("inf"), 1.5):
                 self.new_work()
                 body = response()
                 probabilities = body["answers"][name]["probabilities"]
                 probabilities[next(iter(probabilities))] = value
-                self.assertEqual(self.invoke(body)[1]["outcome"], "manager-judgment")
+                code, data, _, _ = self.invoke(body)
+                self.assertEqual(code, 0)
+                self.assertEqual(data["outcome"], "defaulted")
+                self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
             for change in ("missing", "extra", "missing-answer", "missing-field", "extra-field"):
                 self.new_work()
                 body = response()
@@ -303,72 +337,197 @@ class OfflineJev(OfflineTestCase):
                     del answer["confidence"]
                 else:
                     answer["extra"] = "untrusted"
-                self.assertEqual(self.invoke(body)[0], 4)
-
-    def test_confidence_and_outcome_policy(self):
-        for domain, difficulty, confidence, retries, outcome in (
-            ("SOFTWARE_ENGINEERING", "MEDIUM", .6, 1, "accepted"),
-            ("OTHER", "EASY", .8, 1, "accepted"),
-            ("MIXED_OR_UNCLEAR", "MEDIUM", .1, 1, "manager-judgment"),
-            ("SOFTWARE_ENGINEERING", "INSUFFICIENT_CONTEXT", .9, 1, "retry-with-context"),
-            ("SOFTWARE_ENGINEERING", "MEDIUM", .59, 1, "retry-with-context"),
-            ("SOFTWARE_ENGINEERING", "MEDIUM", .59, 0, "manager-judgment"),
-        ):
-            with self.subTest(outcome=outcome, confidence=confidence):
-                self.new_work()
-                self.cfg["jev"]["maxContextRetries"] = retries
-                self.save_config()
-                body = response()
-                body["answers"]["domain"].update(choice=domain, confidence=confidence)
-                body["answers"]["difficulty"]["choice"] = difficulty
                 code, data, _, _ = self.invoke(body)
-                self.assertEqual((code, data["outcome"]), (0 if outcome == "accepted" else 4, outcome))
-                self.assertEqual(data["inputRef"], 1)
-                self.assertEqual(data["policyDigest"], config.load_config(local=self.local).policy_digest)
+                self.assertEqual(code, 0)
+                self.assertEqual(data["outcome"], "defaulted")
+                self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
+
+    def test_per_answer_acceptance_and_defaults(self):
+        # 1. lane confident + criticality low-confidence -> accepted lane kept, criticality CORE, basis default-low-confidence
+        self.new_work()
+        resp = response(lane="UI_FRONTEND", criticality="CORE", scope="STANDARD",
+                        lane_conf=0.9, crit_conf=0.3, scope_conf=0.9)
+        code, data, _, _ = self.invoke(resp, decline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["answers"]["lane"]["choice"], "UI_FRONTEND")
+        self.assertEqual(data["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(data["judgment"]["defaulted"], ["criticality"])
+        self.assertEqual(data["judgment"]["lane"], "UI_FRONTEND")
+        self.assertEqual(data["judgment"]["criticality"], "CORE")
+        self.assertEqual(data["judgment"]["scope"], "STANDARD")
+        self.assertIn("judgmentRef", data["judgment"])
+
+        # 2. scope INSUFFICIENT_CONTEXT (any confidence) -> scope COMPLEX, basis default-insufficient-context
+        self.new_work()
+        resp = response(lane="BACKEND_LOGIC", criticality="NON_CRITICAL", scope="INSUFFICIENT_CONTEXT",
+                        lane_conf=0.9, crit_conf=0.8, scope_conf=0.99)
+        code, data, _, _ = self.invoke(resp, decline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["judgment"]["basis"], "default-insufficient-context")
+        self.assertEqual(data["judgment"]["defaulted"], ["scope"])
+        self.assertEqual(data["judgment"]["lane"], "BACKEND_LOGIC")
+        self.assertEqual(data["judgment"]["criticality"], "NON_CRITICAL")
+        self.assertEqual(data["judgment"]["scope"], "COMPLEX")
+
+        # 3. MIXED confident + criticality low-confidence -> mapped to BACKEND_LOGIC, not listed in defaulted
+        self.new_work()
+        resp = response(lane="MIXED", criticality="CORE", scope="STANDARD",
+                        lane_conf=0.85, crit_conf=0.4, scope_conf=0.9)
+        code, data, _, _ = self.invoke(resp, decline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["answers"]["lane"]["choice"], "MIXED")
+        self.assertEqual(data["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(data["judgment"]["defaulted"], ["criticality"])
+        self.assertEqual(data["judgment"]["lane"], "BACKEND_LOGIC")
+        self.assertIn("confident MIXED lane mapped to BACKEND_LOGIC", data["judgment"]["reason"])
+
+        # 4. Low-confidence MIXED -> defaulted to BACKEND_LOGIC, IS listed in defaulted
+        self.new_work()
+        resp = response(lane="MIXED", criticality="CORE", scope="STANDARD",
+                        lane_conf=0.3, crit_conf=0.8, scope_conf=0.9)
+        code, data, _, _ = self.invoke(resp, decline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(data["judgment"]["defaulted"], ["lane"])
+        self.assertEqual(data["judgment"]["lane"], "BACKEND_LOGIC")
+
+        # 5. All three uncertain -> all three defaulted
+        self.new_work()
+        resp = response(lane="UI_FRONTEND", criticality="CORE", scope="STANDARD",
+                        lane_conf=0.2, crit_conf=0.2, scope_conf=0.2)
+        code, data, _, _ = self.invoke(resp, decline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(data["judgment"]["defaulted"], ["lane", "criticality", "scope"])
+        self.assertEqual(data["judgment"]["lane"], "BACKEND_LOGIC")
+        self.assertEqual(data["judgment"]["criticality"], "CORE")
+        self.assertEqual(data["judgment"]["scope"], "COMPLEX")
+
+        for event in self.events():
+            schema.validate_event(event)
+
+    def test_mixed_lane_accepted_with_manual_judgment(self):
+        resp = response(lane="MIXED", criticality="CORE", scope="STANDARD",
+                        lane_conf=0.9, crit_conf=0.85, scope_conf=0.85)
+        code, data, calls, err = self.invoke(resp)
+        self.assertEqual((code, err, len(calls)), (0, "", 1))
+        self.assertEqual(data["outcome"], "accepted")
+        self.assertEqual(data["answers"]["lane"]["choice"], "MIXED")
+        self.assertIn("judgment", data)
+        judgment = data["judgment"]
+        self.assertEqual(judgment["configVersion"], 3)
+        self.assertEqual(judgment["basis"], "manual")
+        self.assertEqual(judgment["defaulted"], [])
+        self.assertEqual(judgment["lane"], "BACKEND_LOGIC")
+        self.assertEqual(judgment["criticality"], "CORE")
+        self.assertEqual(judgment["scope"], "STANDARD")
+        self.assertEqual(judgment["reason"], "confident MIXED lane mapped to BACKEND_LOGIC")
+        self.assertEqual(judgment["judgmentRef"], 3)
+        for event in self.events():
+            schema.validate_event(event)
 
     def test_probability_sum_edges_and_unicode_service_metadata(self):
-        for values, expected in (((.49, .5, 0), 0), ((.5, .5, .01), 0),
-                                 ((.489, .5, 0), 4), ((.5, .5, .011), 4)):
+        lane_keys = ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED")
+        for values, expected_outcome in (((.49, .5, 0), "accepted"), ((.5, .5, .01), "accepted"),
+                                         ((.489, .5, 0), "defaulted"), ((.5, .5, .011), "defaulted")):
             self.new_work()
             body = response()
-            body["answers"]["domain"]["probabilities"] = dict(zip(config.DOMAIN_CRITERIA_KEYS, values))
+            body["answers"]["lane"]["probabilities"] = dict(zip(lane_keys, values))
             body["usage"] = {"unrelated": "中文 café"}
-            self.assertEqual(self.invoke(body)[0], expected)
+            code, data, _, _ = self.invoke(body)
+            self.assertEqual(code, 0)
+            self.assertEqual(data["outcome"], expected_outcome)
+            if expected_outcome == "defaulted":
+                self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
 
-    def test_retry_budget_survives_invocations_and_old_reference(self):
-        low = response()
-        low["answers"]["difficulty"]["confidence"] = .2
-        first = self.invoke(low)[1]
-        context = {"priorClassificationRef": first["classificationRef"], "details": "Pure local parser"}
-        second = self.invoke(low, context=context)[1]
-        self.assertEqual(second["outcome"], "manager-judgment")
+    def test_retry_and_decline_workflow(self):
+        low = response(lane="BACKEND_LOGIC", criticality="CORE", scope="STANDARD", crit_conf=0.3)
+        # 1. First request with uncertain answer offers retry
+        code, first, calls, _ = self.invoke(low)
+        self.assertEqual((code, len(calls)), (4, 1))
+        self.assertEqual(first["outcome"], "retry-with-context")
+        self.assertNotIn("judgment", first)
+        self.assertEqual(len(self.events()), 2)
+
+        # 2. Re-run bare is refused
+        code, bare, calls, _ = self.invoke()
+        self.assertEqual((code, calls), (4, []))
+        self.assertEqual(len(self.events()), 2)
+        self.assertIn("--decline-retry", bare["reason"])
+
+        # 3. Context retry with now confident response succeeds
+        context = {"priorClassificationRef": first["classificationRef"], "details": "Pure parser details"}
+        code, second, calls, _ = self.invoke(response(), context=context)
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(second["outcome"], "accepted")
         self.assertNotEqual(first["inputDigest"], second["inputDigest"])
-        for extra in (None, context, {**context, "details": "Changed context"},
-                      {**context, "priorClassificationRef": second["classificationRef"]}):
-            with self.subTest(context=extra):
-                code, data, calls, _ = self.invoke(context=extra)
-                self.assertEqual((code, data["outcome"], calls), (4, "manager-judgment", []))
-                self.assertEqual(len(self.events()), 4)
-        self.task["intent"] += " with revised requirements"
-        self.assertEqual(self.invoke()[0], 0)
-        self.cfg["classification"]["ruleVersion"] += "-next"
-        self.save_config()
-        self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(len(self.events()), 4)
 
-    def test_retry_requires_matching_latest_eligible_result(self):
-        low = response()
-        low["answers"]["domain"]["confidence"] = .1
-        first = self.invoke(low)[1]
-        self.assertEqual(self.invoke()[2], [])
-        for context in ({"details": "Missing ref"}, {"priorClassificationRef": 1, "details": "Wrong kind"},
-                        {"priorClassificationRef": 2, "details": ""}):
-            self.assertEqual(self.invoke(context=context)[2], [])
-        context = {"priorClassificationRef": first["classificationRef"], "details": "Pure function"}
-        self.assertEqual(self.invoke(context=context)[0], 0)
+        # 4. Further attempt after accepted is refused to reuse evidence
+        code, refused, calls, _ = self.invoke(context=context)
+        self.assertEqual((code, calls), (4, []))
+        self.assertIn("reuse its evidence", refused["reason"])
+
+        # 5. Decline on a separate work item with pending retry-with-context writes ONLY judgment
         self.new_work()
-        self.assertEqual(self.invoke(context=context)[0], 2)
-        self.invoke()
-        self.assertEqual(self.invoke(context=context)[2], [])
+        code, first_pending, calls, _ = self.invoke(low)
+        self.assertEqual((code, len(calls)), (4, 1))
+        self.assertEqual(first_pending["outcome"], "retry-with-context")
+        self.assertEqual(len(self.events()), 2)
+
+        # Re-run with --decline-retry
+        code, declined_result, calls, _ = self.invoke(decline=True)
+        self.assertEqual((code, len(calls)), (0, 0))  # NO second POST!
+        self.assertEqual(declined_result["outcome"], "defaulted")
+        self.assertEqual(declined_result["classificationRef"], first_pending["classificationRef"])
+        self.assertIn("judgment", declined_result)
+        self.assertEqual(declined_result["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(declined_result["judgment"]["defaulted"], ["criticality"])
+        self.assertEqual(declined_result["judgment"]["criticality"], "CORE")
+        # Exactly 3 events: input1, class1, judgment1 (historical class1 remains retry-with-context)
+        events = self.events()
+        self.assertEqual([e["kind"] for e in events], ["routing-input", "routing-classification", "routing-judgment"])
+        self.assertEqual(events[1]["data"]["outcome"], "retry-with-context")
+        for event in events:
+            schema.validate_event(event)
+
+        # 6. Re-run decline after decision is refused
+        code, refused_decline, calls, _ = self.invoke(decline=True)
+        self.assertEqual((code, calls), (4, []))
+        self.assertIn("reuse its evidence", refused_decline["reason"])
+
+        # 7. Decline on fresh call proceeds with POST and applies defaults immediately
+        self.new_work()
+        code, fresh_declined, calls, _ = self.invoke(low, decline=True)
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(fresh_declined["outcome"], "defaulted")
+        self.assertIn("judgment", fresh_declined)
+
+        # 8. Retry with still uncertain answers defaults after retry used
+        self.new_work()
+        code, p1, calls, _ = self.invoke(low)
+        self.assertEqual(code, 4)
+        c_ctx = {"priorClassificationRef": p1["classificationRef"], "details": "Additional context"}
+        code, p2, calls, _ = self.invoke(low, context=c_ctx)
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(p2["outcome"], "defaulted")
+        self.assertIn("judgment", p2)
+        self.assertEqual(len(self.events()), 5)  # input1, class1, input2, class2, judgment2
+
+        # 9. Invalid input: --context and --decline-retry together
+        self.new_work()
+        code, _, calls, _ = self.invoke(context={"priorClassificationRef": 1, "details": "info"}, decline=True)
+        self.assertEqual((code, calls), (2, []))
+
+        # 10. Context without history
+        self.new_work()
+        code, _, calls, _ = self.invoke(context={"priorClassificationRef": 1, "details": "info"})
+        self.assertEqual((code, calls), (2, []))
 
     def test_transport_and_parse_failures_record_judgment(self):
         faults = [TimeoutError(KEY), URLError(KEY)]
@@ -378,12 +537,25 @@ class OfflineJev(OfflineTestCase):
             with self.subTest(fault=type(fault).__name__):
                 self.new_work()
                 code, data, calls, _ = self.invoke(fault=fault)
-                self.assertEqual((code, data["outcome"], len(calls)), (4, "manager-judgment", 1))
-                self.assertEqual(len(self.events()), 2)
+                self.assertEqual((code, len(calls)), (0, 1))
+                self.assertEqual(data["outcome"], "defaulted")
+                self.assertEqual(data["answers"], {"unknown": "invalid Jev response"})
+                self.assertEqual(data["reason"], "Jev request failed")
+                self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
+                self.assertEqual(data["judgment"]["defaulted"], ["lane", "criticality", "scope"])
+                self.assertEqual(data["judgment"]["lane"], "BACKEND_LOGIC")
+                self.assertEqual(data["judgment"]["criticality"], "CORE")
+                self.assertEqual(data["judgment"]["scope"], "COMPLEX")
+                self.assertEqual(len(self.events()), 3)
+                for event in self.events():
+                    schema.validate_event(event)
         for raw in (b"x" * (256 * 1024 + 1), b"{", b'{}{}', b'{"id":1,"id":2}',
                     b'"\\ud800"', b'"\xff"', b'{"x":1e999}', b'[]', b'null'):
             self.new_work()
-            self.assertEqual(self.invoke(raw=raw)[0], 4)
+            code, data, _, _ = self.invoke(raw=raw)
+            self.assertEqual(code, 0)
+            self.assertEqual(data["outcome"], "defaulted")
+            self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
 
     def test_secret_echo_and_safe_snapshot_fields(self):
         for field in ("id", "model", "usage"):
@@ -395,15 +567,17 @@ class OfflineJev(OfflineTestCase):
                     body = response()
                     body[field] = value
                     code, data, _, _ = self.invoke(body)
-                    self.assertEqual((code, data["outcome"]), (4, "manager-judgment"))
+                    self.assertEqual(code, 0)
+                    self.assertEqual(data["outcome"], "defaulted")
                     self.assertEqual(data["answers"], {"unknown": "invalid Jev response"})
+                    self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
         self.new_work()
-        self.cfg["classification"]["domain"]["instructions"] = KEY
+        self.cfg["classification"]["lane"]["instructions"] = KEY
         self.save_config()
         self.assertEqual(self.invoke()[:3], (2, None, []))
 
     def test_policy_changes_during_request_and_record_failures(self):
-        before = config.load_config(local=self.local).policy_digest
+        before = config.load_matrix_config(local=self.local).policy_digest
 
         def change():
             self.cfg["jev"]["minConfidence"] = .95
@@ -411,7 +585,7 @@ class OfflineJev(OfflineTestCase):
 
         data = self.invoke(during=change)[1]
         self.assertEqual(data["policyDigest"], before)
-        self.assertNotEqual(before, config.load_config(local=self.local).policy_digest)
+        self.assertNotEqual(before, config.load_matrix_config(local=self.local).policy_digest)
         for seam in ("load_work", "record_routing_input", "append_event"):
             self.new_work()
             with patch.object(records, seam, side_effect=records.RecordError(KEY)):
@@ -425,7 +599,7 @@ class OfflineJev(OfflineTestCase):
         self.assertEqual({e["writer"] for e in self.events()}, {"lead:" + self.work + "@" + REPO})
         self.new_work()
         records.record_routing_input(self.local, REPO, self.work, task=self.task, context=None,
-                                     policy_digest=config.load_config(local=self.local).policy_digest,
+                                     policy_digest=config.load_matrix_config(local=self.local).policy_digest,
                                      writer="manager@" + REPO)
         self.assertEqual(self.invoke()[:3], (2, None, []))
         self.assertEqual(len(self.events()), 1)
@@ -437,7 +611,7 @@ class OfflineJev(OfflineTestCase):
             self.assertEqual(self.invoke()[:3], (2, None, []))
         self.task["intent"] = original
         for field in ("ruleVersion", "instructions"):
-            target = self.cfg["classification"] if field == "ruleVersion" else self.cfg["classification"]["domain"]
+            target = self.cfg["classification"] if field == "ruleVersion" else self.cfg["classification"]["lane"]
             target[field] = KEY
             self.save_config()
             self.assertEqual(self.invoke()[:3], (2, None, []))
@@ -445,18 +619,25 @@ class OfflineJev(OfflineTestCase):
         self.save_config()
         body = response()
         body["usage"] = {"echo": str(self.keyfile)}
-        self.assertEqual(self.invoke(body)[0], 4)
+        code, data, _, _ = self.invoke(body)
+        self.assertEqual(code, 0)
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["judgment"]["basis"], "default-jev-failure")
 
     def test_transport_cleanup_failure_never_exposes_exception_text(self):
         jev = importlib.import_module("t3compose.jev")
-        error = HTTPError("https://synthetic.invalid", 401, KEY, {}, io.BytesIO())
-        error.close = Mock(side_effect=RuntimeError(KEY))
-        opener = Mock()
-        opener.open.side_effect = error
-        with patch.object(jev.urllib.request, "build_opener", return_value=opener):
-            with self.assertRaises(OSError) as caught:
-                jev.open_http(Mock(), timeout=1)
-        self.assertNotIn(KEY, str(caught.exception) + repr(caught.exception))
+        stream = io.BytesIO()
+        try:
+            error = HTTPError("https://synthetic.invalid", 401, KEY, {}, stream)
+            error.close = Mock(side_effect=RuntimeError(KEY))
+            opener = Mock()
+            opener.open.side_effect = error
+            with patch.object(jev.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(OSError) as caught:
+                    jev.open_http(Mock(), timeout=1)
+            self.assertNotIn(KEY, str(caught.exception) + repr(caught.exception))
+        finally:
+            stream.close()
 
     def test_opener_tls_redirects_and_safe_exception_text(self):
         jev = importlib.import_module("t3compose.jev")
@@ -481,7 +662,7 @@ class OfflineJev(OfflineTestCase):
         from t3compose import cli
         jev = importlib.import_module("t3compose.jev")
         with patch("builtins.open", side_effect=AssertionError("I/O")), \
-                patch.object(config, "load_config", side_effect=AssertionError("config")), \
+                patch.object(config, "load_matrix_config", side_effect=AssertionError("config")), \
                 patch.object(records, "load_work", side_effect=AssertionError("records")):
             importlib.reload(jev)
             self.assertIn(("route", "classify"), cli.command_names())

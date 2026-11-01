@@ -15,7 +15,8 @@ ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 INPUT_LIMIT = 16 * 1024
 RESPONSE_LIMIT = 256 * 1024
 KEY_LIMIT = 4096
-QUESTIONS = ("domain", "difficulty")
+QUESTIONS = ("lane", "criticality", "scope")
+FIXED_DEFAULTS = {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX"}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -117,7 +118,11 @@ def _information(value):
     return bool(value.strip()) if isinstance(value, str) else value is not None
 
 
-def _retry(events, task, context, policy, maximum):
+def _is_unknown_obj(value):
+    return isinstance(value, dict) and set(value) == {"unknown"}
+
+
+def _retry(events, task, context, policy, maximum, decline=False):
     """Consume attempts by persisted input, not by a caller-supplied retry counter."""
     inputs = [e for e in events if e["kind"] == "routing-input" and
               e["data"]["policyDigest"] == policy and
@@ -132,16 +137,92 @@ def _retry(events, task, context, policy, maximum):
     if not classifications:
         raise cli.CommandError("routing input has no classification; reconcile records")
     prior = classifications[-1]
-    allowed = (len(inputs) == 1 and maximum == 1 and
-               prior["data"]["outcome"] == "retry-with-context" and context is not None and
-               context.get("priorClassificationRef") == prior["seq"] and
-               _information({k: v for k, v in context.items() if k != "priorClassificationRef"}))
-    if allowed:
-        return True
+    judgments = [e for e in events if e["kind"] == "routing-judgment" and
+                 e["data"]["inputRef"] == latest["seq"]]
+    decided = prior["data"]["outcome"] in ("accepted", "defaulted") or bool(judgments)
+
+    if decline:
+        if not decided and prior["data"]["outcome"] == "retry-with-context":
+            return ("decline_pending", prior)
+        return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
+                            "reason": "identical input already classified/decided; reuse its evidence"},
+                           cli.ExitCode.JUDGMENT_NEEDED)
+
+    if context is not None:
+        allowed = (len(inputs) == 1 and maximum >= 1 and not decided and
+                   prior["data"]["outcome"] == "retry-with-context" and
+                   context.get("priorClassificationRef") == prior["seq"] and
+                   _information({k: v for k, v in context.items() if k != "priorClassificationRef"}))
+        if allowed:
+            return True
+        reason = ("identical input already classified/decided; reuse its evidence" if decided
+                  else "retry refused; use eligible context once or rerun with --decline-retry")
+        return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
+                            "reason": reason},
+                           cli.ExitCode.JUDGMENT_NEEDED)
+
+    reason = ("identical input already classified/decided; reuse its evidence" if decided
+              else "retry refused; use eligible context once or rerun with --decline-retry")
     return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
-                        "outcome": "manager-judgment",
-                        "reason": "retry refused; use eligible context once or obtain manager judgment"},
+                        "reason": reason},
                        cli.ExitCode.JUDGMENT_NEEDED)
+
+
+def _make_judgment(answers, min_confidence, input_ref, input_digest, policy_digest, failure_reason=None):
+    if failure_reason is not None:
+        return {
+            "configVersion": 3,
+            "inputRef": input_ref,
+            "inputDigest": input_digest,
+            "policyDigest": policy_digest,
+            "lane": FIXED_DEFAULTS["lane"],
+            "criticality": FIXED_DEFAULTS["criticality"],
+            "scope": FIXED_DEFAULTS["scope"],
+            "reason": f"{failure_reason}; applied fixed defaults",
+            "basis": "default-jev-failure",
+            "defaulted": list(QUESTIONS),
+        }
+    defaulted = [
+        q for q in QUESTIONS
+        if answers[q]["confidence"] < min_confidence or answers[q]["choice"] == "INSUFFICIENT_CONTEXT"
+    ]
+    if defaulted:
+        if "scope" in defaulted and answers["scope"]["choice"] == "INSUFFICIENT_CONTEXT":
+            basis = "default-insufficient-context"
+        else:
+            basis = "default-low-confidence"
+        lane = FIXED_DEFAULTS["lane"] if "lane" in defaulted or answers["lane"]["choice"] == "MIXED" else answers["lane"]["choice"]
+        criticality = FIXED_DEFAULTS["criticality"] if "criticality" in defaulted else answers["criticality"]["choice"]
+        scope = FIXED_DEFAULTS["scope"] if "scope" in defaulted else answers["scope"]["choice"]
+        reason = f"defaulted {', '.join(defaulted)} to fixed defaults"
+        if "lane" not in defaulted and answers["lane"]["choice"] == "MIXED":
+            reason += "; confident MIXED lane mapped to BACKEND_LOGIC"
+        return {
+            "configVersion": 3,
+            "inputRef": input_ref,
+            "inputDigest": input_digest,
+            "policyDigest": policy_digest,
+            "lane": lane,
+            "criticality": criticality,
+            "scope": scope,
+            "reason": reason,
+            "basis": basis,
+            "defaulted": defaulted,
+        }
+    if answers["lane"]["choice"] == "MIXED":
+        return {
+            "configVersion": 3,
+            "inputRef": input_ref,
+            "inputDigest": input_digest,
+            "policyDigest": policy_digest,
+            "lane": "BACKEND_LOGIC",
+            "criticality": answers["criticality"]["choice"],
+            "scope": answers["scope"]["choice"],
+            "reason": "confident MIXED lane mapped to BACKEND_LOGIC",
+            "basis": "manual",
+            "defaulted": [],
+        }
+    return None
 
 
 def _request(body, key, timeout):
@@ -162,18 +243,18 @@ def _request(body, key, timeout):
     raise ValueError("Jev request failed") from None
 
 
-def _answer(raw, data, secrets, settings, retried):
+def _answer(raw, data, secrets, settings, retried, decline=False):
     """Whitelist response fields and validate with the same schema as durable records."""
     try:
         value = _decode(raw, RESPONSE_LIMIT)
         if _sensitive(value, secrets):
             raise ValueError("credential echo")
         for field in ("model", "id"):
-            if not isinstance(value[field], str) or not re.fullmatch(
+            if not isinstance(value.get(field), str) or not re.fullmatch(
                     r"[A-Za-z0-9][A-Za-z0-9._:/~+-]{0,255}", value[field]):
                 raise ValueError("invalid service identity")
         candidate = {**data, "snapshotModel": value["model"], "responseId": value["id"],
-                     "answers": value["answers"]}
+                     "answers": value.get("answers")}
         schema.validate_event_data("routing-classification", candidate)
     except Exception:
         return {**data, "reason": "invalid Jev response"}
@@ -181,30 +262,39 @@ def _answer(raw, data, secrets, settings, retried):
     # The schema permits explicit unknowns only for failed outcomes, never here.
     if not isinstance(answers, dict) or set(answers) != set(QUESTIONS):
         return {**data, "reason": "invalid Jev response"}
-    if answers["domain"]["choice"] == "MIXED_OR_UNCLEAR":
-        outcome, reason = "manager-judgment", "mixed or unclear domain"
-    elif (answers["difficulty"]["choice"] == "INSUFFICIENT_CONTEXT" or
-          any(answers[q]["confidence"] < settings["minConfidence"] for q in QUESTIONS)):
-        outcome = "retry-with-context" if settings["maxContextRetries"] and not retried else "manager-judgment"
-        reason = "insufficient context or confidence"
+
+    min_confidence = settings["minConfidence"]
+    all_accepted = all(
+        answers[q]["confidence"] >= min_confidence and answers[q]["choice"] != "INSUFFICIENT_CONTEXT"
+        for q in QUESTIONS
+    )
+
+    if all_accepted:
+        outcome, reason = "accepted", "all answers meet classification policy"
+    elif not retried and settings["maxContextRetries"] >= 1 and not decline:
+        outcome = "retry-with-context"
+        reason = ("uncertain answers; retry once with --context EXTRA.json carrying "
+                  "priorClassificationRef, or rerun with --decline-retry to take the fixed defaults")
     else:
-        outcome, reason = "accepted", "both answers meet classification policy"
+        outcome, reason = "defaulted", "uncertain answers; applied fixed defaults"
     return {**candidate, "outcome": outcome, "reason": reason}
 
 
-def classify(local, repo, work_id, task, context=None):
+def classify(local, repo, work_id, task, context=None, decline=False):
     """Classify parsed input once; also used by the EM-only synthetic live check."""
     try:
-        return _classify(local, repo, work_id, task, context)
+        return _classify(local, repo, work_id, task, context, decline)
     except cli.CommandError:
         raise
     except Exception:
         raise cli.CommandError("classification input or records invalid; reconcile before retry") from None
 
 
-def _classify(local, repo, work_id, task, context):
+def _classify(local, repo, work_id, task, context, decline):
+    if context is not None and decline:
+        raise cli.CommandError("--context and --decline-retry cannot be used together", cli.ExitCode.INVALID_INPUT)
     try:
-        loaded = config.load_config(local=local)
+        loaded = config.load_matrix_config(local=local)
     except Exception:
         raise cli.CommandError("invalid routing configuration", cli.ExitCode.INVALID_CONFIG) from None
     cfg = config.thaw_value(loaded.data)
@@ -221,11 +311,12 @@ def _classify(local, repo, work_id, task, context):
     criteria = {q: {**questions[q]["criteria"], "instructions": questions[q]["instructions"]}
                 for q in QUESTIONS}
     unknown = {"unknown": "invalid Jev response"}
-    data = {"ruleVersion": cfg["classification"]["ruleVersion"], "criteria": criteria,
+    data = {"configVersion": 3,
+            "ruleVersion": cfg["classification"]["ruleVersion"], "criteria": criteria,
             "criteriaDigest": "sha256:" + hashlib.sha256(jsonio.canonical_json(criteria)).hexdigest(),
             "riskFacts": task["riskFacts"], "configuredModel": cfg["jev"]["model"],
             "snapshotModel": unknown, "responseId": unknown, "answers": unknown,
-            "outcome": "manager-judgment", "reason": "Jev request failed"}
+            "outcome": "defaulted", "reason": "Jev request failed"}
     try:
         # Validate local metadata before any side effect. This reference is only
         # a shape check; the recorder supplies the real provenance below.
@@ -236,11 +327,30 @@ def _classify(local, repo, work_id, task, context):
         raise cli.CommandError("invalid classification record configuration",
                                cli.ExitCode.INVALID_CONFIG) from None
     _screen(local, body, {"record": data, "writer": writer, "repo": repo, "work": work_id}, secrets)
-    retried = _retry(work["events"], task, context, loaded.policy_digest, cfg["jev"]["maxContextRetries"])
+    retried = _retry(work["events"], task, context, loaded.policy_digest, cfg["jev"]["maxContextRetries"], decline=decline)
+    if isinstance(retried, tuple) and retried[0] == "decline_pending":
+        prior = retried[1]
+        prior_data = prior["data"]
+        judgment_data = _make_judgment(
+            prior_data["answers"], cfg["jev"]["minConfidence"],
+            prior_data["inputRef"], prior_data["inputDigest"], prior_data["policyDigest"],
+        )
+        schema.validate_event_data("routing-judgment", judgment_data)
+        j_event = records.append_event(local, repo, work_id, "routing-judgment", judgment_data, writer=writer)
+        result_data = {
+            **prior_data,
+            "classificationRef": prior["seq"],
+            "outcome": "defaulted",
+            "judgment": {**judgment_data, "judgmentRef": j_event["seq"]},
+        }
+        if _sensitive(result_data, secrets):
+            raise cli.CommandError("credential found in prior classification")
+        return cli.Outcome(result_data, cli.ExitCode.SUCCESS)
     if isinstance(retried, cli.Outcome):
         if _sensitive(retried.data, secrets):
             raise cli.CommandError("credential found in prior classification")
         return retried
+
     reference = records.record_routing_input(local, repo, work_id, task=task, context=context,
                                              policy_digest=loaded.policy_digest, writer=writer)
     data.update(reference)
@@ -249,10 +359,33 @@ def _classify(local, repo, work_id, task, context):
     except Exception:
         pass  # Only the fixed public failure reason is persisted.
     else:
-        data = _answer(raw, data, secrets, cfg["jev"], retried)
+        data = _answer(raw, data, secrets, cfg["jev"], retried, decline=decline)
+
     event = records.append_event(local, repo, work_id, "routing-classification", data, writer=writer)
-    return cli.Outcome({**data, "classificationRef": event["seq"]},
-                       cli.ExitCode.SUCCESS if data["outcome"] == "accepted" else cli.ExitCode.JUDGMENT_NEEDED)
+
+    if data["outcome"] == "retry-with-context":
+        return cli.Outcome({**data, "classificationRef": event["seq"]}, cli.ExitCode.JUDGMENT_NEEDED)
+
+    judgment_data = None
+    if _is_unknown_obj(data["answers"]):
+        judgment_data = _make_judgment(
+            None, cfg["jev"]["minConfidence"],
+            data["inputRef"], data["inputDigest"], data["policyDigest"],
+            failure_reason=data["reason"],
+        )
+    else:
+        judgment_data = _make_judgment(
+            data["answers"], cfg["jev"]["minConfidence"],
+            data["inputRef"], data["inputDigest"], data["policyDigest"],
+        )
+
+    result_data = {**data, "classificationRef": event["seq"]}
+    if judgment_data is not None:
+        schema.validate_event_data("routing-judgment", judgment_data)
+        j_event = records.append_event(local, repo, work_id, "routing-judgment", judgment_data, writer=writer)
+        result_data["judgment"] = {**judgment_data, "judgmentRef": j_event["seq"]}
+
+    return cli.Outcome(result_data, cli.ExitCode.SUCCESS)
 
 
 def command(args):
@@ -263,7 +396,7 @@ def command(args):
             raise ValueError("context file must hold a nonempty object")
     except Exception:
         raise cli.CommandError("invalid or oversized classification input file") from None
-    return classify(args.local_dir, args.repo, args.work, task, context)
+    return classify(args.local_dir, args.repo, args.work, task, context, decline=args.decline_retry)
 
 
 def register(registry):
@@ -271,4 +404,5 @@ def register(registry):
     for option in ("repo", "work", "input"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--context")
+    parser.add_argument("--decline-retry", action="store_true")
     parser.set_defaults(handler=command)

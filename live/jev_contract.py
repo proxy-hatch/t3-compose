@@ -1,4 +1,4 @@
-"""EM-only L2: one LIVE synthetic Decisions API call, using the real adapter."""
+"""EM-only L2b: one LIVE synthetic Decisions API call, using the real adapter."""
 import argparse
 from pathlib import Path
 import sys
@@ -23,7 +23,7 @@ def main():
         parser.add_argument("--local-dir", type=Path, default=paths.local_dir())
         args = parser.parse_args()
         local = paths.local_dir(args.local_dir)
-        repo, work_id = "synthetic/jev-contract", "L2-" + uuid.uuid4().hex
+        repo, work_id = "synthetic/jev-contract", "L2b-" + uuid.uuid4().hex
         writer = "manager@" + repo
         task = {"intent": "Synthetic: implement a pure parser for comma-separated integers",
                 "acceptance": ["Parse valid integers", "Reject malformed integer tokens"],
@@ -33,8 +33,8 @@ def main():
                  "targetBranch": "main", "reviewBase": cli.helper_info()["commit"],
                  "scope": "Synthetic Jev contract check", "designRefs": ["docs/cli/jev.md"],
                  "ownedPaths": ["synthetic_parser.py"], "dependencies": [],
-                 "acceptance": [{"id": "CONTRACT", "text": "Both typed answers validate"}],
-                 "requiredChecks": [{"id": "L2", "kind": "fast",
+                 "acceptance": [{"id": "CONTRACT", "text": "All three typed answers validate"}],
+                 "requiredChecks": [{"id": "L2b", "kind": "fast",
                                      "command": "live/jev_contract.py"}], "writer": writer}
         records.create_work(local, repo, work_id, value, writer=writer)
         print("LIVE synthetic Jev contract check; one request, no automatic retry")
