@@ -318,6 +318,43 @@ class OfflineConfigValidation(OfflineTestCase):
         self.assertNotIn("relative/secret-path-token", str(exc))
         self.assertNotIn("SUPER-SECRET-TOKEN-999", str(exc))
 
+    def test_refusal_shapes_and_config_check_both_versions(self):
+        import contextlib
+        import io
+        from t3compose import cli
+        entry = {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol",
+                 "kind": "usage-limit", "observedAt": "shape only", "resetAt": None,
+                 "evidence": "synthetic evidence"}
+        state = _valid_state_dict()
+        state["refusals"] = [entry, entry]
+        for cfg in (_valid_config_dict(), _matrix_config_dict()):
+            self.write_json(self.config_path, cfg)
+            self.write_json(self.state_path, state)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(["--local-dir", str(self.local), "config", "check"])
+            self.assertEqual(code, 0, (out.getvalue(), err.getvalue()))
+        cases = [({}, "refusals", "expected-list"),
+                 ([None], "refusals[0]", "expected-object"),
+                 ([{**entry, "extra": True}], "refusals[0].extra", "unknown-key"),
+                 ([{**entry, "kind": "unknown"}], "refusals[0].kind", "invalid-refusal-kind")]
+        for key in entry:
+            missing = dict(entry)
+            del missing[key]
+            cases.append(([missing], f"refusals[0].{key}", "missing-key"))
+        for key in ("providerInstanceId", "model", "observedAt", "evidence"):
+            for value in ("", "  ", 1, None):
+                cases.append(([{**entry, key: value}], f"refusals[0].{key}", "invalid-string"))
+        for value in ("", "  ", 1, False):
+            cases.append(([{**entry, "resetAt": value}], "refusals[0].resetAt", "invalid-reset-at"))
+        for entries, path, rule in cases:
+            with self.subTest(path=path, rule=rule, entries=entries):
+                self.write_json(self.state_path, {**state, "refusals": entries})
+                with self.assertRaises(_cfg().ConfigValidationError) as ctx:
+                    _cfg().load_quota_state(self.state_path)
+                self.assertEqual([dict(e) for e in ctx.exception.errors],
+                                 [{"path": "state." + path, "rule": rule}])
+
     def test_quota_state_validation_and_sanitized_io_errors(self):
         cfg_mod = _cfg()
         frozen_cfg, _ = cfg_mod.validate_config_data(_valid_config_dict())

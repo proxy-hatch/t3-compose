@@ -18,6 +18,8 @@ TOP_LEVEL_CONFIG_KEYS = (
 )
 VERSION_2_NEW_SECTIONS = ("classification", "riskFacts", "roundTiers", "jev", "availabilityFallback")
 TOP_LEVEL_STATE_KEYS = ("activeProviderInstanceId", "quotaObservations", "note")
+REFUSAL_KINDS = ("usage-limit", "quota-exhausted", "credits", "rate-limit")
+REFUSAL_KEYS = ("providerInstanceId", "model", "kind", "observedAt", "resetAt", "evidence")
 OBSERVATION_KEYS = ("observedAt", "status", "resetAt", "evidence")
 DOMAIN_CRITERIA_KEYS = ("SOFTWARE_ENGINEERING", "OTHER", "MIXED_OR_UNCLEAR")
 DIFFICULTY_CRITERIA_KEYS = ("EASY", "MEDIUM", "CHALLENGING", "INSUFFICIENT_CONTEXT")
@@ -577,7 +579,7 @@ def validate_quota_state_data(raw, config_data=None):
     errors = []
     if not isinstance(raw, dict):
         raise ConfigValidationError([{"path": "$", "rule": "expected-object"}])
-    _check_keys(raw, "$", TOP_LEVEL_STATE_KEYS, (), errors)
+    _check_keys(raw, "$", TOP_LEVEL_STATE_KEYS, ("refusals",), errors)
     pool_members = {i for p in config_data["providerPools"].values() for i in p["providerInstanceIds"]} if config_data and "providerPools" in config_data else set()
     if "activeProviderInstanceId" in raw:
         active = raw["activeProviderInstanceId"]
@@ -609,6 +611,19 @@ def validate_quota_state_data(raw, config_data=None):
                         if "resetAt" in entry and entry["resetAt"] is not None and not _nonempty_str(entry["resetAt"]):
                             _err(errors, f"{ep}.resetAt", "invalid-reset-at")
                         _check_str_field(entry, "evidence", ep, errors)
+    if "refusals" in raw:
+        if not isinstance(raw["refusals"], list):
+            _err(errors, "refusals", "expected-list")
+        else:
+            for idx, entry in enumerate(raw["refusals"]):
+                ep = f"refusals[{idx}]"
+                if _check_keys(entry, ep, REFUSAL_KEYS, (), errors):
+                    for key in ("providerInstanceId", "model", "observedAt", "evidence"):
+                        _check_str_field(entry, key, ep, errors)
+                    if "kind" in entry and entry["kind"] not in REFUSAL_KINDS:
+                        _err(errors, f"{ep}.kind", "invalid-refusal-kind")
+                    if "resetAt" in entry and entry["resetAt"] is not None and not _nonempty_str(entry["resetAt"]):
+                        _err(errors, f"{ep}.resetAt", "invalid-reset-at")
     if errors:
         raise ConfigValidationError(errors)
     return freeze_value(raw)
