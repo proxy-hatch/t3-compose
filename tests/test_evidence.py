@@ -1,4 +1,8 @@
-"""Offline evidence comparisons through real, guarded RC-1 and evidence commands."""
+"""Offline API matrix with durable RC-1 fixtures and a small guarded CLI set.
+
+Only evidence_cli and invalid_evidence(cli_check=True) start t3c; fixture creation
+never does. Keep subprocess adapters separate from the semantic matrix.
+"""
 import hashlib
 import importlib
 import json
@@ -6,7 +10,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
-from t3compose import cli, process, records
+from t3compose import cli, evidence, process, records, schema
 from t3compose.jsonio import canonical_json
 from tests.support import OfflineTestCase, ROOT, BOOTSTRAP_PATH
 
@@ -48,32 +52,35 @@ class OfflineEvidence(OfflineTestCase):
                             str(ROOT / "bin/t3c"), "--local-dir", str(self.local), *args],
                            capture_output=True, text=True, timeout=20)
 
-    def input_file(self, data):
-        file = self.temp / "synthetic-input.json"
-        file.write_bytes(canonical_json(data))
-        return str(file)
+    def snapshot(self, value):
+        # Preserve the old CLI JSON boundary, including nested mutable values.
+        return json.loads(canonical_json(value))
 
     def new_work(self):
         work = {"workId": self.work_id, "linearIssue": None, "repository": REPO,
                 "targetBranch": "main", "reviewBase": self.base, "scope": "Synthetic comparison",
                 "designRefs": [], "ownedPaths": ["synthetic.txt"], "dependencies": [],
                 "acceptance": [CRITERION], "requiredChecks": [CHECK], "writer": WRITER}
-        result = self.command("work", "new", "--repo", str(self.checkout), "--work", self.work_id,
-                              "--writer", WRITER, "--file", self.input_file(work))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["events"], [])
+        result = records.create_work(self.local, str(self.checkout), self.work_id,
+                                     self.snapshot(work), writer=WRITER)
+        self.assertEqual(result["events"], [])
+        self.assertEqual(records.load_work(self.local, REPO, self.work_id), result)
 
-    def add(self, kind, data, expected=0):
-        extra = ("--checkout", str(self.checkout)) if kind == "dispatch-intent" else ()
-        result = self.command("event", "add", "--repo", REPO, "--work", self.work_id,
-                              "--writer", WRITER, "--kind", kind,
-                              "--file", self.input_file(data), *extra)
-        self.assertEqual(result.returncode, expected, result.stderr)
-        if expected == 0:
-            self.assertEqual(result.stderr, "")
-            return json.loads(result.stdout)
-        self.assertEqual(result.stdout, "")
-        self.assertTrue(result.stderr)
+    def add(self, kind, data, reject=False):
+        before = self.bytes() if reject else None
+        # Only helper metadata is synthetic. Managed Git HEAD/start existence,
+        # schema/history/provenance and atomic persistence remain real.
+        with patch.object(cli, "helper_info", return_value={"commit": "e" * 40}):
+            def append():
+                return records.append_event(
+                    self.local, REPO, self.work_id, kind, self.snapshot(data),
+                    writer=WRITER, checkout=self.checkout if kind == "dispatch-intent" else None)
+            if reject:
+                with self.assertRaises((records.RecordError, schema.SchemaError)):
+                    append()
+                self.assertEqual(self.bytes(), before, "refused append mutated records")
+                return None
+            return self.snapshot(append())
 
     def native(self, role, head=None, complete=True):
         self.serial += 1
@@ -123,10 +130,10 @@ class OfflineEvidence(OfflineTestCase):
     def finding(self, severity="important", id="F-1"):
         return {"id": id, "severity": severity, "summary": "Synthetic finding"}
 
-    def dispose(self, review, disposition="fixed", expected=0, **changes):
+    def dispose(self, review, disposition="fixed", reject=False, **changes):
         return self.add("finding-disposition", {"reviewRef": review["seq"], "findingId": "F-1",
             "response": "Synthetic response", "disposition": disposition, "by": "manager",
-            "evidence": {"artifact": str(self.artifact)}, "commit": self.head, **changes}, expected)
+            "evidence": {"artifact": str(self.artifact)}, "commit": self.head, **changes}, reject=reject)
 
     def ready(self, lead=None):
         self.native("worker")
@@ -142,21 +149,10 @@ class OfflineEvidence(OfflineTestCase):
         return {str(p.relative_to(self.local)): p.read_bytes() if p.is_file() else None
                 for p in self.local.rglob("*")}
 
-    def evidence(self, codes=(), *, head=None, pr_ready=False, repo=REPO, text=False):
+    def evidence(self, codes=(), *, head=None, pr_ready=False, repo=REPO):
         before = self.bytes()
-        args = [*( ["--text"] if text else []), "evidence", "check", "--repo", repo,
-                "--work", self.work_id, "--head", head or self.head]
-        if pr_ready:
-            args.append("--pr-ready")
-        result = self.command(*args)
-        self.assertEqual(result.returncode, 1 if codes else 0, result.stderr)
-        self.assertEqual(result.stderr, "")
+        data = evidence.check(self.local, repo, self.work_id, head or self.head, pr_ready=pr_ready)
         self.assertEqual(self.bytes(), before, "evidence check mutated records/state")
-        if text:
-            data = {key: json.loads(value) for key, value in
-                    (line.split(": ", 1) for line in result.stdout.splitlines())}
-        else:
-            data = json.loads(result.stdout)
         self.assertEqual(set(data), {"verified", "head", "prReady", "gaps"})
         self.assertEqual((data["verified"], data["head"], data["prReady"]),
                          (not codes, head or self.head, pr_ready))
@@ -164,6 +160,43 @@ class OfflineEvidence(OfflineTestCase):
         for gap in data["gaps"]:
             self.assertEqual(set(gap), {"code", "id", "reviewRef", "eventRef"})
         return data
+
+    def evidence_cli(self, codes=(), *, pr_ready=False, text=False, repo=REPO):
+        expected = self.evidence(codes, pr_ready=pr_ready, repo=repo)
+        before = self.bytes()
+        args = [*(["--text"] if text else []), "evidence", "check", "--repo", repo,
+                "--work", self.work_id, "--head", self.head]
+        if pr_ready:
+            args.append("--pr-ready")
+        result = self.command(*args)
+        self.assertEqual(result.returncode, 1 if codes else 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        if text:
+            self.assertEqual([line.split(": ", 1)[0] for line in result.stdout.splitlines()],
+                             ["verified", "head", "prReady", "gaps"])
+            data = {key: json.loads(value) for key, value in
+                    (line.split(": ", 1) for line in result.stdout.splitlines())}
+        else:
+            data = json.loads(result.stdout)  # Rejects extra JSON values/output.
+        self.assertEqual(data, expected)
+        self.assertEqual(self.bytes(), before, "CLI mutated records/state")
+        return data
+
+    def invalid_evidence(self, *, head=None, repo=REPO, work=None, cli_check=False):
+        head = self.head if head is None else head
+        work = self.work_id if work is None else work
+        before = self.bytes()
+        with self.assertRaises(cli.CommandError) as caught:
+            evidence.check(self.local, repo, work, head)
+        self.assertEqual(caught.exception.code, cli.ExitCode.INVALID_INPUT)
+        self.assertIn(str(caught.exception), {"invalid evidence check arguments",
+                                            "invalid or unavailable work records"})
+        if cli_check:
+            result = self.command("evidence", "check", "--repo", repo,
+                                  "--work", work, "--head", head)
+            self.assertEqual((result.returncode, result.stdout), (2, ""))
+            self.assertEqual(result.stderr.strip(), str(caught.exception))
+        self.assertEqual(self.bytes(), before, "invalid check mutated records/state")
 
     def operation(self, operation, *, head=None, outcome="succeeded", summary="default", complete=True):
         self.serial += 1
@@ -183,8 +216,8 @@ class OfflineEvidence(OfflineTestCase):
 
     def test_fully_verified_api_real_entrypoint_default_text_read_only(self):
         self.ready()
-        expected = self.evidence(repo=str(self.checkout))
-        self.assertEqual(self.evidence(text=True), expected)
+        expected = self.evidence_cli(repo=str(self.checkout))
+        self.assertEqual(self.evidence_cli(text=True), expected)
         from t3compose import evidence
         before = self.bytes()
         with patch.object(process, "run", side_effect=AssertionError("unexpected process")):
@@ -192,6 +225,28 @@ class OfflineEvidence(OfflineTestCase):
         self.assertEqual(self.bytes(), before)
         # Descriptors survive an artifact move; acceptance never opens their paths.
         self.artifact.rename(self.temp / "synthetic-moved-review.md")
+        self.evidence()
+
+    def test_cli_gap_and_pr_ready_json_adapters(self):
+        self.evidence_cli(["head-missing", "check-missing", "review-missing", "criterion-missing"])
+        self.ready()
+        self.operation("push")
+        self.operation("pull-request")
+        self.evidence_cli(pr_ready=True)
+
+    def test_fixture_json_snapshots_isolate_nested_inputs_and_returned_events(self):
+        self.ready()
+        command = list(CHECK["command"])
+        event = self.check_event(command=command)
+        original = self.snapshot(event)
+        command.append("synthetic-mutation")
+        event["data"]["command"].append("synthetic-return-mutation")
+        self.descriptor["path"] = "synthetic-mutated-descriptor"
+        loaded = records.load_work(self.local, REPO, self.work_id)
+        self.assertEqual(loaded["events"][original["seq"] - 1], original)
+        self.assertEqual(loaded["work"]["requiredChecks"], [CHECK])
+        review = next(e for e in loaded["events"] if e["kind"] == "review")
+        self.assertEqual(review["data"]["evidence"]["path"], str(self.artifact))
         self.evidence()
 
     def test_original_base_without_worker_result_never_invents_implementation(self):
@@ -223,7 +278,7 @@ class OfflineEvidence(OfflineTestCase):
                          [("SUITE", None), ("AC-1", None)])
         self.add("check", {"checkId": "SUITE", "command": CHECK["command"],
             "commit": self.head, "outcome": "unknown", "source": "manager",
-            "evidencePath": str(self.artifact)}, 2)
+            "evidencePath": str(self.artifact)}, reject=True)
         self.evidence(["check-missing", "criterion-missing"])
 
     def test_applicable_checks_preserve_coverage_but_latest_failure_blocks(self):
@@ -312,11 +367,11 @@ class OfflineEvidence(OfflineTestCase):
         data = {"reviewer": {"kind": "lead", "thread": "synthetic-wrong"},
                 "base": self.base, "head": self.head, "verdict": "approve", "findings": [],
                 "evidence": self.descriptor}
-        self.add("review", data, 2)
+        self.add("review", data, reject=True)
         self.evidence(["review-missing"])
         for changes in ({"reviewer": {"kind": "lead", "thread": "synthetic-lead"}, "evidence": None},
                         {"reviewer": {"kind": "lead", "thread": "synthetic-lead", "taskId": "synthetic-fabricated"}}):
-            self.add("review", {**data, **changes}, 2)
+            self.add("review", {**data, **changes}, reject=True)
             self.evidence(["review-missing"])
         self.review(lead="synthetic-lead")
         self.evidence()
@@ -357,7 +412,7 @@ class OfflineEvidence(OfflineTestCase):
             self.dispose(review, "disputed")
             data = self.evidence(["finding-unresolved"])
             self.assertEqual(data["gaps"][0]["reviewRef"], review["seq"])
-            self.dispose(review, "declined", expected=2, reason="Synthetic disagreement")
+            self.dispose(review, "declined", reject=True, reason="Synthetic disagreement")
             self.evidence(["finding-unresolved"])
             self.dispose(review)
             self.evidence()
@@ -387,13 +442,13 @@ class OfflineEvidence(OfflineTestCase):
         review = self.review([self.finding()])
         for mutation in ({"commit": None}, {"evidence": {}},
                          {"evidence": {"artifact": {"unknown": "Synthetic missing"}}}):
-            self.dispose(review, expected=2, **mutation)
+            self.dispose(review, reject=True, **mutation)
         self.evidence(["finding-missing"])
         self.dispose(review)
         self.evidence()
         self.dispose(review, "resolved-outside-tree", evidence="Synthetic external configuration corrected")
         self.evidence()
-        self.dispose(review, "withdrawn", expected=2, by="task:synthetic-wrong")
+        self.dispose(review, "withdrawn", reject=True, by="task:synthetic-wrong")
         author = "task:" + review["data"]["reviewer"]["taskId"]
         self.dispose(review, "withdrawn", by=author)
         self.evidence()
@@ -406,14 +461,14 @@ class OfflineEvidence(OfflineTestCase):
         self.check_event(source="feature-lead")
         self.criterion(source="feature-lead")
         self.evidence(["finding-missing"])
-        self.dispose(review, "withdrawn", expected=2, by="lead:synthetic-new-lead")
+        self.dispose(review, "withdrawn", reject=True, by="lead:synthetic-new-lead")
         self.dispose(review, "withdrawn", by="lead:synthetic-lead")
         self.evidence()
 
     def test_second_review_rejection_requires_distinct_later_independent_task(self):
         self.ready()
         first = self.review([self.finding()])
-        self.dispose(first, "rejected-by-second-review", expected=2, evidence={"reviewRef": first["seq"]})
+        self.dispose(first, "rejected-by-second-review", reject=True, evidence={"reviewRef": first["seq"]})
         second = self.review()
         self.dispose(first, "rejected-by-second-review", evidence={"reviewRef": second["seq"]})
         self.evidence()
@@ -425,12 +480,12 @@ class OfflineEvidence(OfflineTestCase):
             decision = self.add("decision", {"question": "Synthetic finding decision",
                 "answer": 'Synthetic owner said "accept" in fixture conversation on 2026-10-28.',
                 "decidedBy": author, "date": "2026-10-28"})
-            self.dispose(review, "owner-decided", expected=2, evidence={"decisionRef": decision["seq"]})
+            self.dispose(review, "owner-decided", reject=True, evidence={"decisionRef": decision["seq"]})
             self.evidence(["finding-missing"])
         unresolved = self.add("decision", {"question": "Synthetic pending decision",
             "answer": {"unknown": "Pending"}, "decidedBy": "owner", "date": "2026-10-28"})
         for ref in (unresolved["seq"], 999):
-            self.dispose(review, "owner-decided", expected=2, evidence={"decisionRef": ref})
+            self.dispose(review, "owner-decided", reject=True, evidence={"decisionRef": ref})
         owner = self.add("decision", {"question": "Synthetic owner decision",
             "answer": 'Synthetic owner said "accept" in fixture conversation on 2026-10-28.',
             "decidedBy": "owner", "date": "2026-10-28"})
@@ -441,7 +496,7 @@ class OfflineEvidence(OfflineTestCase):
         self.add("decision", {"question": "Synthetic delivery readiness", "answer": "Ready",
                               "decidedBy": "manager", "date": "2026-10-28"})
         self.evidence(["head-missing", "check-missing", "review-missing", "criterion-missing"])
-        self.evidence(["head-missing", "check-missing", "review-missing", "criterion-missing"], text=True)
+        self.evidence_cli(["head-missing", "check-missing", "review-missing", "criterion-missing"], text=True)
         self.ready()
         self.add("decision", {"question": "Synthetic delivery readiness", "answer": {"unknown": "Integration pending"},
                               "decidedBy": "manager", "date": "2026-10-28"})
@@ -449,12 +504,12 @@ class OfflineEvidence(OfflineTestCase):
 
     def test_pr_ready_missing_push_pr_and_fully_ready_succeeded(self):
         self.ready()
-        self.evidence(["push-missing", "pr-missing"], pr_ready=True)
+        self.evidence_cli(["push-missing", "pr-missing"], pr_ready=True)
         self.operation("push")
         self.evidence(["pr-missing"], pr_ready=True)
         self.operation("pull-request")
         self.evidence(pr_ready=True)
-        self.evidence(text=True, pr_ready=True)
+        self.evidence_cli(text=True, pr_ready=True)
 
     def test_pr_ready_noop_without_child_and_revocation_failure(self):
         self.ready()
@@ -530,12 +585,9 @@ class OfflineEvidence(OfflineTestCase):
     def test_bad_sha_missing_work_and_malformed_corrupt_history_exit2(self):
         self.ready()
         for head in ("short", "A" * 40, "g" * 40, self.head + "\n"):
-            result = self.command("evidence", "check", "--repo", REPO, "--work", self.work_id, "--head", head)
-            self.assertEqual((result.returncode, result.stdout), (2, ""))
-            self.assertNotIn(head, result.stderr)
+            self.invalid_evidence(head=head, cli_check=head == "short")
         for repo, work in ((REPO, "MISSING"), ("../synthetic-invalid", self.work_id)):
-            result = self.command("evidence", "check", "--repo", repo, "--work", work, "--head", self.head)
-            self.assertEqual((result.returncode, result.stdout), (2, ""))
+            self.invalid_evidence(repo=repo, work=work)
         directory = self.local / "state/records" / REPO / "work" / self.work_id
         target = directory / "events/1.json"
         original = target.read_bytes()
@@ -543,9 +595,7 @@ class OfflineEvidence(OfflineTestCase):
         for payload in (b'{"synthetic-secret":', canonical_json({**event, "schemaVersion": 999}),
                         canonical_json({**event, "data": {**event["data"], "reviewBase": self.next_head}})):
             target.write_bytes(payload)
-            result = self.command("evidence", "check", "--repo", REPO, "--work", self.work_id, "--head", self.head)
-            self.assertEqual((result.returncode, result.stdout), (2, ""))
-            self.assertNotIn("synthetic-secret", result.stderr)
+            self.invalid_evidence(cli_check=payload.startswith(b'{"synthetic-secret"'))
         target.write_bytes(original)
         self.evidence()
 
@@ -556,8 +606,8 @@ class OfflineEvidence(OfflineTestCase):
         task, result, _ = self.native("reviewer", complete=False)
         data = {"reviewer": {"kind": "task", "taskId": task}, "base": self.base,
                 "head": self.head, "verdict": "approve", "findings": []}
-        self.add("review", {**data, "reviewer": {"kind": "task", "taskId": worker_task}}, 2)
-        self.add("review", data, 2)
+        self.add("review", {**data, "reviewer": {"kind": "task", "taskId": worker_task}}, reject=True)
+        self.add("review", data, reject=True)
         self.evidence(["review-missing"])
         self.add("result", result)
         review = self.add("review", data)
@@ -565,8 +615,7 @@ class OfflineEvidence(OfflineTestCase):
         target = self.local / "state/records" / REPO / "work" / self.work_id / "events" / f'{review["seq"]}.json'
         target.write_bytes(canonical_json({**review, "data": {**data,
             "reviewer": {"kind": "task", "taskId": "synthetic-invented"}}}))
-        result = self.command("evidence", "check", "--repo", REPO, "--work", self.work_id, "--head", self.head)
-        self.assertEqual((result.returncode, result.stdout), (2, ""))
+        self.invalid_evidence()
 
     def test_import_register_purity_and_api_invalid_options(self):
         self.assertIsNotNone(importlib.util.find_spec("t3compose.evidence"), "evidence module missing")
