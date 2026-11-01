@@ -269,7 +269,8 @@ def _push(args, repo, identity, url):
     # Order by intent, not arrival of a late result for an older attempt.
     joined = {e['data']['intentRef']: e for e in loaded['events'] if e['kind'] == 'op-result'}
     for event in reversed(loaded['events']):
-        if event['kind'] == 'op-intent' and event['data']['target'] == target:
+        if (event['kind'] == 'op-intent' and event['data']['operation'] == 'push'
+                and event['data']['target'] == target):
             confirmed = joined.get(event['seq'])
             if confirmed and evidence._result_gap(confirmed, event['data']['commit']) is None:
                 prior = event['data']['commit']
@@ -313,7 +314,12 @@ def push(args):
     """Public handler. No I/O at import or registration time."""
     try:
         info = cli.helper_info()
-        if info['dirty'] or not _SHA.fullmatch(info['commit']):
+        dirty = info['dirty']
+        if dirty:
+            helper = Path(info['root'])
+            with _environment(helper):
+                dirty = bool(_git(helper, 'status', '--porcelain', '--untracked-files=no'))
+        if dirty or not _SHA.fullmatch(info['commit']):
             return _out('refused', 'helper must be clean; coordinator must commit helper changes')
         if (not _SHA.fullmatch(args.head) or not records.SEGMENT.fullmatch(args.work)
                 or not isinstance(args.branch, str) or not args.branch or

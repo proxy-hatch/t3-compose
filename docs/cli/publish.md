@@ -10,8 +10,9 @@ push/PR pair. This command alone does not establish PR readiness.
 
 ## Gate and destination
 
-The helper must be clean; `cli.helper_info()` supplies the helper commit on
-operation events. Inputs require a lowercase full SHA, record work ID, Git
+The helper's tracked files must be clean. Untracked files do not block publication.
+`cli.helper_info()` supplies the helper commit on operation events.
+Inputs require a lowercase full SHA, record work ID, Git
 branch spelling, repository root with that exact HEAD, and one origin HTTPS
 URL equal to the configured GitHub repository (optional `.git` suffix).
 The strict App configuration loader runs before any external publication.

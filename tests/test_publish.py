@@ -46,6 +46,7 @@ class OfflinePublish(OfflineTestCase):
                            'permissions': {'contents': 'write'}}})
         self.args = SimpleNamespace(local_dir=self.local, repo_path=str(self.repo),
                                     head=self.head, work='WORK', branch='fixture/topic')
+        self.real_helper_info = cli.helper_info
         self.enterContext(patch.object(cli, 'helper_info', return_value={
             'commit': 'e' * 40, 'dirty': False}))
         self.serial = self.worker_round = 0
@@ -192,13 +193,48 @@ class OfflinePublish(OfflineTestCase):
         self.assertEqual(self.launches, [])
         self.assertNotIn('statusSummary', self.events()[-1]['data'])
 
-    def test_dirty_helper_entry(self):
-        with patch.object(cli, 'helper_info', return_value={'commit': 'e' * 40, 'dirty': True}):
+    def test_unrelated_operations_cannot_authorize_push(self):
+        self.refs[REF] = self.base
+        for operation in ('other', 'pull-request'):
+            with self.subTest(operation=operation):
+                intent = self.add('op-intent', {'opId': 'fixture-' + operation,
+                    'operation': operation, 'target': URL + '#' + REF,
+                    'commit': self.base, 'expectedPriorHead': None})
+                self.add('op-result', {'intentRef': intent['seq'],
+                    'opId': 'fixture-' + operation, 'operation': operation,
+                    'target': URL + '#' + REF, 'commit': self.base,
+                    'outcome': 'no-op', 'confirmation': 'Fixture unrelated operation'})
+                before = self.ops()
+                result = self.invoke()
+                self.assertEqual((result.code, result.data['outcome']), (1, 'refused'))
+                self.assertEqual((self.ops(), self.launches), (before, []))
+
+    def test_untracked_helper_entry(self):
+        (self.repo / 'untracked-note.txt').write_text('Fixture private note')
+        with patch.object(cli, 'ROOT', self.repo), \
+                patch.object(cli, 'helper_info', self.real_helper_info):
+            self.assertTrue(cli.helper_info()['dirty'])
+            self.assertEqual(self.git('status', '--porcelain', '--untracked-files=no'), '')
             code, out, err = self.entry()
-        self.assertEqual(code, 1)
-        self.assertEqual(json.loads(out)['outcome'], 'refused')
-        self.assertEqual(err, '')
-        self.assertFalse(self.launches)
+        self.assertEqual((code, json.loads(out)['outcome'], err), (0, 'succeeded', ''))
+        self.assertEqual(len(self.launches), 1)
+
+    def test_dirty_helper_entry(self):
+        for change in ('unstaged', 'staged', 'deleted'):
+            with self.subTest(change=change):
+                self.git('reset', '--hard', self.head)
+                path = self.repo / 'file.txt'
+                if change == 'deleted':
+                    path.unlink()
+                else:
+                    path.write_text('Fixture tracked change')
+                if change == 'staged':
+                    self.git('add', 'file.txt')
+                with patch.object(cli, 'ROOT', self.repo), \
+                        patch.object(cli, 'helper_info', self.real_helper_info):
+                    code, out, err = self.entry()
+                self.assertEqual((code, json.loads(out)['outcome'], err), (1, 'refused', ''))
+                self.assertEqual((self.ops(), self.launches), ([], []))
 
     def test_invalid_input_entry(self):
         for field, value in [('head', '--bad'), ('branch', '-bad'), ('work', '../bad')]:
@@ -616,11 +652,11 @@ class OfflinePublishAdapters(OfflineTestCase):
             return process.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                 *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
         bare, work = self.temp / 'remote.git', self.temp / 'work'
-        git(self.temp, 'init', '-q', '--bare', str(bare))
         git(self.temp, 'init', '-q', str(work))
         git(work, 'commit', '-q', '--allow-empty', '-m', 'Fixture')
         git(work, 'tag', '-a', '-m', 'Fixture tag', 'v1')
-        git(work, 'push', '-q', str(bare), 'HEAD:refs/heads/topic', 'refs/tags/v1')
+        git(work, 'branch', '-m', 'topic')
+        git(self.temp, 'clone', '-q', '--bare', '--no-hardlinks', str(work), str(bare))
         git(bare, 'symbolic-ref', 'HEAD', 'refs/heads/topic')
         refs = publish._remote(work, str(bare))
         self.assertEqual(set(refs), {'HEAD', 'refs/heads/topic', 'refs/tags/v1', 'refs/tags/v1^{}'})
