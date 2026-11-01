@@ -1,6 +1,6 @@
 # t3c brief v1
 Role: worker
-Tier: {{TIER}}
+Stage: {{STAGE}}
 Provider: {{PROVIDER}}
 Model: {{MODEL}}
 Reason: {{REASON}}
@@ -14,7 +14,7 @@ Unpublished-range: {{UNPUBLISHED_RANGE}}
 
 ## Role and routing
 You are the sole Worker for this Assignment, not its Feature lead or Reviewer.
-Use the tier, model and reason above. Stay on this Assignment and this model.
+Use the stage, model and reason above. Stay on this Assignment and this model.
 Start no agents, T3 tasks, threads or harnesses. Routing grants no permissions.
 Inline-instructions:
 {{INLINE_INSTRUCTIONS}}

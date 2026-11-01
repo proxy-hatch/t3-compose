@@ -12,11 +12,11 @@ from .paths import ROOT
 LIMIT = 1048576
 UNSAFE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]')
 TOKEN = re.compile(r'\{\{([A-Z][A-Z0-9_]*)\}\}')
-FIELDS = ('Role', 'Tier', 'Provider', 'Model', 'Reason', 'Repository', 'Provisioned',
-          'Start', 'Review-base', 'Review-head', 'Round', 'Privacy-findings',
+FIELDS = ('Role', 'Stage', 'Provider', 'Model', 'Reason', 'Repository', 'Provisioned',
+          'Start', 'Review-base', 'Review-head', 'Round', 'Mode', 'Privacy-findings',
           'Unpublished-range')
 STRUCTURE = re.compile(r'^\s*(?:#|(?:' + '|'.join(FIELDS) +
-                       r'|Move-rule|Inline-instructions):)', re.I | re.M)
+                       r'|Move-rule|Review-pass|Inline-instructions):)', re.I | re.M)
 MOVE = ('Move-rule: three-case-v1\n'
         '1. HEAD=start => continue.\n'
         '2. HEAD=provisioned AND clean AND start exists AND fresh own branch => move own branch to start only.\n'
@@ -27,9 +27,32 @@ SECTIONS = {
                'Read first', 'Owned paths', 'Objective', 'Interfaces', 'Acceptance',
                'Test first', 'Validation', 'Commits', 'Return'),
     'reviewer': ('Independence', 'Role and routing', 'Repository and commits',
-                 'Read first', 'Review questions', 'Checks', 'Findings format',
-                 'Verdict', 'Return'),
+                 'Read first', 'Review mode', 'Review questions', 'Checks',
+                 'Findings format', 'Verdict', 'Return'),
 }
+TEMPLATES = ('worker', 'reviewer', 'reviewer-prepass')
+REVIEW_MODES = {
+    'record': (
+        'Review-pass: record-v1\n'
+        '1. You are the review of record: your verdict is the one the lead relies on.\n'
+        '2. You have not seen any pre-pass finding and must not ask for one. '
+        'Pre-pass findings carry IDs of the form PP-<number>. If one appears anywhere '
+        'in your context, stop and report it to the coordinator.\n'
+        "3. In the final-review round, review the Task's exact final head: Review-head "
+        'is the head the lead will merge, and your verdict covers that head only.'),
+    'pre-pass': (
+        'Review-pass: advisory-v1\n'
+        '1. This is an advisory pre-pass. It is never the review of record and never '
+        'replaces it.\n'
+        '2. Label every finding with an ID of the form PP-<number>: PP-1, PP-2 and so on.\n'
+        '3. Return exactly one verdict: `blockers found` or `no blockers found`. '
+        'Never return approve, approve after fixes or changes required.\n'
+        '4. The lead may send blocking findings to a Corrections round. '
+        'The reviewer of record never sees your findings.'),
+}
+REVIEW_BLOCKS = {mode: re.compile('^' + re.escape(block) + '$', re.M)
+                 for mode, block in REVIEW_MODES.items()}
+PRE_PASS_ID = re.compile(r'\bPP-[0-9]+\b')
 
 
 def _fail(message='invalid brief input'):
@@ -79,23 +102,23 @@ def _privacy_section(meta):
 
 def _metadata(meta):
     role = meta.get('Role')
-    expected = set(FIELDS) - (set() if role == 'reviewer' else {'Review-head'})
+    expected = set(FIELDS) - (set() if role == 'reviewer' else {'Review-head', 'Mode'})
     if role not in SECTIONS or set(meta) != expected:
         _fail('invalid brief metadata')
     if any(not value.strip() or len(value) > 512 or
            any(ord(c) < 32 or ord(c) == 127 for c in value) for value in meta.values()):
         _fail('invalid brief metadata')
-    if meta['Tier'] not in ('easy', 'medium', 'challenging'):
-        _fail('invalid brief tier')
+    if meta['Stage'] not in ('1', '2', '3'):
+        _fail('invalid brief stage')
     if meta['Provider'] not in ('agy', 'pi', 'claude', 'codex'):
         _fail('invalid brief provider family')
     rounds = ('implementation', 'corrections') if role == 'worker' else (
-        'earlier-review', 'corrections-review', 'unled-final-review')
+        'earlier-review', 'corrections-review', 'final-review')
     if meta['Round'] not in rounds:
         _fail('invalid brief round')
-    if role == 'reviewer' and (meta['Tier'] == 'easy' or
-                               meta['Provider'] not in ('claude', 'codex')):
-        _fail('invalid Reviewer selection')
+    if role == 'reviewer' and (meta['Mode'] not in REVIEW_MODES or (
+            meta['Mode'] == 'pre-pass' and meta['Round'] == 'final-review')):
+        _fail('invalid Reviewer mode')
     for name in ('Provisioned', 'Start', 'Review-base', *(['Review-head'] if role == 'reviewer' else [])):
         if not re.fullmatch(r'[0-9a-fA-F]{40}', meta[name]):
             _fail('brief commits must be full 40-hex values')
@@ -136,15 +159,21 @@ def _validate(text):
     # Metadata-like lines cannot hide inside untrusted multiline section content.
     content = re.sub(r'^## .+$', '', body, flags=re.M)
     content = MOVE_BLOCK.sub('', content, count=1)
-    if meta['Role'] == 'worker':
-        routing = sections['Role and routing']
-        if (routing.count('Inline-instructions:') != 1 or
-                not re.search(r'^Inline-instructions:(?:\n|$)', routing, re.M)):
-            _fail('missing inline instructions slot')
-        inline = routing.split('Inline-instructions:', 1)[1].strip()
-        if meta['Provider'] in ('agy', 'pi') and not inline:
-            _fail('inline instructions required for this Worker')
-        content = content.replace('Inline-instructions:', '', 1)
+    if meta['Role'] == 'reviewer':
+        block = REVIEW_BLOCKS[meta['Mode']]
+        if not block.search(sections['Review mode']):
+            _fail('invalid review mode rules')
+        content = block.sub('', content, count=1)
+        if meta['Mode'] == 'record' and PRE_PASS_ID.search(text):
+            _fail('a review of record cannot carry pre-pass findings')
+    routing = sections['Role and routing']
+    if (routing.count('Inline-instructions:') != 1 or
+            not re.search(r'^Inline-instructions:(?:\n|$)', routing, re.M)):
+        _fail('missing inline instructions slot')
+    inline = routing.split('Inline-instructions:', 1)[1].strip()
+    if meta['Provider'] in ('agy', 'pi') and not inline:
+        _fail('inline instructions required for this agent')
+    content = content.replace('Inline-instructions:', '', 1)
     if STRUCTURE.search(content):
         _fail('duplicate brief structure')
     if not MOVE_BLOCK.search(sections['Repository and commits']):
@@ -180,7 +209,7 @@ def _write_raw(path, text):
 
 def render(args):
     patterns = identifier_list.load_identifiers(args.local_dir)
-    builtin = args.template in SECTIONS
+    builtin = args.template in TEMPLATES
     template_path = ROOT / 'skill/templates' / (args.template + '.md') if builtin else Path(args.template)
     template = _read_text(template_path)
     _screen(patterns, template)

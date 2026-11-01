@@ -22,7 +22,7 @@ class OfflineBriefs(OfflineTestCase):
         self.values = self.temp / 'values.json'
         self.output = self.temp / 'brief.md'
         self.data = {
-            'TIER': 'medium', 'PROVIDER': 'codex', 'MODEL': 'synthetic-model',
+            'STAGE': '1', 'PROVIDER': 'codex', 'MODEL': 'synthetic-model',
             'REASON': 'Shared interface with bounded implementation.',
             'REPOSITORY': 'synthetic/example', 'PROVISIONED': '1' * 40,
             'START': '2' * 40, 'REVIEW_BASE': '3' * 40,
@@ -59,7 +59,7 @@ class OfflineBriefs(OfflineTestCase):
 
     def render(self, template='worker', **changes):
         data = {**self.data, **changes}
-        if template == 'reviewer' and 'ROUND' not in changes:
+        if template.startswith('reviewer') and 'ROUND' not in changes:
             data['ROUND'] = 'earlier-review'
         self.values.write_text(json.dumps(data))
         return self.invoke('brief', 'render', '--template', template,
@@ -80,7 +80,7 @@ class OfflineBriefs(OfflineTestCase):
         self.assertNotIn(str(self.temp), err)
 
     def test_each_builtin_renders_checks_and_hashes_exact_bytes(self):
-        for template in ('worker', 'reviewer'):
+        for template in ('worker', 'reviewer', 'reviewer-prepass'):
             with self.subTest(template=template):
                 rendered = self.success(self.render(template))
                 raw = self.output.read_bytes()
@@ -143,25 +143,95 @@ class OfflineBriefs(OfflineTestCase):
                 self.assertFalse(self.output.exists())
 
     def test_agy_and_pi_workers_require_nonempty_inline_instructions(self):
-        for provider in ('agy', 'pi'):
-            with self.subTest(provider=provider):
-                self.refusal(self.render(PROVIDER=provider))
-                self.refusal(self.render(PROVIDER=provider, INLINE_INSTRUCTIONS=' \n'))
-                self.success(self.render(PROVIDER=provider, INLINE_INSTRUCTIONS=(
-                    'All applicable repository and routing rules are supplied here.\n'
-                    'Required outside content is included inline; use no outside pointer.')))
-                self.success(self.invoke('brief', 'check', self.output))
-                self.output.write_text(self.output.read_text().replace(
-                    'All applicable repository and routing rules are supplied here.\n'
-                    'Required outside content is included inline; use no outside pointer.', ''))
-                self.refusal(self.invoke('brief', 'check', self.output))
+        inline = ('All applicable repository and routing rules are supplied here.\n'
+                  'Required outside content is included inline; use no outside pointer.')
+        for template in ('worker', 'reviewer', 'reviewer-prepass'):
+            for provider in ('agy', 'pi'):
+                with self.subTest(template=template, provider=provider):
+                    changes = {'ROUND': 'implementation'} if template == 'worker' else {}
+                    self.refusal(self.render(template, PROVIDER=provider, **changes))
+                    self.refusal(self.render(template, PROVIDER=provider, INLINE_INSTRUCTIONS=' \n', **changes))
+                    self.success(self.render(template, PROVIDER=provider, INLINE_INSTRUCTIONS=inline, **changes))
+                    self.success(self.invoke('brief', 'check', self.output))
+                    self.output.write_text(self.output.read_text().replace(inline, ''))
+                    self.refusal(self.invoke('brief', 'check', self.output))
 
-    def test_reviewer_provider_tier_and_round_constraints(self):
-        for changes in ({'PROVIDER': 'agy'}, {'PROVIDER': 'pi'}, {'TIER': 'easy'},
-                        {'PROVIDER': 'custom-instance'}, {'ROUND': 'led-final-review'}):
-            with self.subTest(changes=changes):
-                self.refusal(self.render('reviewer', **changes))
-        self.success(self.render('reviewer', TIER='challenging', ROUND='unled-final-review'))
+    def test_every_provider_family_may_review(self):
+        inline = 'Inline rules for review.'
+        for template in ('reviewer', 'reviewer-prepass'):
+            with self.subTest(template=template):
+                for provider in ('claude', 'codex'):
+                    self.success(self.render(template, PROVIDER=provider))
+                    self.success(self.invoke('brief', 'check', self.output))
+                for provider in ('agy', 'pi'):
+                    self.refusal(self.render(template, PROVIDER=provider))
+                    self.success(self.render(template, PROVIDER=provider, INLINE_INSTRUCTIONS=inline))
+                    self.success(self.invoke('brief', 'check', self.output))
+                self.refusal(self.render(template, PROVIDER='custom-instance'))
+
+    def test_stage_values_and_tier_absence(self):
+        for template in ('worker', 'reviewer', 'reviewer-prepass'):
+            with self.subTest(template=template):
+                for valid in ('1', '2', '3'):
+                    self.success(self.render(template, STAGE=valid))
+                    self.success(self.invoke('brief', 'check', self.output))
+                    self.assertNotIn('Tier', self.output.read_text())
+                for invalid in ('0', '4', 'easy', ''):
+                    self.refusal(self.render(template, STAGE=invalid))
+
+    def test_reviewer_rounds_follow_mode(self):
+        for valid in ('earlier-review', 'corrections-review', 'final-review'):
+            with self.subTest(template='reviewer', round=valid):
+                self.success(self.render('reviewer', ROUND=valid))
+                self.success(self.invoke('brief', 'check', self.output))
+        for invalid in ('unled-final-review', 'led-final-review', 'implementation'):
+            with self.subTest(template='reviewer', round=invalid):
+                self.refusal(self.render('reviewer', ROUND=invalid))
+        for valid in ('earlier-review', 'corrections-review'):
+            with self.subTest(template='reviewer-prepass', round=valid):
+                self.success(self.render('reviewer-prepass', ROUND=valid))
+                self.success(self.invoke('brief', 'check', self.output))
+        with self.subTest(template='reviewer-prepass', round='final-review'):
+            self.refusal(self.render('reviewer-prepass', ROUND='final-review'))
+
+    def test_review_modes_are_exact(self):
+        self.success(self.render('reviewer'))
+        self.success(self.invoke('brief', 'check', self.output))
+        record_text = self.output.read_text()
+        for altered in (
+            record_text.replace('Mode: record', 'Mode: pre-pass'),
+            record_text.replace('## Review mode', '## Altered mode'),
+            record_text.replace('the review of record: your verdict', 'a review: your verdict'),
+        ):
+            self.output.write_text(altered)
+            self.refusal(self.invoke('brief', 'check', self.output))
+
+        self.success(self.render('reviewer-prepass'))
+        self.success(self.invoke('brief', 'check', self.output))
+        prepass_text = self.output.read_text()
+        for altered in (
+            prepass_text.replace('Mode: pre-pass', 'Mode: record'),
+            prepass_text.replace('## Review mode', '## Altered mode'),
+            prepass_text.replace('never the review of record', 'the review of record'),
+            prepass_text.replace('Never return approve', 'You may return approve'),
+        ):
+            self.output.write_text(altered)
+            self.refusal(self.invoke('brief', 'check', self.output))
+
+    def test_review_of_record_never_carries_pre_pass_findings(self):
+        self.refusal(self.render('reviewer', CONTEXT='Earlier PP-1 said so.'))
+        self.success(self.render('reviewer'))
+        self.success(self.invoke('brief', 'check', self.output))
+        self.output.write_text(self.output.read_text() + ' PP-2\n')
+        self.refusal(self.invoke('brief', 'check', self.output))
+
+        for accepted in ('PP-<number>', 'PP-x', 'APP-1'):
+            with self.subTest(accepted=accepted):
+                self.success(self.render('reviewer', CONTEXT=accepted))
+                self.success(self.invoke('brief', 'check', self.output))
+
+        self.success(self.render('reviewer-prepass', CONTEXT='Earlier PP-1 said so.'))
+        self.success(self.invoke('brief', 'check', self.output))
 
     def test_full_commits_and_move_semantics_are_checked(self):
         for field in ('PROVISIONED', 'START', 'REVIEW_BASE', 'REVIEW_HEAD'):

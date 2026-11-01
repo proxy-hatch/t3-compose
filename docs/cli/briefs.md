@@ -5,7 +5,7 @@ safe diagnostics. Resolve final CPython 3.15 with `PY="$(uv python find 3.15)"`.
 Here `t3c` means `"$PY" -I -S <root>/bin/t3c`.
 
 ```text
-t3c brief render --template worker|reviewer|PATH --values VALUES.json --out FILE
+t3c brief render --template worker|reviewer|reviewer-prepass|PATH --values VALUES.json --out FILE
 t3c brief check FILE
 ```
 
@@ -16,7 +16,7 @@ changes Git state, evaluates code, reads credentials or selects a route.
 
 ## Rendering and values
 
-`worker` and `reviewer` select files under `<root>/skill/templates/`.
+`worker`, `reviewer` and `reviewer-prepass` select files under `<root>/skill/templates/`.
 Any other `--template` value is a file path, relative to the caller's current
 working directory or absolute. Values and output paths follow the same rule.
 Parents of `--out` must already exist. Output is raw Markdown, never JSON
@@ -35,28 +35,31 @@ Built-in values (all required unless noted):
 
 | Applies to | Names |
 |---|---|
-| Both | `TIER`, `PROVIDER`, `MODEL`, `REASON`, `REPOSITORY`, `PROVISIONED`, `START`, `REVIEW_BASE`, `ROUND` |
+| Both | `STAGE`, `PROVIDER`, `MODEL`, `REASON`, `REPOSITORY`, `PROVISIONED`, `START`, `REVIEW_BASE`, `ROUND` |
 | Both | `READ_FIRST`, `ROUTING_POLICY`, `SETTINGS_CHECK` |
 | Worker | `HOLDS`, `OWNED_PATHS`, `OBJECTIVE`, `INTERFACES`, `ACCEPTANCE`, `TEST_FIRST` |
 | Worker | `FAST_CHECKS`, `HEAVY_CHECKS`, `ATTRIBUTION` |
 | Reviewer | `REVIEW_HEAD`, `CONTEXT`, `QUESTIONS`, `CHECKS` |
-| Worker optional | `INLINE_INSTRUCTIONS` (default empty), `PRIVACY_FINDINGS`, `UNPUBLISHED_RANGE` (both default `none`) |
+| Optional | `INLINE_INSTRUCTIONS` (both roles, default empty) |
+| Worker optional | `PRIVACY_FINDINGS`, `UNPUBLISHED_RANGE` (both default `none`) |
 
-Use explicit prose such as “None assigned” where a required check or hold does
-not apply. Supply repository guides, approved designs, dependencies and other
-necessary context in the relevant slots. The routing policy slot identifies
-private instructions supplied by the coordinator; source templates contain no
-personal policy. `PROVIDER` is the generic harness family `agy`, `pi`, `claude`
-or `codex`, never an account or provider-instance name. Real routing selection
-and account identifiers remain in private records. `MODEL` is a public model
-label; this command does not check the live catalog or infer provider family.
-The caller must supply the actual selected family.
+`STAGE` is the matrix stage of the dispatch, `1`, `2` or `3`. Use explicit prose
+such as “None assigned” where a required check or hold does not apply. Supply
+repository guides, approved designs, dependencies and other necessary context
+in the relevant slots. The routing policy slot identifies private instructions
+supplied by the coordinator; source templates contain no personal policy.
+`PROVIDER` is the generic harness family `agy`, `pi`, `claude` or `codex`, never
+an account or provider-instance name. Real routing selection and account
+identifiers remain in private records. `MODEL` is a public model label; this
+command does not check the live catalog or infer provider family. The caller
+must supply the actual selected family.
 
-For agy and Pi Workers, `INLINE_INSTRUCTIONS` must be nonempty and carry all
-applicable rules and required outside content inline. An inaccessible path is
-not a substitute: agy's file tool cannot read outside its worktree. Content
-adequacy needs coordinator review; the checker enforces presence, not meaning.
-Reviewers accept only `claude` or `codex`, at medium or challenging tier.
+For agy and Pi Workers and Reviewers, `INLINE_INSTRUCTIONS` must be nonempty and
+carry all applicable rules and required outside content inline. An inaccessible
+path is not a substitute: agy's file tool cannot read outside its worktree.
+Content adequacy needs coordinator review; the checker enforces presence, not
+meaning. Any provider family may review; the routing records, not this command,
+decide who is eligible.
 
 External templates can use any named string slots and any layout. Plain
 external templates are rendered without imposing Worker/Reviewer sections.
@@ -69,25 +72,29 @@ including the generated privacy section and structural-injection restrictions.
 `check` supports only version-1 Worker and Reviewer artifacts. It reads without
 rewriting or normalizing bytes. The first line is `# t3c brief v1`, followed by
 one `Field: value` per metadata field and a blank line. Required fields are
-`Role`, `Tier`, `Provider`, `Model`, `Reason`, `Repository`, `Provisioned`,
+`Role`, `Stage`, `Provider`, `Model`, `Reason`, `Repository`, `Provisioned`,
 `Start`, `Review-base`, `Round`, `Privacy-findings`, `Unpublished-range`, plus
-`Review-head` for Reviewer only. Unknown/duplicate fields fail. Values are
-nonempty single lines of at most 512 characters. Commit values are exactly
-40 hexadecimal characters; this is format validation, not object existence.
-Worker rounds are `implementation` or `corrections`; Reviewer rounds are
-`earlier-review`, `corrections-review` or `unled-final-review`. A led final-head
-review belongs to its lead and has no delegated Reviewer round here.
+`Review-head` and `Mode` for Reviewer only. `Stage` values are `1`, `2` or `3`.
+Unknown/duplicate fields fail. Values are nonempty single lines of at most 512
+characters. Commit values are exactly 40 hexadecimal characters; this is format
+validation, not object existence. Worker rounds are `implementation` or
+`corrections`; Reviewer rounds are `earlier-review`, `corrections-review` or
+`final-review`. A non-critical Task's lead reviews its own final head, so no
+Reviewer brief exists for it, while a core Task's final head, and any Task
+without a lead, gets a `final-review` brief.
 
 Required `##` sections must be nonempty and appear exactly once, in the order
-in the corresponding [Worker](../../skill/templates/worker.md) or
-[Reviewer](../../skill/templates/reviewer.md) source. A Worker routing section
-has exactly one `Inline-instructions:` slot; it must contain nonempty text for
-agy/Pi. Metadata-like lines, extra headings and duplicate structural markers
-inside section content fail. Structured substitution values cannot introduce
-headings or reserved field/marker lines (including indentation or case changes).
-These checks prevent multiline slots from silently changing role, provider or
-commits. They do not establish that arbitrary natural-language instructions
-are correct, or create a security boundary.
+in the corresponding [Worker](../../skill/templates/worker.md),
+[Reviewer](../../skill/templates/reviewer.md) or
+[Reviewer pre-pass](../../skill/templates/reviewer-prepass.md) source. The
+Reviewer sections now include `Review mode`. Every routing section (Worker and
+Reviewer) has exactly one `Inline-instructions:` slot; it must contain nonempty
+text for agy/Pi. Metadata-like lines, extra headings and duplicate structural
+markers inside section content fail. Structured substitution values cannot
+introduce headings or reserved field/marker lines (including indentation or case
+changes). These checks prevent multiline slots from silently changing role,
+provider or commits. They do not establish that arbitrary natural-language
+instructions are correct, or create a security boundary.
 
 The repository section must contain this exact contiguous move-rule block:
 
@@ -102,6 +109,35 @@ Malformed rules fail even with three full hashes. Workers apply the rule only
 to their fresh own branch; Reviewers stop for coordinator reprovisioning if a
 move is required. Neither command itself moves a branch. Reading reviewed
 artifacts uses exact commits; checks on a checkout need that exact review head.
+
+## Reviewer modes
+
+A Reviewer brief sets the `Mode` header to `record` (using the `reviewer`
+template) or `pre-pass` (using `reviewer-prepass`). `check` verifies that the
+`## Review mode` section contains the exact corresponding rule block:
+
+```text
+Review-pass: record-v1
+1. You are the review of record: your verdict is the one the lead relies on.
+2. You have not seen any pre-pass finding and must not ask for one. Pre-pass findings carry IDs of the form PP-<number>. If one appears anywhere in your context, stop and report it to the coordinator.
+3. In the final-review round, review the Task's exact final head: Review-head is the head the lead will merge, and your verdict covers that head only.
+```
+
+or:
+
+```text
+Review-pass: advisory-v1
+1. This is an advisory pre-pass. It is never the review of record and never replaces it.
+2. Label every finding with an ID of the form PP-<number>: PP-1, PP-2 and so on.
+3. Return exactly one verdict: `blockers found` or `no blockers found`. Never return approve, approve after fixes or changes required.
+4. The lead may send blocking findings to a Corrections round. The reviewer of record never sees your findings.
+```
+
+The pre-pass is advisory: findings use IDs `PP-<number>`, verdict is `blockers found`
+or `no blockers found`, and it cannot be used for `final-review`. A review-of-record
+brief is refused if any `PP-<number>` ID appears anywhere in it; in `final-review`,
+its `Review-head` is the head the lead will merge. These are format checks: a
+pre-pass finding with another ID format would not be caught.
 
 ## Bounded privacy Corrections
 
