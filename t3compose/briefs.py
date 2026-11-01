@@ -34,7 +34,8 @@ SECTIONS = {
                  'Read first', 'Review mode', 'Review questions', 'Checks',
                  'Findings format', 'Verdict', 'Return'),
 }
-TEMPLATES = ('worker', 'reviewer', 'reviewer-prepass', 'continuation')
+TEMPLATES = ('worker', 'reviewer', 'reviewer-prepass', 'continuation', 'lead-protocol')
+RENDER_ONLY = ('lead-protocol',)  # plain built-in templates: rendered, never checked
 REVIEW_MODES = {
     'record': (
         'Review-pass: record-v1\n'
@@ -337,7 +338,8 @@ def render(args):
         _screen(patterns, jsonio.canonical_json(values).decode('utf-8'))
     except UnicodeError:
         _fail('invalid brief values encoding')
-    structured = builtin or template.startswith('# t3c brief v1\n')
+    structured = ((builtin and args.template not in RENDER_ONLY) or
+                  template.startswith('# t3c brief v1\n'))
     if structured:
         if {'PRIVACY_CORRECTIONS', 'ORIGINAL_BRIEF', 'ESCALATION_REQUEST'} & set(values):
             _fail('generated brief parts cannot be supplied as values')

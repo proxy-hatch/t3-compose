@@ -5,7 +5,7 @@ safe diagnostics. Resolve final CPython 3.15 with `PY="$(uv python find 3.15)"`.
 Here `t3c` means `"$PY" -I -S <root>/bin/t3c`.
 
 ```text
-t3c brief render --template worker|reviewer|reviewer-prepass|continuation|PATH --values VALUES.json --out FILE [--original-brief FILE --escalation FILE]
+t3c brief render --template worker|reviewer|reviewer-prepass|continuation|lead-protocol|PATH --values VALUES.json --out FILE [--original-brief FILE --escalation FILE]
 t3c brief check FILE
 t3c brief check-escalation --result FILE
 ```
@@ -17,7 +17,7 @@ changes Git state, evaluates code, reads credentials or selects a route.
 
 ## Rendering and values
 
-`worker`, `reviewer`, `reviewer-prepass` and `continuation` select files under `<root>/skill/templates/`.
+`worker`, `reviewer`, `reviewer-prepass`, `continuation` and `lead-protocol` select files under `<root>/skill/templates/`.
 Any other `--template` value is a file path, relative to the caller's current
 working directory or absolute. Values and output paths follow the same rule.
 Parents of `--out` must already exist. Output is raw Markdown, never JSON
@@ -188,6 +188,18 @@ continuations); when the original brief differs in repository or review base;
 when the escalation block's review base differs; when the rule block is
 altered; or when the escalation request and original brief sections hold
 anything other than the validated block and the exact embed.
+
+## Lead protocol template
+
+`lead-protocol` renders `skill/templates/lead-protocol.md`, the Feature lead's
+own protocol for quota failover, escalation and routing records. It is a plain
+built-in template: it has no `# t3c brief v1` header, so `render` applies none of
+the structured checks, and `check` refuses its output. It takes one value,
+`LEAD_LOG`, the name or path of the log where the lead writes prose records, and
+a missing value is refused like any other. Extra values are screened and ignored.
+The template, the values and the output are privacy-screened as for any other
+template. The text names no model, account or private record; the routing policy
+and the brief values carry those.
 
 ## Bounded privacy Corrections
 
