@@ -107,8 +107,196 @@ def _valid_event_payloads():
             "holdEndCondition": "All Tasks through PH-1 merged and L1-L7 passed", "pilotCriteria": ["Single writer verified", "In-flight restart verified"],
             "nextAction": "Reconcile takeover state before first pilot dispatch", "checkpoint": {"lastSeq": 19, "digest": DIGEST_B},
         },
+        "routing-escalation": {"role": "worker", "lane": "backend-logic", "fromStage": 1, "toStage": 2, "reason": "worker-hard-stop", "evidence": "Two repairs failed", "wipCommit": SHA_A},
         "writer-transfer": {"from": MANAGER_WRITER, "to": LEAD_WRITER, "reconciliationRef": 18, "checkpoint": {"lastSeq": 20, "digest": DIGEST_C}},
     }
+
+
+def _valid_v3_routing_payloads():
+    classification = copy.deepcopy(_valid_event_payloads()["routing-classification"])
+    options = {"lane": ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"),
+               "criticality": ("CORE", "NON_CRITICAL"),
+               "scope": ("STANDARD", "COMPLEX", "INSUFFICIENT_CONTEXT")}
+    classification.update(configVersion=3, criteria={k: dict.fromkeys(v, "Criterion") for k, v in options.items()},
+                          answers={k: {"type": "choice", "choice": v[0], "confidence": 0.9,
+                                       "probabilities": {x: int(x == v[0]) for x in v}} for k, v in options.items()})
+    selection = {"providerPool": "pool-synth", "model": "model-synth", "options": {}}
+    return {
+        "routing-classification": classification,
+        "routing-judgment": {"configVersion": 3, "inputRef": 1, "inputDigest": DIGEST_A, "policyDigest": DIGEST_B,
+                             "lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX",
+                             "basis": "manual", "defaulted": [], "reason": "Complex logic"},
+        "routing-selection": {
+            "configVersion": 3, "inputRef": 1, "inputDigest": DIGEST_A, "policyDigest": DIGEST_B,
+            "classificationRef": 2, "role": "worker", "lane": "backend-logic", "stage": 2, "pass": None,
+            "round": "first", "criticality": "CORE", "scope": "COMPLEX", "floorsApplied": ["shared-interface"],
+            "selection": selection, "chosenPoolAccount": "acct-synth-1",
+            "targetsTried": [{"index": 0, "selection": copy.deepcopy(selection), "account": account, "reason": reason}
+                             for account, reason in (("acct-synth-0", "Refused"), ("acct-synth-1", "Chosen"))],
+            "chosenIndex": 0, "configDigest": DIGEST_A, "catalogReadAt": "2026-11-01T00:00:00Z",
+            "catalogDigest": DIGEST_B, "quotaStateDigest": DIGEST_C,
+        },
+    }
+
+
+class OfflineRoutingV3(OfflineTestCase):
+    def check(self, kind, data, valid=True):
+        from t3compose.schema import SchemaError, validate_event_data
+        with self.subTest(kind=kind, data=data):
+            if valid:
+                self.assertIsNone(validate_event_data(kind, data))
+            else:
+                with self.assertRaises(SchemaError):
+                    validate_event_data(kind, data)
+
+    def test_dispatch_and_fixed_objects(self):
+        from t3compose import schema
+        for kind, data in _valid_v3_routing_payloads().items():
+            self.check(kind, data)
+            schema.validate_event({"schemaVersion": 1, "seq": 30, "kind": kind, "at": "2026-11-01T00:00:00Z",
+                                   "writer": MANAGER_WRITER, "helperCommit": SHA_A, "data": data})
+            with self.assertRaises(schema.SchemaError) as ctx:
+                schema.validate_event_data(kind, {**data, "secret-key": "secret-value"})
+            self.assertNotIn("secret", str(ctx.exception))
+            for key in data:
+                missing = {k: v for k, v in data.items() if k != key}
+                with self.assertRaises(schema.SchemaError) as ctx:
+                    schema.validate_event_data(kind, missing)
+                if key != "configVersion":
+                    self.assertIn(key, ctx.exception.path)
+                self.check(kind, {**data, key: object()}, False)
+            for version in (2, 4, "3", True, None):
+                with self.assertRaises(schema.SchemaError) as ctx:
+                    schema.validate_event_data(kind, {**data, "configVersion": version}, path="custom")
+                self.assertEqual((ctx.exception.path, ctx.exception.rule), ("custom.configVersion", "unsupported configVersion"))
+            legacy = _valid_event_payloads()[kind]
+            self.check(kind, legacy)
+            self.check(kind, {**legacy, "configVersion": 3}, False)
+        with self.assertRaises(TypeError):
+            schema.ROUTING_V3_SCHEMAS["new"] = {}
+        with self.assertRaises(TypeError):
+            schema.ROUTING_V3_SCHEMAS["routing-judgment"]["required"]["new"] = None
+
+    def test_classification_and_judgment(self):
+        kind = "routing-classification"
+        data = _valid_v3_routing_payloads()[kind]
+        for outcome in ("accepted", "retry-with-context", "defaulted", "manager-judgment"):
+            self.check(kind, {**data, "outcome": outcome}, outcome != "manager-judgment")
+        for field in ("snapshotModel", "responseId", "answers"):
+            for outcome in ("accepted", "retry-with-context", "defaulted"):
+                self.check(kind, {**data, field: {"unknown": "API failed"}, "outcome": outcome}, outcome != "accepted")
+        for question, choice in (("lane", "MIXED"), ("scope", "INSUFFICIENT_CONTEXT")):
+            changed = copy.deepcopy(data)
+            changed["answers"][question]["choice"] = choice
+            self.check(kind, changed, question == "lane")
+        for question in data["answers"]:
+            for field, value in (("choice", "invalid"), ("confidence", True), ("confidence", 1.1),
+                                 ("probabilities", {}), ("probabilities", dict.fromkeys(data["criteria"][question], 0))):
+                changed = copy.deepcopy(data)
+                changed["answers"][question][field] = value
+                self.check(kind, changed, False)
+        kind = "routing-judgment"
+        data = _valid_v3_routing_payloads()[kind]
+        questions = ("lane", "criticality", "scope")
+        for basis in ("manual", "default-low-confidence", "default-insufficient-context", "default-jev-failure"):
+            defaulted = [] if basis == "manual" else list(questions)
+            self.check(kind, {**data, "basis": basis, "defaulted": defaulted})
+            self.check(kind, {**data, "basis": basis, "defaulted": ["scope"]},
+                       basis in ("default-low-confidence", "default-insufficient-context"))
+            self.check(kind, {**data, "basis": basis, "defaulted": []}, basis == "manual")
+            for field, value in (("lane", "UI_FRONTEND"), ("criticality", "NON_CRITICAL"), ("scope", "STANDARD")):
+                self.check(kind, {**data, "basis": basis, "defaulted": defaulted, field: value}, basis == "manual")
+                others = [q for q in questions if q != field]
+                self.check(kind, {**data, "basis": basis, "defaulted": others, field: value},
+                           basis in ("default-low-confidence", "default-insufficient-context"))
+        for defaulted in (["scope", "scope"], ["unknown"], [True]):
+            self.check(kind, {**data, "basis": "default-low-confidence", "defaulted": defaulted}, False)
+        for field, value in (("lane", "MIXED"), ("scope", "INSUFFICIENT_CONTEXT"), ("basis", "jev-failure")):
+            self.check(kind, {**data, field: value}, False)
+
+    def test_selection_roles_and_targets(self):
+        kind = "routing-selection"
+        base = _valid_v3_routing_payloads()[kind]
+        for role, lane in (("worker", "backend-logic"), ("worker", "ui-frontend"), ("feature-lead", "default"),
+                           ("reviewer", "core"), ("reviewer", "non-critical"), ("verifier", None), ("search", None), ("text", None)):
+            data = copy.deepcopy(base)
+            data.update(role=role, lane=lane)
+            fields = ("classificationRef", "lane", "stage", "pass", "round", "criticality", "scope")
+            if lane is None:
+                data.update(dict.fromkeys(fields))
+                data["floorsApplied"] = []
+            elif role == "reviewer":
+                data.update({"pass": "record", "criticality": "CORE" if lane == "core" else "NON_CRITICAL"})
+            self.check(kind, data)
+            for field in fields:
+                self.check(kind, {**data, field: ("pre" if field == "pass" else base[field]) if lane is None else ("pre" if field == "pass" and role != "reviewer" else None)}, False)
+            if lane is None:
+                self.check(kind, {**data, "floorsApplied": ["shared-interface"]}, False)
+            else:
+                self.check(kind, {**data, "lane": "core" if role != "reviewer" else "default"}, False)
+                for round_ in ("corrections", "re-review"):
+                    self.check(kind, {**data, "round": round_}, (role, round_) in (("worker", "corrections"), ("reviewer", "re-review")))
+                self.check(kind, {**data, "stage": 1}, False)
+                self.check(kind, {**data, "stage": 1, "scope": "STANDARD"})
+                self.check(kind, {**data, "stage": 3})
+            if role == "reviewer":
+                self.check(kind, {**data, "criticality": "NON_CRITICAL" if lane == "core" else "CORE"}, False)
+                self.check(kind, {**data, "pass": "pre"})
+        direct = {"providerInstanceId": "prov-synth", "model": "model-synth", "options": {"thinking": True}}
+        data = copy.deepcopy(base)
+        data.update(selection=direct, chosenPoolAccount=None,
+                    targetsTried=[{"index": 1, "selection": direct, "account": None, "reason": "Chosen"}], chosenIndex=1)
+        self.check(kind, data)
+        for invalid in (None, "", "subscription", "per-request", True, 1, [], {}):
+            self.check(kind, {**data, "billing": invalid}, False)
+        self.check(kind, {**data, "billing": "per-token"})
+        for patch_ in ({"chosenPoolAccount": "acct-synth"}, {"chosenIndex": True}, {"stage": True},
+                       {"targetsTried": []}, {"chosenIndex": 0},
+                       {"selection": {**direct, "roles": ["worker"]}},
+                       {"selection": {**direct, "providerPool": "pool-synth"}},
+                       {"selection": {"providerPool": "pool-synth", "model": "m", "options": {"x": True}}}):
+            self.check(kind, {**data, **patch_}, False)
+        self.check(kind, {**base, "chosenPoolAccount": None}, False)
+        changed = copy.deepcopy(base)
+        changed["targetsTried"][0]["account"] = None
+        self.check(kind, changed)
+        changed = copy.deepcopy(base)
+        changed["targetsTried"][0]["index"] = 0
+        changed["targetsTried"][-1].update(index=1, selection=direct, account=None)
+        changed.update(selection=direct, chosenPoolAccount=None, chosenIndex=1)
+        self.check(kind, changed)
+        self.check(kind, {**changed, "selection": base["selection"], "chosenPoolAccount": base["chosenPoolAccount"]}, False)
+        for patch_ in ({"index": True}, {"index": 2}, {"selection": direct}):
+            changed = copy.deepcopy(base)
+            changed["targetsTried"][0].update(patch_)
+            self.check(kind, changed, False)
+        changed = copy.deepcopy(data)
+        changed["targetsTried"][0]["account"] = "acct-synth"
+        self.check(kind, changed, False)
+        changed = copy.deepcopy(base)
+        changed["targetsTried"][-1]["account"] = "acct-synth-other"
+        self.check(kind, changed, False)
+        self.check(kind, {**data, "role": "reviewer", "lane": "core", "pass": "pre"}, False)
+
+    def test_escalation_constraints_and_utf8_bound(self):
+        kind = "routing-escalation"
+        base = _valid_event_payloads()[kind]
+        for reason, role, lane in (("worker-hard-stop", "worker", "backend-logic"), ("finding-unresolved", "worker", "ui-frontend"),
+                                   ("review-deadlock", "reviewer", "core"), ("reviewer-failure", "reviewer", "non-critical"),
+                                   ("lead-stalled", "feature-lead", "default")):
+            data = {**base, "reason": reason, "role": role, "lane": lane}
+            self.check(kind, data)
+            self.check(kind, {**data, "fromStage": 2, "toStage": 3})
+            self.check(kind, {**data, "wipCommit": None}, reason != "worker-hard-stop")
+            wrong_role, wrong_lane = ("reviewer", "core") if role != "reviewer" else ("worker", "backend-logic")
+            self.check(kind, {**data, "role": wrong_role, "lane": wrong_lane}, False)
+            self.check(kind, {**data, "lane": "default" if lane != "default" else "core"}, False)
+        for patch_ in ({"fromStage": True}, {"toStage": True}, {"fromStage": 3}, {"toStage": 1},
+                       {"toStage": 3}, {"reason": "unknown"}, {"configVersion": 3}, {"wipCommit": "bad"}):
+            self.check(kind, {**base, **patch_}, False)
+        for evidence, valid in (("x" * 8192, True), ("x" * 8193, False),
+                                ("é" * 4096, True), ("é" * 4096 + "x", False)):
+            self.check(kind, {**base, "evidence": evidence}, valid)
 
 
 OPTIONAL_FIXTURE_KEYS = {
@@ -127,7 +315,7 @@ class OfflineRecordSchema(OfflineTestCase):
                 patch.object(process, "run", side_effect=AssertionError("application process")):
             importlib.reload(schema)
         self.assertEqual(cli.command_names(), before)
-        self.assertEqual((schema.SCHEMA_VERSION, schema.MAX_ROUTING_INPUT_BYTES, len(schema.EVENT_KINDS)), (1, 16384, 21))
+        self.assertEqual((schema.SCHEMA_VERSION, schema.MAX_ROUTING_INPUT_BYTES, len(schema.EVENT_KINDS)), (1, 16384, 22))
         self.assertEqual(set(schema.EVENT_KINDS), set(_valid_event_payloads()))
         self.assertEqual(set(schema.EVENT_SCHEMAS), set(_valid_event_payloads()))
         self.assertTrue(issubclass(schema.SchemaError, ValueError))
@@ -221,7 +409,7 @@ class OfflineRecordSchema(OfflineTestCase):
     def test_all_21_event_kinds_required_and_unknown_fields(self):
         from t3compose.schema import SchemaError, validate_event, validate_event_data
         payloads = _valid_event_payloads()
-        self.assertEqual(len(payloads), 21)
+        self.assertEqual(len(payloads), 22)
 
         for kind, valid_data in payloads.items():
             original = copy.deepcopy(valid_data)
@@ -464,6 +652,37 @@ class OfflineRecordStore(OfflineTestCase):
         from tests.support import guarded_helper_command
         return process.run(guarded_helper_command("--local-dir", str(self.local), *args),
                            capture_output=True, text=True, timeout=15)
+
+    def test_v2_and_v3_routing_histories_share_existing_joins(self):
+        from t3compose import records
+        source = _routing_input_data()
+        self.add("routing-input", source)
+        def joined(data):
+            return {**copy.deepcopy(data), "inputDigest": source["inputDigest"], "policyDigest": source["policyDigest"]}
+        def classified(data):
+            data = joined(data)
+            data["criteriaDigest"] = "sha256:" + hashlib.sha256(canonical_json(data["criteria"])).hexdigest()
+            return data
+        self.add("routing-classification", classified(self.payloads["routing-classification"]))
+        self.add("routing-judgment", joined(self.payloads["routing-judgment"]))
+        self.add("routing-selection", joined(self.payloads["routing-selection"]))
+        v3 = _valid_v3_routing_payloads()
+        self.add("routing-classification", classified(v3["routing-classification"]))
+        selection = joined(v3["routing-selection"])
+        self.add("routing-selection", {**selection, "classificationRef": 5})
+        judgment = joined(v3["routing-judgment"])
+        self.add("routing-judgment", {**judgment, "basis": "default-jev-failure", "defaulted": ["lane", "criticality", "scope"]})
+        self.add("routing-selection", {**selection, "classificationRef": 7, "role": "reviewer", "lane": "core", "pass": "record"})
+        helper = {**selection, **dict.fromkeys(("classificationRef", "lane", "stage", "pass", "round", "criticality", "scope")),
+                  "role": "search", "floorsApplied": []}
+        self.add("routing-selection", helper)
+        self.add("routing-escalation")
+        self.assertEqual(len(self.load()["events"]), 10)
+        self.add("routing-classification", {**classified(v3["routing-classification"]), "outcome": "defaulted"})
+        for bad in ({**selection, "classificationRef": 11}, {**selection, "classificationRef": 5, "inputDigest": DIGEST_C}):
+            with self.assertRaises(records.RecordError):
+                self.add("routing-selection", bad)
+        self.assertEqual(len(self.load()["events"]), 11)
 
     def test_identity_immutable_work_and_unsafe_paths(self):
         import os
@@ -771,7 +990,7 @@ class OfflineRecordStore(OfflineTestCase):
                             self.r.append_event(self.local, REPO_ID, work_id, kind, bad, writer=MANAGER_WRITER)
             shown = self.command("work", "show", *args)
             self.assertEqual(shown.returncode, 0, shown.stderr)
-            self.assertEqual(len(json.loads(shown.stdout)["events"]), 15)
+            self.assertEqual(len(json.loads(shown.stdout)["events"]), 16)
         self.assertEqual(self.command("work", "list", "--repo", REPO_ID).returncode, 0)
         self.assertEqual(self.command("work", "show", "--repo", REPO_ID, "--work", "missing").returncode, 2)
 

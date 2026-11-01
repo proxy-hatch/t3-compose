@@ -32,7 +32,8 @@ records/<identity>/work/<WORK-ID>/events/<seq>.json
 | Repository identity, target branch, review base, owned paths, dependencies | `work.json`: `repository`, `targetBranch`, `reviewBase`, `ownedPaths`, `dependencies` |
 | Acceptance criteria and required checks | `work.json`: `acceptance` (`id`, `text`), `requiredChecks` (`id`, `command`, `kind`); updated by `scope` event |
 | Single coordinator writer and transfer | `work.json`: `writer`; event envelope `writer`; `writer-transfer` (`from`, `to`, `reconciliationRef`, `checkpoint`) |
-| Routing input, Jev classification, manager judgment, route selection | `routing-input`, `routing-classification`, `routing-judgment`, `routing-selection` |
+| Routing input, Jev classification, manager judgment, route selection | `routing-input`, `routing-classification`, `routing-judgment`, `routing-selection` (version-2 and version-3 routing shapes) |
+| Vertical escalation | `routing-escalation` (role, lane, stages, reason, bounded evidence, WIP commit) |
 | Dispatch intent ID, T3 task ID, selected role/model, three commits, worktree path | `dispatch-intent` (`clientRequestId`, `role`, `round`, `selection`, `provisionedCommit`, `startCommit`, `reviewBase`, `dispatchingCheckout`, `isolation`, `briefPath`, `briefDigest`), `dispatch-confirmed` (`clientRequestId`, `taskId`, `childThread`, `worktreePath`) |
 | Result commits, T3 status evidence, branch observed, claims, verified facts, questions | `result` (`taskId`, `t3Status`, `worktreePath`, `resultCommit`, `parentCommit`, `branchObserved`, `workerClaims`, `verifiedFacts`, `questions`) |
 | Check outcomes/sources and criterion evidence | `check` (`checkId`, `command`, `commit`, `outcome`, `source`, `evidencePath`), `criterion-evidence` (`criterionId`, `commit`, `source`, `evidence`) |
@@ -85,7 +86,7 @@ Every `events/<seq>.json` envelope requires exact keys:
 `data` (`dict` matching `kind`). For `restart`, `handoff` and `writer-transfer`,
 `data.checkpoint.lastSeq < seq`; for after-phase `restart`, `data.beforeRef < seq`.
 
-## Event `data` schemas (all 21 kinds)
+## Event `data` schemas (all 22 kinds)
 
 1. **`routing-input`** (also standalone `{task, context}` via `validate_routing_input`):
    - `task`: exact keys `intent` (`text`), `acceptance` (`nonempty list[text | {"id": <id_token>, "text": <text>}]`), `interfaces` (`list[text]`), `scope` (`text | nonempty list[text]`), `riskFacts` (`list[fact_id]`), `dependencies` (`list[text]`).
@@ -105,6 +106,68 @@ Every `events/<seq>.json` envelope requires exact keys:
      Routing sets it for every final metered Worker selection and reports it
      in `route select` output. Schema validation adds no instance/model naming
      heuristic; driver eligibility is enforced by routing against the catalog.
+   **Version-3 routing shapes (items 2–4):** The shapes above remain the
+   version-2 contract. Records already written keep their shapes and validation
+   results. For these three kinds only, absence of `configVersion` selects the
+   version-2 validator; presence requires integer `3` (never `bool`), otherwise
+   `SchemaError(<path>.configVersion, "unsupported configVersion")`. Version 3
+   requires every field below except optional `billing`; unknown keys fail.
+   The envelope and `SCHEMA_VERSION = 1` stay unchanged.
+
+   - **Classification:** `configVersion: 3`, `inputRef` (`pos_int`),
+     `inputDigest`, `policyDigest`, `criteriaDigest` (`sha256_digest`),
+     `ruleVersion`, `configuredModel`, `reason` (`text`), `riskFacts`
+     (`list[fact_id]`), `snapshotModel`, `responseId` (`text | unknown_obj`).
+     `criteria` has exact questions `lane` (`BACKEND_LOGIC|UI_FRONTEND|MIXED`),
+     `criticality` (`CORE|NON_CRITICAL`), `scope`
+     (`STANDARD|COMPLEX|INSUFFICIENT_CONTEXT`); each question maps every option
+     to `text` and permits optional `instructions: text`. `answers` is
+     `unknown_obj` or those three questions with the same `choice_ans` rules
+     above (exact option probabilities, sum within 0.01, confidence in [0,1]).
+     `outcome` is `accepted|retry-with-context|defaulted`. Accepted requires
+     concrete snapshot, response ID and answers, with scope other than
+     `INSUFFICIENT_CONTEXT`; `MIXED` is accepted and maps to backend-logic.
+   - **Judgment:** `configVersion: 3`, `inputRef` (`pos_int`), `inputDigest`,
+     `policyDigest` (`sha256_digest`), `lane` (`BACKEND_LOGIC|UI_FRONTEND`),
+     `criticality` (`CORE|NON_CRITICAL`), `scope` (`STANDARD|COMPLEX`),
+     `reason` (`text`), `basis`
+     (`manual|default-low-confidence|default-insufficient-context|default-jev-failure`).
+     Required `defaulted` is a list of question names (`lane|criticality|scope`),
+     without repeats. Each listed answer equals its fixed default:
+     lane `BACKEND_LOGIC`, criticality `CORE`, scope `COMPLEX`; unlisted
+     answers retain any valid confident value. Manual requires an empty list;
+     default-jev-failure requires all three names; default-low-confidence and
+     default-insufficient-context require at least one name.
+   - **Selection:** `configVersion: 3`, `inputRef` (`pos_int`),
+     `inputDigest`, `policyDigest`, `configDigest`, `catalogDigest`,
+     `quotaStateDigest` (`sha256_digest`), `catalogReadAt` (`utc_timestamp`),
+     `classificationRef` (`pos_int|null`), `role`
+     (`feature-lead|worker|reviewer|verifier|search|text`), `lane`
+     (`default|backend-logic|ui-frontend|non-critical|core|null`), `stage`
+     (`1|2|3|null`, never bool), `pass` (`pre|record|null`), `round`
+     (`first|corrections|re-review|null`), `criticality` (`CORE|NON_CRITICAL|null`),
+     `scope` (`STANDARD|COMPLEX|null`), `floorsApplied` (`list[fact_id]`),
+     `selection` (`v3_selection`), `chosenPoolAccount` (`text|null`),
+     `chosenIndex` (`nonneg_int`), `targetsTried` (nonempty list of exact
+     `{index: nonneg_int, selection: v3_selection, account: text|null, reason: text}`).
+     Optional `billing` is exactly `"per-token"`, with the same rules above.
+     A `v3_selection` has exactly one of `providerInstanceId` and `providerPool`
+     (`text`), `model: text`, and `options` (string or boolean values);
+     no `roles`; pool options must be `{}`.
+     Matrix roles require non-null classification reference, lane, stage, round,
+     criticality and scope. Lanes are `feature-lead: default`,
+     `worker: backend-logic|ui-frontend`, `reviewer: non-critical|core`.
+     Complex scope needs stage 2 or 3; corrections is Worker-only, re-review
+     Reviewer-only. Reviewers require pre or record pass, and core lane iff CORE
+     criticality; every other role has null pass. Helpers require all seven
+     classification/matrix fields null and empty floors.
+     The chosen account is non-null iff the selection is a pool.
+     Tried indices never decrease; repeated indices have equal selections;
+     direct targets have null account. The last target matches chosenIndex,
+     selection and chosenPoolAccount exactly. Pre-pass requires chosenIndex
+     and every tried index zero.
+     Existing `records.py` joins apply unchanged to these version-3 shapes.
+
 5. **`dispatch-intent`**:
    - `role` (`worker|reviewer|feature-lead|text-helper`), `round` (`pos_int`), `clientRequestId` (`work_id`), `briefPath` (`text`), `briefDigest` (`sha256_digest`), `selection` (`selection_obj`), `provisionedCommit` (`commit_sha`), `startCommit` (`commit_sha`), `reviewBase` (`commit_sha`), `dispatchingCheckout` (`text`), `isolation` (`"worktree" | "shared"`).
 6. **`dispatch-confirmed`**:
@@ -140,9 +203,23 @@ Every `events/<seq>.json` envelope requires exact keys:
 21. **`writer-transfer`**:
     - `from` (`writer_id`), `to` (`writer_id` distinct from `from` on the same repository), `reconciliationRef` (`pos_int <= checkpoint.lastSeq`), `checkpoint` (`checkpoint_obj`).
 
+22. **`routing-escalation`** (no `configVersion`):
+    - Exact keys: `role` (`feature-lead|worker|reviewer`), `lane` (valid for
+      that role as above), `fromStage` (`1|2`), `toStage` (`2|3`), `reason`
+      (`worker-hard-stop|finding-unresolved|review-deadlock|reviewer-failure|lead-stalled`),
+      `evidence` (`text`, at most 8,192 UTF-8 bytes), `wipCommit` (`commit_sha|null`).
+    - Stages are integers, never bool; toStage equals fromStage + 1.
+      Worker-hard-stop and finding-unresolved require Worker; review-deadlock
+      and reviewer-failure require Reviewer; lead-stalled requires Feature lead.
+      Worker-hard-stop requires a non-null WIP commit.
+
 ## Public Python API (`t3compose.schema`)
 
 - `SCHEMA_VERSION = 1`, `MAX_ROUTING_INPUT_BYTES = 16384`, `EVENT_KINDS`, `EVENT_SCHEMAS`.
+- `ROUTING_V3_SCHEMAS`: read-only mapping of the three version-3 specs, with
+  the same required/optional/post structure as `EVENT_SCHEMAS` (whose routing
+  entries remain version 2). `MAX_ESCALATION_EVIDENCE_BYTES = 8192`.
+  Both event validators apply the `configVersion` dispatch described above.
 - `SchemaError(path, rule)`: `ValueError` subclass with `.path` and `.rule`; never echoes raw input values or secrets.
 - `validate_work(value) -> None`, `validate_event(value) -> None`, `validate_event_data(kind, data, path="event.data") -> None`, `validate_routing_input(value, path="routingInput") -> str`.
 - Durable APIs and cross-event validation are specified below.

@@ -9,6 +9,7 @@ from .jsonio import MAX_INT_DIGITS, canonical_json
 
 SCHEMA_VERSION = 1
 MAX_ROUTING_INPUT_BYTES = 16384
+MAX_ESCALATION_EVIDENCE_BYTES = 8192
 MAX_PAYLOAD_BYTES = 16384
 MAX_JSON_DEPTH = 8
 
@@ -377,6 +378,116 @@ def _post_routing_selection(data, path):
     if is_pool != (data["chosenPoolAccount"] is not None):
         _fail(f"{path}.chosenPoolAccount", "chosenPoolAccount must match pool vs direct selection")
 
+# Version-3 routing validators deliberately leave the version-2 contract intact.
+_V3_QUESTIONS = {
+    "lane": ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"),
+    "criticality": ("CORE", "NON_CRITICAL"),
+    "scope": ("STANDARD", "COMPLEX", "INSUFFICIENT_CONTEXT"),
+}
+_MATRIX_LANES = {"feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend"),
+                 "reviewer": ("non-critical", "core")}
+
+def _check_config_version(value, path):
+    if not _is_int(value) or value != 3:
+        _fail(path, "unsupported configVersion")
+
+def _int_enum(*allowed):
+    def validator(value, path):
+        if not _is_int(value) or value not in allowed:
+            _fail(path, "invalid integer enum value")
+    return validator
+
+def _check_v3_selection(value, path):
+    _check_selection(value, path)
+    if "roles" in value:
+        _fail(path, "unknown field")
+    if "providerPool" in value and value["options"]:
+        _fail(f"{path}.options", "pool options must be empty")
+
+def _post_v3_classification(data, path):
+    if data["outcome"] == "accepted":
+        for field in ("snapshotModel", "responseId", "answers"):
+            if _is_unknown_obj(data[field]):
+                _fail(f"{path}.{field}", "accepted classification requires concrete response fields")
+        if data["answers"]["scope"]["choice"] == "INSUFFICIENT_CONTEXT":
+            _fail(f"{path}.answers.scope.choice", "accepted classification cannot be INSUFFICIENT_CONTEXT")
+
+def _post_v3_judgment(data, path):
+    defaulted, basis = data["defaulted"], data["basis"]
+    if len(set(defaulted)) != len(defaulted):
+        _fail(f"{path}.defaulted", "duplicate defaulted question")
+    if (basis == "manual" and defaulted) or (basis != "manual" and not defaulted):
+        _fail(f"{path}.defaulted", "defaulted questions must match basis")
+    if basis == "default-jev-failure" and set(defaulted) != set(_V3_QUESTIONS):
+        _fail(f"{path}.defaulted", "Jev failure requires all defaulted questions")
+    for field, default in (("lane", "BACKEND_LOGIC"), ("criticality", "CORE"), ("scope", "COMPLEX")):
+        if field in defaulted and data[field] != default:
+            _fail(f"{path}.{field}", "defaulted question requires fixed default")
+
+def _check_role_lane(data, path):
+    if data["lane"] not in _MATRIX_LANES[data["role"]]:
+        _fail(f"{path}.lane", "lane invalid for role")
+
+def _post_v3_selection(data, path):
+    role = data["role"]
+    fields = ("classificationRef", "lane", "stage", "pass", "round", "criticality", "scope")
+    if role in _MATRIX_LANES:
+        for field in fields:
+            if field != "pass" and data[field] is None:
+                _fail(f"{path}.{field}", "matrix role requires non-null field")
+        _check_role_lane(data, path)
+        if data["scope"] == "COMPLEX" and data["stage"] == 1:
+            _fail(f"{path}.stage", "complex scope requires stage 2 or 3")
+        if (data["round"] == "corrections" and role != "worker") or (data["round"] == "re-review" and role != "reviewer"):
+            _fail(f"{path}.round", "round invalid for role")
+    else:
+        for field in fields:
+            if data[field] is not None:
+                _fail(f"{path}.{field}", "helper requires null field")
+        if data["floorsApplied"]:
+            _fail(f"{path}.floorsApplied", "helper cannot apply floors")
+    if role == "reviewer":
+        if data["pass"] is None:
+            _fail(f"{path}.pass", "reviewer requires pass")
+        if (data["lane"] == "core") != (data["criticality"] == "CORE"):
+            _fail(f"{path}.lane", "reviewer lane must match criticality")
+    elif data["pass"] is not None:
+        _fail(f"{path}.pass", "pass requires reviewer")
+    if ("providerPool" in data["selection"]) != (data["chosenPoolAccount"] is not None):
+        _fail(f"{path}.chosenPoolAccount", "chosenPoolAccount must match pool vs direct selection")
+    previous = None
+    for idx, target in enumerate(data["targetsTried"]):
+        target_path = f"{path}.targetsTried[{idx}]"
+        if previous is not None:
+            if target["index"] < previous["index"]:
+                _fail(f"{target_path}.index", "target indices must not decrease")
+            if target["index"] == previous["index"] and target["selection"] != previous["selection"]:
+                _fail(f"{target_path}.selection", "same index requires same selection")
+        if "providerInstanceId" in target["selection"] and target["account"] is not None:
+            _fail(f"{target_path}.account", "direct target requires null account")
+        if data["pass"] == "pre" and target["index"] != 0:
+            _fail(f"{target_path}.index", "pre-pass cannot use fallback")
+        previous = target
+    for field, chosen in (("index", "chosenIndex"), ("selection", "selection"), ("account", "chosenPoolAccount")):
+        if previous[field] != data[chosen]:
+            _fail(f"{path}.{chosen}", "chosen target must match last target tried")
+
+def _check_escalation_evidence(value, path):
+    _check_text(value, path)
+    if len(value.encode("utf-8")) > MAX_ESCALATION_EVIDENCE_BYTES:
+        _fail(path, "escalation evidence exceeds byte limit")
+
+def _post_escalation(data, path):
+    _check_role_lane(data, path)
+    if data["toStage"] != data["fromStage"] + 1:
+        _fail(f"{path}.toStage", "escalation must advance one stage")
+    roles = {"worker-hard-stop": "worker", "finding-unresolved": "worker",
+             "review-deadlock": "reviewer", "reviewer-failure": "reviewer", "lead-stalled": "feature-lead"}
+    if data["role"] != roles[data["reason"]]:
+        _fail(f"{path}.role", "escalation reason requires matching role")
+    if data["reason"] == "worker-hard-stop" and data["wipCommit"] is None:
+        _fail(f"{path}.wipCommit", "worker hard stop requires WIP commit")
+
 def _check_reviewer(value, path):
     if not isinstance(value, dict) or _is_unknown_obj(value):
         _fail(path, "expected reviewer object")
@@ -467,6 +578,7 @@ EVENT_KINDS = (
     "dispatch-intent", "dispatch-confirmed", "result", "check", "criterion-evidence",
     "lead-assignment", "review", "finding-disposition", "op-intent", "op-result",
     "decision", "scope", "next-action", "reconciliation", "restart", "handoff", "writer-transfer",
+    "routing-escalation",
 )
 
 EVENT_SCHEMAS = MappingProxyType({
@@ -564,7 +676,45 @@ EVENT_SCHEMAS = MappingProxyType({
         "nextAction": _or_unknown(_check_text), "checkpoint": _check_checkpoint,
     }),
     "writer-transfer": _spec({"from": _check_writer_id, "to": _check_writer_id, "reconciliationRef": _check_pos_int, "checkpoint": _check_checkpoint}, post=_post_writer_transfer),
+    "routing-escalation": _spec({
+        "role": _check_enum(*_MATRIX_LANES), "lane": _check_enum("default", "backend-logic", "ui-frontend", "non-critical", "core"),
+        "fromStage": _int_enum(1, 2), "toStage": _int_enum(2, 3),
+        "reason": _check_enum("worker-hard-stop", "finding-unresolved", "review-deadlock", "reviewer-failure", "lead-stalled"),
+        "evidence": _check_escalation_evidence, "wipCommit": _nullable(_check_commit_sha),
+    }, post=_post_escalation),
 })
+
+ROUTING_V3_SCHEMAS = MappingProxyType({
+    "routing-classification": _spec({
+        **dict(EVENT_SCHEMAS["routing-classification"]["required"]), "configVersion": _check_config_version,
+        "criteria": _object_schema({q: _object_schema(dict.fromkeys(opts, _check_text), {"instructions": _check_text})
+                                    for q, opts in _V3_QUESTIONS.items()}),
+        "answers": _or_unknown(_object_schema({q: _choice_answer_validator(opts) for q, opts in _V3_QUESTIONS.items()})),
+        "outcome": _check_enum("accepted", "retry-with-context", "defaulted"),
+    }, post=_post_v3_classification),
+    "routing-judgment": _spec({
+        "configVersion": _check_config_version, "inputRef": _check_pos_int, "inputDigest": _check_digest, "policyDigest": _check_digest,
+        "lane": _check_enum("BACKEND_LOGIC", "UI_FRONTEND"), "criticality": _check_enum("CORE", "NON_CRITICAL"),
+        "scope": _check_enum("STANDARD", "COMPLEX"), "reason": _check_text,
+        "basis": _check_enum("manual", "default-low-confidence", "default-insufficient-context", "default-jev-failure"),
+        "defaulted": _list_of(_check_enum(*_V3_QUESTIONS)),
+    }, post=_post_v3_judgment),
+    "routing-selection": _spec({
+        "configVersion": _check_config_version, "inputRef": _check_pos_int, "inputDigest": _check_digest, "policyDigest": _check_digest,
+        "classificationRef": _nullable(_check_pos_int), "role": _check_enum(*_MATRIX_LANES, "verifier", "search", "text"),
+        "lane": _nullable(_check_enum("default", "backend-logic", "ui-frontend", "non-critical", "core")),
+        "stage": _nullable(_int_enum(1, 2, 3)), "pass": _nullable(_check_enum("pre", "record")),
+        "round": _nullable(_check_enum("first", "corrections", "re-review")),
+        "criticality": _nullable(_check_enum("CORE", "NON_CRITICAL")), "scope": _nullable(_check_enum("STANDARD", "COMPLEX")),
+        "floorsApplied": _list_of(_check_fact_id), "selection": _check_v3_selection, "chosenPoolAccount": _nullable(_check_text),
+        "targetsTried": _list_of(_object_schema({"index": _check_nonneg_int, "selection": _check_v3_selection,
+                                                "account": _nullable(_check_text), "reason": _check_text}), nonempty=True),
+        "chosenIndex": _check_nonneg_int, "configDigest": _check_digest, "catalogReadAt": _check_utc_timestamp,
+        "catalogDigest": _check_digest, "quotaStateDigest": _check_digest,
+    }, {"billing": _check_enum("per-token")}, post=_post_v3_selection),
+})
+_V3_VALIDATORS = {kind: _object_schema(spec["required"], spec["optional"], spec["post"])
+                  for kind, spec in ROUTING_V3_SCHEMAS.items()}
 
 _EVENT_VALIDATORS = {kind: _object_schema(spec["required"], spec["optional"], spec["post"]) for kind, spec in EVENT_SCHEMAS.items()}
 
@@ -597,7 +747,11 @@ def validate_event_data(kind, data, path="event.data"):
     """Validate an event's kind and data payload or raise SchemaError."""
     if not isinstance(kind, str) or kind not in _EVENT_VALIDATORS:
         _fail("event.kind", "unknown event kind")
-    _EVENT_VALIDATORS[kind](data, path)
+    validator = _EVENT_VALIDATORS[kind]
+    if kind in _V3_VALIDATORS and isinstance(data, dict) and "configVersion" in data:
+        _check_config_version(data["configVersion"], f"{path}.configVersion")
+        validator = _V3_VALIDATORS[kind]
+    validator(data, path)
     canonical_json(data)
 
 def _check_schema_version(value, path):
