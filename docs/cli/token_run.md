@@ -273,3 +273,10 @@ It must exit 1 with `git-directory`, write mode 0600 and exactly
 `{"childStarted":false,"refusal":"git-directory"}`, and mint nothing. The
 command-form check precedes any App setup or Git invocation. This live check
 belongs to the Engineering manager; offline evidence does not claim its pass.
+
+
+Minting resolves account HOME only for the absolute security lookup, as
+specified in [App credentials](github_app.md#credentials-scope-and-cleanup).
+The base and child environments retain their private HOME; no account-home
+path or private key is added to the child, and the token remains only in
+GH_TOKEN. This applies equally to the in-process publication caller.

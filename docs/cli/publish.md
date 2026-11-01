@@ -1,12 +1,12 @@
-# Reviewed-head push
+# Reviewed-head publication
 
 PB-1a adds `t3c publish push --repo-path P --work ID --head SHA --branch NAME`.
 Use stable CPython 3.15 through uv with `-I -S`, as in the
 [CLI contract](../cli.md). Global `--local-dir` and `--text` precede `publish`.
 This command publishes the configured repository as its App. The assigned
 Feature lead runs it for its Task; Workers never publish. No merge command is
-provided. PB-1b will add PR creation, reuse, verification and the exact-head
-push/PR pair. This command alone does not establish PR readiness.
+provided. `publish pr` adds PR creation, reuse, verification and the exact-head
+push/PR pair. The push command alone does not establish PR readiness.
 
 ## Gate and destination
 
@@ -102,16 +102,131 @@ reads or persistence raise sanitized `CommandError` (2); invalid App config
 uses 3. No secret, backend stream or private path appears in the result.
 Imports and registration perform no I/O. There are no new dependencies.
 
-After PB-1a merges, the assigned PB-1b lead prepares valid exact-head records,
-required checks and review evidence, then makes the first live push:
+PB-1b uses the interim publication tool because the helper on main cannot
+mint with private HOME until this fix merges. After PB-1b merges, L5 is the
+next assigned pull request: its lead performs the first live helper push AND
+PR creation, with exact-head checks and independent review recorded first and
+the bounded current lead check last under the interim evidence convention.
+Verify exit 0, remote equality, App author/base/head/open state, joined durable
+intent/result/status and `evidence check --pr-ready`. Then link the PR and
+follow the repository merge procedure. Only after L5 does the interim tool
+retire. Offline tests supply no live-pass claim.
 
-```sh
-PY="$(uv python find 3.15)"
-"$PY" -I -S <helper>/bin/t3c --local-dir <private-state> publish push --repo-path <checkout> --work <work> --head <reviewed-sha> --branch <branch>
+## Pull request command
+
+```text
+t3c --local-dir PATH publish pr --work ID --head SHA --branch NAME --base main --title-file F --body-file F
 ```
 
-Check exit 0, exact remote equality and the joined intent/result/status. If this
-live push fails, report to the Engineering manager and use the interim tool.
-After PB-1b merges, L5 publishes the next Task with BOTH push and PR commands,
-using then-current evidence APIs. Only after L5 does the interim tool retire.
-These are planned live procedures; offline tests supply no live-pass claim.
+Run from the target repository root. There is no repository-path option for
+this command. The helper cleanliness, exact HEAD, configured HTTPS origin,
+App loader and Git configuration gates above apply unchanged. `--base` must
+be `main`. Both text files must be regular bounded UTF-8 text without NUL,
+at most 1 MiB each. The title additionally must be nonblank, single-line,
+without ASCII controls or DEL, and at most 256 UTF-8 bytes. File contents and
+backend errors are never printed. Relative text paths refer to the starting
+repository root. Pass an explicit absolute global local directory.
+
+After exact-head evidence passes, PV-1 screens the entire immutable work
+review-base-to-head range, branch, title and body. This includes already
+published commits after Corrections. A stale review/check stops before intent;
+a published privacy match requires a report to Shawn. Only unpublished history
+may receive authorized Corrections. The coordinator fixes its own text/branch.
+The title is captured once and the body is copied into a private mode-0600
+snapshot inside a mode-0700 directory; creation uses those screened bytes even
+if the original files change. Snapshots are removed on return.
+
+A durable `pull-request` intent precedes discovery or creation. Discovery uses
+a bounded read through `process.run`:
+
+```text
+gh api --hostname github.com --method GET repos/OWNER/REPO/pulls?state=all&head=OWNER%3ANAME&per_page=2
+```
+
+Query components are URL-encoded. At most one result is accepted; two rows,
+incomplete or malformed responses, mismatched repository/branch, failed reads
+or invalid PR numbers preserve uncertainty and never authorize creation.
+Closed PRs are discovered too, preventing an accidental duplicate. A single
+existing PR is reused only after verification passes.
+
+Creation calls `token_run.run_command` in-process from the repository with an
+unused retained status path, under the private publication environment:
+
+```text
+gh pr create --repo OWNER/REPO --head NAME --base main --title=TITLE --body-file SNAPSHOT
+```
+
+`--title-file` is a helper input, not a gh flag. Only the scoped App token may
+perform this write; no implicit push, shell or alternate process path is used.
+Child output and descriptors are contained and restored as for push. Neither
+output nor exit code proves startup or success. The actual `RunResult` must
+agree with retained CD-2 status, including child started and status zero, for
+creation to succeed. Revocation failure is retained and reported in the reason.
+
+Discovery and [PR verification](pullrequest.md) use the caller's existing
+read-only GitHub authentication with pinned host and executable PATH, captured
+responses and no token mint. This narrow reader context restores the private
+publication environment before any write. Verification calls the existing API
+with exact head, base and configured `config.bot_login`; only its complete
+passing dictionary counts. Exceptions, skipped calls, malformed returns and
+head/base/state/author mismatches record failure and a safe verification gap.
+The temporary publication HOME therefore cannot hide the reader's authentication.
+
+After creation, discovery supplies the PR number independently of child output.
+Successful creation or verified reuse returns exactly `{outcome, reason, number,
+url}`. `number` is a validated positive 32-bit integer; `url` is constructed as
+`https://github.com/OWNER/REPO/pull/N`, never copied from external text. Other
+results contain exactly `{outcome, reason}`. Outcomes and exits follow push:
+0 for `succeeded`/`no-op`, 1 for `failed`/`refused`/`unknown`, 2 for invalid
+input or persistence, 3 for invalid App configuration. Verification failure's
+reason is `PR verification failed; report to Shawn; not PR-ready`. Discovery
+uncertainty asks for repository-state/status reconciliation before retry.
+
+Interrupted operations reconcile only their latest matching operation, target,
+commit and intent. Missing status means no start; true/null or malformed status
+remains unknown even if a PR exists. Completed retained child-zero status plus
+fresh passing verification can resolve interruption without a second creation.
+Other branches, late results and reopened older uncertainty cannot resolve a
+newer attempt. Persistence failures leave intent/status available for recovery.
+Reuse records `no-op` without invented child evidence.
+
+The real [PR-ready comparison](evidence.md#pr-ready-convention-for-pb-1) consumes
+both exact-head push and PR results. Failed/skipped verification, wrong heads,
+nonzero children, refusals and uncertainty cannot supply that pair. This helper
+performs no automatic T3 linking, watching, posting or merging. After both
+commands pass, the lead separately links the canonical PR URL and applies the
+repository's merge procedure. L5 verifies the pair with `evidence check
+--pr-ready`; only that live procedure retires the interim tool.
+
+## Preparing advertised objects
+
+The coordinator must prepare a complete local object graph before using push.
+Every advertised object remains an exclusion, including HEAD, branch tips,
+pull head/merge refs, annotated tag objects and peeled tag targets. A missing
+object refuses before intent; the helper never fetches or skips exclusions.
+Outside this helper, from the target repository root, the coordinator can fetch
+one bounded local snapshot namespace from the configured explicit HTTPS URL:
+
+```sh
+git fetch --no-tags --no-recurse-submodules https://github.com/OWNER/REPO.git '+refs/*:refs/t3c-publication-snapshot/*'
+```
+
+Replace OWNER/REPO with the configured repository. This obtains advertised
+refs/* (including refs/pull/* and tag objects) without changing origin
+configuration. Use a fresh snapshot namespace or clean up stale snapshot refs
+under coordinator control. HEAD's object must also be available locally; for
+an unusual symbolic HEAD outside refs/*, prepare its advertised object
+separately. Re-run preparation if refs move: a newly advertised ref can race
+the snapshot, and push still refuses any unavailable object. Complete history
+is required; this command alone does not repair a shallow repository.
+
+A legitimate negative ancestry check is exit 1/refused with a
+non-fast-forward reason; malformed inspection or read failures remain exit 2.
+Watched settings (including includes) are checked again before calling the
+in-process token runner. A refusal records no launch and invents no child
+status. This narrows the configuration window; arbitrary concurrent local
+mutation remains outside the guarantee.
+Refused child results show only a validated closed-vocabulary refusal kind
+and a coordinator repair action, never supplied summary text or backend
+diagnostics. Unknown outcomes still require reconciliation; failures stay
+failed. Durable operation/status truth is unchanged.

@@ -5,6 +5,7 @@ import http.client
 import json
 import math
 import os
+import pwd
 import re
 import ssl
 import stat
@@ -210,10 +211,17 @@ def load_config(path):
 
 def read_keychain_secret(service, account):
     try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+        if not isinstance(home, str) or not os.path.isabs(home) or '\0' in home:
+            raise ValueError
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        raise CheckError('cannot resolve account home for Keychain lookup') from None
+    env = dict(os.environ, HOME=home)
+    try:
         result = process.run(['/usr/bin/security', 'find-generic-password', '-s', service,
                               '-a', account, '-w'], stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             timeout=KEYCHAIN_TIMEOUT, check=False)
+                             timeout=KEYCHAIN_TIMEOUT, check=False, env=env)
     except process.ProcessError:
         raise CheckError('cannot read App key from Keychain (launch failure or timeout)') from None
     if result.returncode == 44:
