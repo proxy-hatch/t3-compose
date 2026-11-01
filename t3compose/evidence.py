@@ -17,6 +17,7 @@ def _index(loaded):
     reviews, operations, results, assignments = [], {}, {}, {}
     lead = None
     implementation = None
+    criticality = "CORE"
     for event in events:
         kind, data, seq = event["kind"], event["data"], event["seq"]
         if kind == "scope":
@@ -29,6 +30,10 @@ def _index(loaded):
                     definitions[field] = replacement
         elif kind == "lead-assignment":
             lead = data["thread"]
+        elif kind == "routing-classification" and data.get("configVersion") == 3 and data.get("outcome") == "accepted":
+            criticality = data["answers"]["criticality"]["choice"]
+        elif kind == "routing-judgment" and data.get("configVersion") == 3:
+            criticality = data["criticality"]
         elif kind == "dispatch-intent":
             intents[data["clientRequestId"]] = data
         elif kind == "dispatch-confirmed":
@@ -49,7 +54,7 @@ def _index(loaded):
             results[data["intentRef"]] = event
         assignments[seq] = lead
     return (implementation, checks, criteria, reviews, dispositions, operations,
-            results, assignments, lead, since)
+            results, assignments, lead, since, criticality)
 
 
 def _trusted(event, assignments, lead):
@@ -100,11 +105,15 @@ def _operation_gap(operation, head, operations, results, uncertain):
     return None, event
 
 
+def _latest_review(reviews, kind):
+    return next((event for event in reversed(reviews) if event["data"]["reviewer"]["kind"] == kind), None)
+
+
 def _compare(loaded, head, pr_ready):
     """Compare an already RC-1-validated bundle; no disk or process access."""
     work = loaded["effectiveWork"]
     (implementation, checks, criteria, reviews, dispositions, operations,
-     results, assignments, lead, since) = _index(loaded)
+     results, assignments, lead, since, criticality) = _index(loaded)
     gaps = []
 
     def gap(code, event=None, id=None, review_ref=None):
@@ -138,19 +147,40 @@ def _compare(loaded, head, pr_ready):
         if reason:
             gap("check-" + reason, event, key)
 
-    if not reviews:
-        gap("review-missing")
+    if lead is not None and criticality == "CORE":
+        record = _latest_review(reviews, "task")
+        if record is None:
+            gap("review-record-missing")
+        elif (record["data"]["base"], record["data"]["head"]) != (work["reviewBase"], head):
+            gap("review-record-stale", record)
+        elif record["data"]["verdict"] == "changes-required":
+            gap("review-record-verdict", record)
+
+        lead_rev = _latest_review(reviews, "lead")
+        if lead_rev is None:
+            gap("review-missing")
+        elif (lead_rev["data"]["base"], lead_rev["data"]["head"]) != (work["reviewBase"], head):
+            gap("review-stale", lead_rev)
+        elif assignments[lead_rev["seq"]] != lead:
+            gap("review-source", lead_rev)
+        elif record is not None and lead_rev["seq"] < record["seq"]:
+            gap("review-order", lead_rev)
+        elif lead_rev["data"]["verdict"] == "changes-required":
+            gap("review-verdict", lead_rev)
     else:
-        event = reviews[-1]
-        data = event["data"]
-        actor = data["reviewer"]
-        if (data["base"], data["head"]) != (work["reviewBase"], head):
-            gap("review-stale", event)
-        elif ((lead is None and actor["kind"] != "task") or
-              (lead is not None and (actor["kind"] != "lead" or assignments[event["seq"]] != lead))):
-            gap("review-source", event)
-        elif data["verdict"] == "changes-required":
-            gap("review-verdict", event)
+        if not reviews:
+            gap("review-missing")
+        else:
+            event = reviews[-1]
+            data = event["data"]
+            actor = data["reviewer"]
+            if (data["base"], data["head"]) != (work["reviewBase"], head):
+                gap("review-stale", event)
+            elif ((lead is None and actor["kind"] != "task") or
+                  (lead is not None and (actor["kind"] != "lead" or assignments[event["seq"]] != lead))):
+                gap("review-source", event)
+            elif data["verdict"] == "changes-required":
+                gap("review-verdict", event)
 
     # RC-1 validates concrete proof, severity, authorship and decision/review joins.
     # Historical findings survive replacement of a review or its author.

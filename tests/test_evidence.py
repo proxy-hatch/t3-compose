@@ -18,6 +18,11 @@ REPO = "github.com/example-org/evidence-fixture"
 WRITER = "manager@" + REPO
 CHECK = {"id": "SUITE", "command": ["synthetic-suite", "--offline"], "kind": "fast"}
 CRITERION = {"id": "AC-1", "text": "Synthetic behavior has evidence"}
+POLICY = "sha256:" + "d" * 64
+LEAD = "synthetic-lead"
+QUESTIONS = {"lane": ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"),
+             "criticality": ("CORE", "NON_CRITICAL"),
+             "scope": ("STANDARD", "COMPLEX", "INSUFFICIENT_CONTEXT")}
 
 
 class OfflineEvidence(OfflineTestCase):
@@ -142,6 +147,64 @@ class OfflineEvidence(OfflineTestCase):
         self.check_event(source="feature-lead" if lead else "manager")
         self.criterion(source="feature-lead" if lead else "manager")
         return self.review(lead=lead)
+
+    def routing_input(self):
+        task = {"intent": "Synthetic routing intent", "acceptance": ["Synthetic acceptance"],
+                "interfaces": [], "scope": "Synthetic comparison", "riskFacts": [], "dependencies": []}
+        digest = schema.validate_routing_input({"task": task, "context": None})
+        event = self.add("routing-input", {"task": task, "context": None,
+                                           "inputDigest": digest, "policyDigest": POLICY})
+        return {"inputRef": event["seq"], "inputDigest": digest, "policyDigest": POLICY}
+
+    def route(self, criticality="CORE"):
+        # A version-3 manual judgment is a routing decision.
+        return self.add("routing-judgment", {**self.routing_input(), "configVersion": 3,
+            "lane": "BACKEND_LOGIC", "criticality": criticality, "scope": "STANDARD",
+            "reason": "Synthetic routing decision", "basis": "manual", "defaulted": []})
+
+    def route_v2(self):
+        return self.add("routing-judgment", {**self.routing_input(), "domain": "SOFTWARE_ENGINEERING",
+            "difficulty": "EASY", "reason": "Synthetic version-2 judgment", "basis": "manual"})
+
+    def classify(self, criticality="CORE", outcome="accepted", unknown=False):
+        criteria = {q: {option: "Synthetic " + option for option in options}
+                    for q, options in QUESTIONS.items()}
+        choices = {"lane": "BACKEND_LOGIC", "criticality": criticality, "scope": "STANDARD"}
+        answers = {"unknown": "Synthetic uncertain answer"} if unknown else {
+            q: {"type": "choice", "choice": choices[q], "confidence": 0.9,
+                "probabilities": {o: 1 if o == choices[q] else 0 for o in options}}
+            for q, options in QUESTIONS.items()}
+        return self.add("routing-classification", {**self.routing_input(), "configVersion": 3,
+            "ruleVersion": "synthetic-1", "criteria": criteria,
+            "criteriaDigest": "sha256:" + hashlib.sha256(canonical_json(criteria)).hexdigest(),
+            "riskFacts": [], "configuredModel": "synthetic-model",
+            "snapshotModel": "synthetic-snapshot", "responseId": "synthetic-response",
+            "answers": answers, "outcome": outcome, "reason": "Synthetic classification"})
+
+    def select(self, decision, criticality):
+        # A version-3 routing-selection records a criticality but never decides it.
+        target = {"providerInstanceId": "synthetic-provider", "model": "synthetic-model", "options": {}}
+        source = decision["data"]
+        return self.add("routing-selection", {"configVersion": 3, "classificationRef": decision["seq"],
+            **{key: source[key] for key in ("inputRef", "inputDigest", "policyDigest")},
+            "role": "worker", "lane": "backend-logic", "stage": 1, "pass": None, "round": "first",
+            "criticality": criticality, "scope": "STANDARD", "floorsApplied": [], "selection": target,
+            "chosenPoolAccount": None, "chosenIndex": 0, "configDigest": POLICY,
+            "catalogReadAt": "2026-11-01T00:00:00Z", "catalogDigest": POLICY, "quotaStateDigest": POLICY,
+            "targetsTried": [{"index": 0, "selection": target, "account": None, "reason": "Synthetic primary"}]})
+
+    def lead_work(self):
+        # Manager-sourced check and criterion: only review gaps remain in the arrays below.
+        self.native("worker")
+        self.assign(LEAD)
+        self.check_event(source="manager")
+        self.criterion(source="manager")
+
+    def task(self, **changes):
+        return self.review(**changes)
+
+    def lead_review(self, **changes):
+        return self.review(lead=LEAD, **changes)
 
     def bytes(self):
         if not self.local.exists():
@@ -360,6 +423,7 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence()
 
     def test_lead_review_and_check_accepted_task_substitution_refused(self):
+        self.route("NON_CRITICAL")
         self.native("worker")
         self.assign()
         self.check_event(source="feature-lead")
@@ -381,6 +445,7 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence()
 
     def test_replaced_lead_cannot_keep_old_review_or_check_or_criterion(self):
+        self.route("NON_CRITICAL")
         self.ready("synthetic-lead")
         self.assign("synthetic-replacement")
         self.evidence(["check-source", "review-source", "criterion-source"])
@@ -454,6 +519,7 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence()
 
     def test_historical_lead_author_withdraws_own_finding_after_replacement(self):
+        self.route("NON_CRITICAL")
         self.ready("synthetic-lead")
         review = self.review([self.finding()], lead="synthetic-lead")
         self.assign("synthetic-new-lead")
@@ -630,3 +696,176 @@ class OfflineEvidence(OfflineTestCase):
             with self.assertRaises(cli.CommandError) as caught:
                 evidence.check(self.local, REPO, self.work_id, head, pr_ready=mode)
             self.assertEqual(caught.exception.code, cli.ExitCode.INVALID_INPUT)
+
+    def test_core_in_order_passes(self):
+        self.route("CORE")
+        self.lead_work()
+        self.task()
+        self.lead_review()
+        self.evidence()
+
+    def test_core_missing_reversed_outdated_cumulative(self):
+        self.route("CORE")
+        self.lead_work()
+        self.evidence(["review-record-missing", "review-missing"])
+        l1 = self.lead_review()
+        self.evidence(["review-record-missing"])
+        self.task()
+        data = self.evidence(["review-order"])
+        self.assertEqual(data["gaps"][0]["eventRef"], l1["seq"])
+        l2 = self.lead_review()
+        self.evidence([])
+        self.task()
+        data = self.evidence(["review-order"])
+        self.assertEqual(data["gaps"][0]["eventRef"], l2["seq"])
+        self.lead_review()
+        self.evidence([])
+
+    def test_core_only_task_review(self):
+        self.route("CORE")
+        self.lead_work()
+        self.task()
+        data = self.evidence(["review-missing"])
+        self.assertIsNone(data["gaps"][0]["eventRef"])
+
+    def test_core_stale_and_verdict_gaps_cumulative(self):
+        self.route("CORE")
+        self.lead_work()
+        rec = self.task(head=self.base)
+        self.lead_review()
+        data = self.evidence(["review-record-stale"])
+        self.assertEqual(data["gaps"][0]["eventRef"], rec["seq"])
+        self.task()
+        self.evidence(["review-order"])
+        self.lead_review()
+        self.evidence([])
+        self.lead_review(head=self.base)
+        self.evidence(["review-stale"])
+        self.lead_review()
+        self.evidence([])
+        self.task(verdict="changes-required")
+        self.lead_review()
+        self.evidence(["review-record-verdict"])
+        self.task(verdict="approve-after-fixes")
+        self.lead_review()
+        self.evidence([])
+        self.lead_review(verdict="changes-required")
+        self.evidence(["review-verdict"])
+        self.lead_review(verdict="approve-after-fixes")
+        self.evidence([])
+
+    def test_core_two_gaps_at_once(self):
+        self.route("CORE")
+        self.lead_work()
+        self.lead_review()
+        self.task(head=self.base)
+        self.evidence(["review-record-stale", "review-order"])
+
+    def test_core_replaced_lead(self):
+        self.route("CORE")
+        self.lead_work()
+        self.task()
+        self.lead_review()
+        self.assign("synthetic-replacement")
+        self.evidence(["review-source"])
+        self.review(lead="synthetic-replacement")
+        self.evidence([])
+
+    def test_non_critical_with_lead_cumulative(self):
+        self.route("NON_CRITICAL")
+        self.lead_work()
+        self.lead_review()
+        self.evidence([])
+        self.task()
+        self.evidence(["review-source"])
+        self.lead_review()
+        self.evidence([])
+
+    def test_no_lead_criticality_never_matters_cumulative(self):
+        self.native("worker")
+        self.check_event()
+        self.criterion()
+        self.route("CORE")
+        self.evidence(["review-missing"])
+        self.route("NON_CRITICAL")
+        self.evidence(["review-missing"])
+        self.task()
+        self.evidence([])
+        self.route("CORE")
+        self.evidence([])
+
+    def test_no_routing_decision_counts_as_core_cumulative(self):
+        self.lead_work()
+        self.lead_review()
+        self.evidence(["review-record-missing"])
+        self.route_v2()
+        self.evidence(["review-record-missing"])
+        self.classify("NON_CRITICAL", "defaulted", unknown=True)
+        self.evidence(["review-record-missing"])
+        self.classify("NON_CRITICAL", "retry-with-context")
+        self.evidence(["review-record-missing"])
+
+    def test_latest_v3_decision_wins_cumulative(self):
+        self.lead_work()
+        self.lead_review()
+        core = ["review-record-missing"]
+        self.route("NON_CRITICAL")
+        self.evidence([])
+        self.route("CORE")
+        self.evidence(core)
+        self.classify("NON_CRITICAL")
+        self.evidence([])
+        self.classify("CORE")
+        self.evidence(core)
+        self.route("NON_CRITICAL")
+        self.evidence([])
+        self.classify("CORE")
+        self.evidence(core)
+        self.classify("NON_CRITICAL")
+        self.evidence([])
+        self.route("CORE")
+        self.evidence(core)
+        self.route("NON_CRITICAL")
+        self.evidence([])
+        self.classify("CORE", "retry-with-context")
+        self.evidence([])
+        self.classify("CORE", "defaulted", unknown=True)
+        self.evidence([])
+        self.classify("CORE", "defaulted")
+        self.evidence([])
+        self.select(self.route("NON_CRITICAL"), "CORE")
+        self.evidence([])
+
+    def test_findings_span_both_core_reviews(self):
+        self.route("CORE")
+        self.lead_work()
+        record = self.task(findings=[self.finding("blocking")])
+        self.lead_review()
+        self.evidence(["finding-missing"])
+        self.dispose(record)
+        self.evidence([])
+
+    def test_cli_core_in_order_passes(self):
+        self.route("CORE")
+        self.lead_work()
+        self.task()
+        self.lead_review()
+        self.evidence_cli()
+
+    def test_cli_core_reversed_fails(self):
+        self.route("CORE")
+        self.lead_work()
+        self.lead_review()
+        self.task()
+        self.evidence_cli(["review-order"])
+
+    def test_cli_no_routing_decision_lead_only_review_fails(self):
+        self.lead_work()
+        self.lead_review()
+        self.evidence_cli(["review-record-missing"])
+
+    def test_cli_non_critical_with_lead_passes(self):
+        self.route("NON_CRITICAL")
+        self.lead_work()
+        self.lead_review()
+        self.evidence_cli()
