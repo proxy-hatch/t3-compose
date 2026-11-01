@@ -721,3 +721,91 @@ class OfflineBriefs(OfflineTestCase):
             code, out, err = self.invoke('brief', 'check', self.output)
             self.refusal((code, out, err))
             self.assertIn('original brief', err)
+
+    def test_lead_protocol_is_a_render_only_template(self):
+        self.refusal(self.render('lead-protocol'))
+        self.assertFalse(self.output.exists())
+        rendered = self.success(self.render('lead-protocol', LEAD_LOG='the task log'))
+        raw = self.output.read_bytes()
+        self.assertEqual(rendered, {'digest': 'sha256:' + hashlib.sha256(raw).hexdigest()})
+        template = (ROOT / 'skill/templates/lead-protocol.md').read_text()
+        self.assertGreaterEqual(template.count('{{LEAD_LOG}}'), 2)
+        self.assertEqual(raw.decode('utf-8'), template.replace('{{LEAD_LOG}}', 'the task log'))
+        self.refusal(self.invoke('brief', 'check', self.output))
+
+    def test_lead_protocol_states_each_rule(self):
+        self.success(self.render('lead-protocol', LEAD_LOG='the task log'))
+        text = ' '.join(self.output.read_text().split())
+        for statement in (
+            'A failover never changes the stage.',
+            'Never estimate or check quota percentages beforehand.',
+            't3c quota record --instance I --model M --kind K --observed-at T [--reset-at T] --evidence TEXT',
+            'append a `reconciliation` record for it with the outcome `stopped-and-preserved`',
+            'Do the same for a refused Reviewer.',
+            'with the same brief and a new `clientRequestId`',
+            'Append the new `dispatch-intent` before the call, then dispatch.',
+            "Start at the round's previous start commit, or at the latest completed result's commit.",
+            "The refused child's commits, if it made any, stay on its branch.",
+            'may name that branch for read-only reference',
+            'Record no quota refusal: this is not quota evidence. Do record the skipped target and the reason in the task log.',
+            'or a driver kind blocked for the role',
+            'Record no quota refusal and rotate no account.',
+            'Record the skipped target and the reason in the task log, and take the next target of the cell.',
+            'A reported reset time is recorded but never used for skipping',
+            'Skip that key until 30 minutes after the refusal was observed',
+            'A dry cell never escalates to another stage.',
+            't3c brief check-escalation --result FILE',
+            'Record the escalation before you select or dispatch at the next stage.',
+            'ORIGINAL is the first Worker brief of the round, the one that is not itself a continuation',
+            'never the continuation brief it received',
+            'Append the `dispatch-intent` for BRIEF, then dispatch it with `delegate_task`',
+            "Never pass the failed Worker's transcript.",
+            'The round starts at the WIP commit',
+            'These are not escalations: an environment block, a quota refusal and a question about the spec.',
+            'the lead stalled: a second issue of the Task needs stage 3, or a merge or post-merge verification fails twice.',
+            'Tell the manager, who replaces the lead thread at the next stage.',
+            'The new lead resumes from the Task log and the records',
+            'a failure at stage 3: the item goes to the manager, then to the owner.',
+            'A new issue or round starts with a fresh `t3c route input`',
+            '`t3c route classify`, or `t3c route judge` with a reason',
+            'orchestrator_capabilities',
+            'its true UTC capture time',
+            'a catalog may be up to 24 hours old',
+            'Capture again only after a dispatch error that suggests a provider change',
+            'the target and its position in the task log',
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, text)
+
+    def test_lead_protocol_names_no_model_account_or_decision(self):
+        text = (ROOT / 'skill/templates/lead-protocol.md').read_text()
+        self.assertNotRegex(text, r'(?i)CD-\d|gemini|gpt-|claude|sonnet|opus|argon|astra|flash|glm|openrouter')
+
+    def test_lead_protocol_orders_the_escalation_steps(self):
+        self.success(self.render('lead-protocol', LEAD_LOG='the task log'))
+        text = ' '.join(self.output.read_text().split())
+        steps = ('t3c brief check-escalation --result FILE',
+                 'Record the escalation before you select or dispatch at the next stage.',
+                 'Render the continuation brief with',
+                 'Append the `dispatch-intent` for BRIEF, then dispatch it with `delegate_task`')
+        for earlier, later in zip(steps, steps[1:]):
+            with self.subTest(earlier=earlier):
+                self.assertLess(text.index(earlier), text.index(later))
+
+    def test_second_escalation_embeds_the_original_not_a_continuation(self):
+        self.success(self.make_continuation())
+        first = self.temp / 'first-continuation.md'
+        first.write_bytes(self.output.read_bytes())
+        result = self.temp / 'second-result.md'
+        result.write_text(self.escalation(wip='6' * 40, base=self.data['REVIEW_BASE']))
+        self.values.write_text(json.dumps({**self.data, 'STAGE': '3', 'START': '6' * 40,
+                                           'ROUND': 'continuation', 'PROVISIONED': '7' * 40}))
+        args = ('brief', 'render', '--template', 'continuation', '--values', self.values,
+                '--out', self.output, '--escalation', result)
+        self.success(self.invoke(*args, '--original-brief', self.temp / 'original.md'))
+        self.success(self.invoke('brief', 'check', self.output))
+        self.output.unlink()
+        code, out, err = self.invoke(*args, '--original-brief', first)
+        self.refusal((code, out, err))
+        self.assertIn('original brief', err)
+        self.assertFalse(self.output.exists())
