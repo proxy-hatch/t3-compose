@@ -1,7 +1,7 @@
 # Routing commands
 
 Use the [shared CLI contract](../cli.md) for invocation, global options, output,
-errors and registration. All three commands reload version-3 configuration with
+errors and registration. All four commands reload version-3 configuration with
 `load_matrix_config(local=args.local_dir)`. Version 2 and invalid configuration
 exit 3 with a sanitized message. No command contacts a provider.
 `--repo REPO` accepts the records API's repository identity, origin URL or
@@ -24,7 +24,7 @@ t3c route judge --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST \
 `{inputRef, inputDigest, policyDigest}`, using the current policy digest.
 The supplied JSON file is bounded to 1 MiB before canonical validation.
 
-For `judge` and `select`, the reference must be positive and the digest must
+For `judge`, `select` and `escalate`, the reference must be positive and the digest must
 be `sha256:<64 hex>` (exit 2 otherwise). The latest `routing-input` must have
 that sequence. Its policy digest and the argument must equal the current
 configuration's policy digest; otherwise exit 4 asks for a current input.
@@ -36,7 +36,7 @@ scope, reason, basis: "manual", defaulted: []}`.
 
 ```text
 t3c route select --repo REPO --work ID --role worker|reviewer|feature-lead \
-  --stage 1|2|3 [--round first|corrections|re-review] \
+  --stage 1|2|3 [--round first|corrections|re-review] [--pass pre|record] \
   --input-ref SEQ --policy-digest DIGEST --catalog FILE --catalog-read-at UTC
 ```
 
@@ -55,12 +55,29 @@ An unknown fact exits 4. A floor only raises scope to `COMPLEX` or criticality
 to `CORE`. `floorsApplied` lists facts carrying floors in declared order,
 without repeats; `document-change` has no floor. Starting stage is 2 for
 `COMPLEX`, otherwise 1. A lower requested stage exits 4 with `startingStage`.
-Higher stages are accepted. A dry cell never changes stages.
+A higher requested stage requires a recorded chain from that starting stage.
+Only escalation events after the newest routing input count, with matching role
+and derived lane. Walk events in sequence order: advance only when `fromStage`
+is the currently reached stage and `toStage` is exactly one higher. Disconnected,
+reordered, wrong-role/lane and older-epoch links cannot authorize a jump.
+A requested stage above the reached stage exits 4 with `reachedStage`.
+A dry cell never changes stages.
 
 The cell is `matrix[role][lane][str(stage)]`. Worker lanes are `ui-frontend`
 for `UI_FRONTEND` and `backend-logic` otherwise. Reviewer lanes are `core`
 for `CORE` and `non-critical` otherwise. Feature leads use `default`.
-`prePass` is ignored; a reviewer's `pass` is `"record"`.
+Reviewers default to `--pass record`. Explicit `--pass` on any other role
+exits 2. `--pass pre` selects only the optional `prePass` on that reviewer
+cell (any lane or stage), never its primary or quota fallbacks. Pool account
+walking within that target remains allowed, with every index zero. Success
+writes a normal selection with `pass: "pre"` and `chosenIndex: 0`.
+
+A pre-pass is advisory and never the review of record. If no pre-pass is
+configured or none is eligible, exit 0 returns
+`{skipped: true, reason, retryAfter, targetsTried}` and appends nothing.
+`retryAfter` is the earliest remembered refusal expiry tried, or null.
+The dispatcher proceeds to the review of record. Invalid config, catalog,
+current input or decision retains its ordinary error exit; it is not a skip.
 
 Selection loads the quota state first (exit 3 on invalid state); the clock is
 read once, after the state is loaded, and that aware UTC time is used for both
@@ -101,7 +118,7 @@ to 512 printable characters. Selection never changes state or its active pointer
 
 One version-3 `routing-selection` records `configVersion: 3`, `inputRef`,
 `inputDigest`, `policyDigest`, `classificationRef` (the decision sequence),
-`role`, cell `lane`, integer `stage`, `pass` (`record` for reviewers,
+`role`, cell `lane`, integer `stage`, `pass` (`pre` or `record` for reviewers,
 null otherwise), `round`, post-floor `criticality` and `scope`,
 `floorsApplied`, the exact configured `selection`, `chosenPoolAccount`
 (account or null), `targetsTried`, `chosenIndex`, `configDigest`,
@@ -116,14 +133,80 @@ returns no selection. Exhaustion writes nothing and exits 5 with
 `{reason, retryAfter, targetsTried}`. `retryAfter` is the earliest expiry
 among entries actually skipped for live refusal, or null if there were none.
 
+## Helpers
+
+```text
+t3c route select --repo REPO --work ID --role verifier|text \
+  --input-ref SEQ --policy-digest DIGEST --catalog FILE --catalog-read-at UTC
+```
+
+Helpers require a current input and policy digest, but no classification or
+judgment. They reject explicit `--stage`, `--round` and `--pass` (exit 2).
+Matrix roles still require `--stage`; their round defaults remain as above.
+Only `helpers[role].primary` is tried, even when a quota fallback is configured.
+Availability, driver eligibility, role blocks, refusal memory and pool walking
+use the same checks. Helpers never select `search`, which is not a CLI role.
+Their selection has null `classificationRef`, `lane`, `stage`, `pass`, `round`,
+`criticality` and `scope`, and empty `floorsApplied`. Pi still adds per-token
+billing. Exhaustion exits 5 without a record and reports the earliest remembered
+refusal expiry among tried accounts, or null.
+
+## Escalation and issue epochs
+
+```text
+t3c route escalate --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST \
+  --role worker|reviewer|feature-lead --from-stage 1|2 --reason REASON \
+  --evidence-file FILE [--wip-commit SHA]
+```
+
+The latest matching version-3 decision and risk floors derive the lane and
+starting stage, exactly as for matrix selection. `fromStage` must equal the
+currently reached stage; repeated, stale or out-of-order escalation exits 4.
+`toStage` is derived as `fromStage + 1`; there is no skip or stage 3 to 4.
+
+The five reason/role pairs are fixed by the records schema:
+
+| Reason | Role |
+| --- | --- |
+| `worker-hard-stop` | `worker` |
+| `finding-unresolved` | `worker` |
+| `review-deadlock` | `reviewer` |
+| `reviewer-failure` | `reviewer` |
+| `lead-stalled` | `feature-lead` |
+
+Evidence must be nonempty UTF-8 text at most 8,192 bytes. The file read is bounded
+before decoding; unreadable, malformed, empty or oversized evidence exits 2
+with a sanitized error. WIP is a full commit SHA, required for `worker-hard-stop`
+and otherwise nullable. For a hard stop, evidence must contain one valid
+`<ESCALATION_REQUEST>` block as specified in [brief commands](briefs.md).
+The shared `briefs.parse_escalation` parser validates it; its WIP commit must
+match `--wip-commit` and its review base must match the work's `reviewBase`.
+Only the validated block is stored. Missing/malformed blocks, mismatched commits
+and invalid role/stage/reason pairs exit 2 before any append.
+
+Success returns the appended `routing-escalation` event envelope, whose data
+has exactly `role`, `lane`, `fromStage`, `toStage`, `reason`, `evidence` and
+`wipCommit` (no `configVersion`). Append failures exit 2. The command does not
+dispatch a child or write Git state. Escalation records capability triggers;
+quota exhaustion never authorizes escalation.
+
+Every new issue or round starts with a fresh `route input`, then `route classify`
+or `route judge` (for example, reason "carries the Task class into round n").
+Select at the starting stage. When a recorded trigger occurs, run `route escalate`
+and then select the next stage. The fresh input starts the epoch: prior issue or
+round escalation chains no longer authorize higher stages. A new decision is
+required on that input. Legacy version-2 decisions and selections remain readable
+and never authorize stage advancement.
+
 ## Exits
 
-- 0: recorded.
+- 0: recorded, or pre-pass skipped with no record.
 - 2: invalid arguments, input or records, or append failure; sanitized message.
 - 3: invalid config or quota state, including stored refusal times or a
   non-subscription manager found in the catalog; sanitized message.
 - 4: current input, decision or catalog needed; one JSON object with `reason`,
-  plus `startingStage` when requested below the starting stage.
+  plus `startingStage` when below the starting stage or `reachedStage`
+  when a stage prerequisite fails.
 - 5: no eligible target; one JSON object with `reason`, `retryAfter`,
   `targetsTried`.
 
@@ -133,8 +216,9 @@ Failures never append an event.
 
 `routing.load_catalog(path, read_at, now)` reads a saved capabilities object
 with `providers[]` from a file of at most 1 MiB; no service is called. Capture
-time must be UTC ending in `Z`, not future, and at most 15 minutes old
-(inclusive). `routing.parse_catalog(raw)` returns providers by ID, including
+time must be UTC ending in `Z`, not future, and at most 24 hours old (86,400 seconds)
+(inclusive; exact boundary accepted, older or future captures refused).
+`routing.parse_catalog(raw)` returns providers by ID, including
 unavailable ones. Needed provider fields are `providerInstanceId`,
 `driverKind`, strict boolean `canRunChildTask` and
 `canRunCrossProviderChildTask`, string-list `constraints`, and `models[]`.
@@ -143,3 +227,9 @@ booleans). Duplicate IDs, missing or malformed needed fields fail closed with
 `CatalogError`. Extra metadata is ignored. Disabled/unsupported entries can
 have valid shape. `live/catalog_shape.py` checks a saved real catalog with the
 same parser.
+
+Capture the catalog once per thread, preserving the exact capabilities response
+and its true UTC capture time. Reuse that capture for up to 24 hours; never
+relabel old bytes with a newer timestamp. Refresh after dispatch errors that
+suggest provider changes (missing provider/model, disabled instance or changed
+option), using the new response and capture time together.
