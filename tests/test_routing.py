@@ -357,6 +357,9 @@ class OfflineRouting(OfflineRoutingFixture):
                 data['classificationRef'] = 2
             records.append_event(self.local, REPO, WORK, kind, data, writer=writer)
         judgment = self.judge()
+        newer_old = copy.deepcopy(payloads['routing-judgment'])
+        newer_old.update(self.current)
+        records.append_event(self.local, REPO, WORK, 'routing-judgment', newer_old, writer=writer)
         self.assertEqual(self.select()['classificationRef'], judgment['seq'])
         classification = _valid_v3_routing_payloads()['routing-classification']
         classification.update(self.current, riskFacts=[], outcome='accepted')
@@ -376,9 +379,25 @@ class OfflineRouting(OfflineRoutingFixture):
         classification['answers']['lane']['confidence'] = 0.59
         append()
         self.assertIn('record a judgment', self.select(code=4)['reason'])
-        classification['outcome'] = 'defaulted'
-        append()
+        for answer in classification['answers'].values():
+            answer['confidence'] = 1.0
+        for outcome in ('defaulted', 'retry-with-context'):
+            with self.subTest(outcome=outcome):
+                classification['outcome'] = outcome
+                append()
+                before = self.events()
+                self.select(code=4)
+                self.assertEqual(self.events(), before)
+
+    def test_only_version_two_decision_is_ignored(self):
+        self.current = self.input()
+        decision = copy.deepcopy(_valid_event_payloads()['routing-judgment'])
+        decision.update(self.current)
+        records.append_event(self.local, REPO, WORK, 'routing-judgment', decision,
+                             writer='lead:WORK-1@' + REPO)
+        before = self.events()
         self.select(code=4)
+        self.assertEqual(self.events(), before)
 
     def test_dry_cell_retry_full_walk_and_no_mutation(self):
         self.judge()
