@@ -1,0 +1,82 @@
+{
+  "version": 3,
+  "manager": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "medium"}}, "quotaFallback": [{"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "medium"}}]},
+  "matrix": {
+    "feature-lead": {
+      "default": {
+        "1": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}, "quotaFallback": [{"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}}, {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}]},
+        "2": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "medium"}}, "quotaFallback": [{"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}]},
+        "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "xhigh"}}, "quotaFallback": []}
+      }
+    },
+    "worker": {
+      "backend-logic": {
+        "1": {"primary": {"providerPool": "agy-synth-pool", "model": "gemini-3.8-flash-medium", "options": {}}, "quotaFallback": [{"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "max"}}, {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}]},
+        "2": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}]},
+        "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "xhigh"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "high"}}]}
+      },
+      "ui-frontend": {
+        "1": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "max"}}, "quotaFallback": [{"providerPool": "agy-synth-pool", "model": "gemini-3.8-flash-medium", "options": {}}]},
+        "2": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}]},
+        "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, "quotaFallback": []}
+      }
+    },
+    "reviewer": {
+      "non-critical": {
+        "1": {"primary": {"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}}, "quotaFallback": [{"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}]},
+        "2": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}]},
+        "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "high"}}, "quotaFallback": []}
+      },
+      "core": {
+        "1": {"prePass": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}, "primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}}, {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}]},
+        "2": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "high"}}, "quotaFallback": [{"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}]},
+        "3": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}, "quotaFallback": []}
+      }
+    }
+  },
+  "helpers": {
+    "verifier": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}, "quotaFallback": []},
+    "search": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "low"}}, "quotaFallback": []},
+    "text": {"primary": {"providerPool": "agy-synth-pool", "model": "gemini-3.8-flash-high", "options": {}}, "quotaFallback": []}
+  },
+  "providerPools": {"agy-synth-pool": {"selection": "exhaust-in-order", "providerInstanceIds": ["agy-synth-alpha", "agy-synth-beta", "agy-synth-gamma"]}},
+  "roleBlocks": [{"driverKind": "antigravity", "role": "search", "reason": "Synthetic example: a capability probe failed for this role.", "evidence": "Synthetic probe summary; no real transcript."}],
+  "quota": {"refusalRetryMinutes": 30},
+  "classification": {
+    "ruleVersion": "2026-11-01-v3-example",
+    "lane": {
+      "instructions": "Classify which kind of code the work changes. Judge what the work changes, not what its text mentions.",
+      "criteria": {
+        "BACKEND_LOGIC": "Logic, data, APIs, tooling, tests or technical documentation.",
+        "UI_FRONTEND": "User-interface code, styling or front-end assets.",
+        "MIXED": "Both kinds of change, or unclear; routed as backend-logic."
+      }
+    },
+    "criticality": {
+      "instructions": "Classify how much a mistake in the change would cost.",
+      "criteria": {
+        "CORE": "Logic, stateful code, an API, security or a shared contract.",
+        "NON_CRITICAL": "UI, CRUD, tests only or wording."
+      }
+    },
+    "scope": {
+      "instructions": "Classify how hard the work is to do correctly from the given context.",
+      "criteria": {
+        "STANDARD": "Bounded work that tests or a review would catch; starts at stage 1.",
+        "COMPLEX": "Unresolved design across modules or subtle invariants; starts at stage 2.",
+        "INSUFFICIENT_CONTEXT": "The input lacks the requirements, acceptance criteria or scope needed to judge."
+      }
+    }
+  },
+  "riskFacts": {
+    "credentials-or-guardrail": {"description": "The first implementation of code that handles credentials or enforces a guardrail.", "scope": "COMPLEX", "criticality": "CORE"},
+    "recovery-or-concurrency": {"description": "Recovery or concurrency invariants, including data loss on interrupted writes.", "scope": "COMPLEX", "criticality": "CORE"},
+    "shared-interface": {"description": "A change to an interface that other modules or Tasks consume.", "criticality": "CORE"},
+    "document-change": {"description": "A change to a document. It raises nothing."}
+  },
+  "escalation": {"repairAttempts": 2, "correctionsRoundsPerFinding": 2},
+  "jev": {
+    "provider": "openrouter", "model": "~typesafe/jev-latest", "minConfidence": 0.6, "maxContextRetries": 1,
+    "timeoutSeconds": 30, "keyFile": {"path": "/synthetic/private/openrouter-key.json", "field": "apiKey"}
+  }
+}
