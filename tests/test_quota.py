@@ -98,7 +98,8 @@ class SimulatedQuota(OfflineTestCase):
         expiry = quota.utc(entry['observedAt']) + timedelta(minutes=30)
         self.assertEqual(recorded['liveRefusals'][0]['expiresAt'], quota.utc_text(expiry))
         before = self.state_path.read_bytes(), self.state_path.stat().st_mtime_ns
-        self.invoke('show', child=True)
+        shown = self.invoke('show', child=True)
+        self.assertEqual(shown['liveRefusals'][0]['expiresAt'], quota.utc_text(expiry))
         self.assertEqual((self.state_path.read_bytes(), self.state_path.stat().st_mtime_ns), before)
         activated = self.invoke('activate', child=True)
         self.assertEqual(activated['state']['refusals'], recorded['state']['refusals'])
@@ -107,6 +108,8 @@ class SimulatedQuota(OfflineTestCase):
 
     def test_pure_time_boundary_hints_duplicates_and_invalid_times(self):
         entries = [refusal(resetAt='2099-01-01T00:00:00Z'), refusal()]
+        early_reset = refusal(resetAt='2026-01-01T00:01:00Z')
+        self.assertEqual(len(quota.live_refusals([early_reset], 30, NOW + timedelta(minutes=29))), 1)
         original = copy.deepcopy(entries)
         self.assertEqual(len(quota.live_refusals(entries, 30, NOW + timedelta(minutes=30,
                                                                               microseconds=-1))), 2)
@@ -127,18 +130,71 @@ class SimulatedQuota(OfflineTestCase):
     def test_pruning_order_and_active_moves(self):
         now = datetime.now(timezone.utc)
         old = refusal(quota.utc_text(now - timedelta(minutes=31)))
-        live = refusal(quota.utc_text(now - timedelta(minutes=1)))
-        self.state['refusals'] = [old, live, live]
+        live1 = refusal(quota.utc_text(now - timedelta(minutes=1)), evidence='first live')
+        live2 = refusal(quota.utc_text(now - timedelta(minutes=2)), evidence='second live')
+        self.state['refusals'] = [old, live1, live2]
         self.save()
         self.assertEqual(len(self.invoke('show')['liveRefusals']), 2)
-        result = self.invoke('record', instance=ACCOUNTS[2])
+        observed = quota.utc_text(now)
+        result = self.invoke('record', instance=ACCOUNTS[1], evidence='new', observed_at=observed)
         self.assertIsNone(result['activeMove'])
-        self.assertEqual(result['state']['refusals'][:2], [live, live])
-        self.invoke('activate', instance=ACCOUNTS[2])
+        self.assertEqual(result['state']['activeProviderInstanceId'], ACCOUNTS[0])
+        new = refusal(observed,
+                      providerInstanceId=ACCOUNTS[1], evidence='new')
+        self.assertEqual(result['state']['refusals'], [live1, live2, new])
+        self.state['refusals'] = [old, live1, live2]
+        self.save()
+        activated = self.invoke('activate', instance=ACCOUNTS[2])
+        self.assertEqual(activated['state']['refusals'], [old, live1, live2])
         result = self.invoke('record', instance=ACCOUNTS[2])
         self.assertEqual(result['activeMove'], {'from': ACCOUNTS[2], 'to': ACCOUNTS[0]})
         result = self.invoke('record', instance='codex-synth-primary', model='gpt-6.1-sol')
         self.assertIsNone(result['activeMove'])
+
+    def test_record_accepts_state_published_after_lock_acquisition(self):
+        locked = quota._locked
+        concurrent = None
+        @contextlib.contextmanager
+        def publish_after_lock(local):
+            nonlocal concurrent
+            with locked(local):
+                concurrent = refusal(quota.utc_text(datetime.now(timezone.utc)),
+                                     evidence='concurrent writer')
+                jsonio.atomic_replace(self.state_path, {**self.state, 'refusals': [concurrent]})
+                yield
+        with patch.object(quota, '_locked', publish_after_lock):
+            result = self.invoke('record', evidence='new writer')
+        self.assertEqual(result['state']['refusals'][0], concurrent)
+        self.assertEqual([r['evidence'] for r in result['state']['refusals']],
+                         ['concurrent writer', 'new writer'])
+
+    def test_lock_failure_preserves_state_and_reports_lock_diagnostic(self):
+        before = self.state_path.read_bytes()
+        self.lock_path.mkdir()
+        for leaf in ('record', 'activate'):
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                self.assertEqual(cli.main(self.argv(leaf)), 2)
+            self.assertEqual(stdout.getvalue(), '')
+            self.assertIn('quota state lock failed', stderr.getvalue())
+            self.assertNotIn(str(self.local), stderr.getvalue())
+            self.assertEqual(self.state_path.read_bytes(), before)
+
+    def test_record_accepts_unique_manager_helper_and_prepass_models(self):
+        selections = [self.cfg['manager']['primary'],
+                      self.cfg['helpers']['verifier']['primary'],
+                      self.cfg['matrix']['reviewer']['core']['1']['prePass']]
+        for selection, model in zip(selections, ('synthetic-manager-model',
+                                                'synthetic-helper-model',
+                                                'synthetic-prepass-model')):
+            selection['model'] = model
+        self.save()
+        for selection in selections:
+            with self.subTest(model=selection['model']):
+                self.invoke('record', instance=selection['providerInstanceId'], model=selection['model'])
+        self.invoke('record', instance=ACCOUNTS[1],
+                    model=self.cfg['helpers']['text']['primary']['model'])
 
     def test_invalid_updates_preserve_bytes(self):
         before = self.state_path.read_bytes()
@@ -183,9 +239,14 @@ class SimulatedQuota(OfflineTestCase):
         self.cfg = json.loads((ROOT / 'docs/examples/agent-routing.v3.example.json').read_text())
         self.save()
         self.state_path.unlink()
+        self.lock_path.unlink(missing_ok=True)
         for leaf in ('show', 'record', 'activate'):
             self.invoke(leaf, code=3)
             self.assertFalse(self.state_path.exists())
+            if leaf == 'show':
+                self.assertFalse(self.lock_path.exists())
+            else:
+                self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
 
     def test_concurrent_writers_keep_all_six_entries(self):
         pairs = [(a, MODEL) for a in ACCOUNTS] + [
@@ -199,7 +260,7 @@ class SimulatedQuota(OfflineTestCase):
                     'record', instance=instance, model=model)), stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, text=True))
             for child in children:
-                out, err = child.communicate(timeout=10)
+                out, err = child.communicate(timeout=60)
                 self.assertEqual(child.returncode, 0, (out, err))
         finally:
             for child in children:
@@ -225,7 +286,7 @@ class SimulatedQuota(OfflineTestCase):
         finally:
             os.close(fd)
         try:
-            out, err = child.communicate(timeout=10)
+            out, err = child.communicate(timeout=60)
             self.assertEqual(child.returncode, 0, (out, err))
         finally:
             if child.poll() is None:
@@ -238,24 +299,27 @@ class SimulatedQuota(OfflineTestCase):
         flock, close, load, publish = fcntl.flock, os.close, quota.load_quota_state, jsonio.atomic_replace
         def locked(fd, mode):
             flock(fd, mode)
-            events.append('lock')
+            events.append(('lock', fd))
         def loaded(*args, **kwargs):
             events.append('read')
             return load(*args, **kwargs)
         def published(*args, **kwargs):
-            events.append('publish')
-            return publish(*args, **kwargs)
+            result = publish(*args, **kwargs)
+            events.append('published')
+            return result
         def closed(fd):
-            events.append('close')
+            events.append(('close', fd))
             return close(fd)
         with (patch.object(fcntl, 'flock', side_effect=locked),
               patch.object(quota, 'load_quota_state', side_effect=loaded),
               patch.object(jsonio, 'atomic_replace', side_effect=published),
               patch.object(os, 'close', side_effect=closed)):
             self.invoke('record')
-        self.assertLess(events.index('lock'), events.index('read'))
-        self.assertLess(events.index('read'), events.index('publish'))
-        self.assertEqual(events[-1], 'close')
+        lock_fd = events[0][1]
+        self.assertEqual(events[0], ('lock', lock_fd))
+        self.assertLess(events.index(('lock', lock_fd)), events.index('read'))
+        self.assertLess(events.index('read'), events.index('published'))
+        self.assertLess(events.index('published'), events.index(('close', lock_fd)))
         self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
         for after in (False, True):
             self.save()

@@ -62,21 +62,28 @@ def _routable(data, instance, model):
 
 @contextmanager
 def _locked(local):
-    fd = os.open(local / 'agent-routing-state.lock',
-                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fd = os.open(local / 'agent-routing-state.lock',
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        raise CommandError('quota state lock failed', ExitCode.INVALID_INPUT) from None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            raise CommandError('quota state lock failed', ExitCode.INVALID_INPUT) from None
         yield
     finally:
         os.close(fd)
 
 
-def _state(args, cfg, now):
+def _state(args, cfg):
     try:
         loaded = load_quota_state(local=args.local_dir, config=cfg)
+        now = datetime.now(timezone.utc)
         state = thaw_value(loaded.data)
         live = live_refusals(state.get('refusals', []), cfg.data['quota']['refusalRetryMinutes'], now)
-        return loaded, state, live
+        return loaded, state, live, now
     except (ConfigValidationError, ValueError, RecursionError):
         raise CommandError('invalid routing config or quota state', ExitCode.INVALID_CONFIG) from None
 
@@ -88,7 +95,7 @@ def command(args):
     except (ConfigValidationError, ValueError, RecursionError):
         raise CommandError('invalid routing config or quota state', ExitCode.INVALID_CONFIG) from None
     if args.quota_action == 'show':
-        loaded, state, live = _state(args, cfg, now)
+        loaded, state, live, now = _state(args, cfg)
         return {'state': state, 'liveRefusals': live, 'configDigest': cfg.digest,
                 'stateDigest': loaded.digest}
 
@@ -109,7 +116,7 @@ def command(args):
 
     try:
         with _locked(args.local_dir):
-            loaded, state, live = _state(args, cfg, now)
+            loaded, state, live, now = _state(args, cfg)
             active_move = None
             if args.quota_action == 'record':
                 state['refusals'] = [{k: v for k, v in r.items() if k != 'expiresAt'} for r in live]

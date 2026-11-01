@@ -18,7 +18,10 @@ or by pool account and model. K is `usage-limit`, `quota-exhausted`, `credits`
 Transient errors are not quota refusals. Evidence must contain non-whitespace
 text and be at most 512 characters; it is stored verbatim. Omitted reset is null.
 Both timestamps use UTC `YYYY-MM-DDTHH:MM:SS[.ffffff]Z` with 1–6 fractional digits.
-Observation cannot be after the command's start time; reset cannot precede it.
+Arguments are checked against the command's start time: observation cannot be
+after it, and reset cannot precede observation. Stored times, expiry and pruning
+use a clock read right after the state is read, under the lock for writes.
+The candidate entry is checked again against that later clock before publication.
 
 The instance/model pair must be routable: a selection in the manager, any matrix
 cell (primary, quota fallback or pre-pass), or any helper cell must name that
@@ -57,7 +60,9 @@ Success (exit 0) returns exactly:
 - `record` also returns `activeMove`: `{"from": I, "to": J}` if the pointer
   changed, otherwise null. No evaluated `quota` mapping or `--status` remains.
 
-Every write opens `agent-routing-state.lock` in the local directory with
+Every write that passes argument checks creates `agent-routing-state.lock` if
+absent, including a write then refused for missing or invalid state. It opens the
+file in the local directory with
 `O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC`, mode 0600, and takes blocking exclusive
 `fcntl.flock`. Config loads before the lock; state reads, validation, candidate
 construction, replacement and digest computation occur under it. Closing the
@@ -70,7 +75,9 @@ contract](../records.md#atomic-json-apis-and-temporary-ownership): same-director
 0600 temporary, fsync, atomic replacement, directory fsync and cleanup. An I/O
 failure after publication can leave the complete new state. Inspect with `show`
 and compare digests/history before retrying; repeated `record` calls append again.
-The diagnostic is `quota publication failed; inspect state before retrying`.
+A lock open or acquisition failure reports `quota state lock failed`. A
+publication I/O failure reports
+`quota publication failed; inspect state before retrying`.
 
 Exit 2 means invalid arguments/update (including an unroutable pair, unknown
 activation member, kind, timestamp, evidence/reason or oversized candidate), or
