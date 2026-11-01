@@ -181,6 +181,22 @@ class OfflineEvidence(OfflineTestCase):
             "snapshotModel": "synthetic-snapshot", "responseId": "synthetic-response",
             "answers": answers, "outcome": outcome, "reason": "Synthetic classification"})
 
+    def classify_v2(self):
+        # A version-2 accepted classification answers domain and difficulty, never criticality.
+        options = {"domain": ("SOFTWARE_ENGINEERING", "OTHER", "MIXED_OR_UNCLEAR"),
+                   "difficulty": ("EASY", "MEDIUM", "CHALLENGING", "INSUFFICIENT_CONTEXT")}
+        choices = {"domain": "SOFTWARE_ENGINEERING", "difficulty": "EASY"}
+        criteria = {q: {o: "Synthetic " + o for o in names} for q, names in options.items()}
+        answers = {q: {"type": "choice", "choice": choices[q], "confidence": 0.9,
+                       "probabilities": {o: 1 if o == choices[q] else 0 for o in names}}
+                   for q, names in options.items()}
+        return self.add("routing-classification", {**self.routing_input(), "ruleVersion": "synthetic-1",
+            "criteria": criteria,
+            "criteriaDigest": "sha256:" + hashlib.sha256(canonical_json(criteria)).hexdigest(),
+            "riskFacts": [], "configuredModel": "synthetic-model",
+            "snapshotModel": "synthetic-snapshot", "responseId": "synthetic-response",
+            "answers": answers, "outcome": "accepted", "reason": "Synthetic version-2 classification"})
+
     def select(self, decision, criticality):
         # A version-3 routing-selection records a criticality but never decides it.
         target = {"providerInstanceId": "synthetic-provider", "model": "synthetic-model", "options": {}}
@@ -800,6 +816,8 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence(["review-record-missing"])
         self.route_v2()
         self.evidence(["review-record-missing"])
+        self.classify_v2()
+        self.evidence(["review-record-missing"])
         self.classify("NON_CRITICAL", "defaulted", unknown=True)
         self.evidence(["review-record-missing"])
         self.classify("NON_CRITICAL", "retry-with-context")
@@ -835,6 +853,8 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence([])
         self.select(self.route("NON_CRITICAL"), "CORE")
         self.evidence([])
+        self.classify_v2()
+        self.evidence([])
 
     def test_findings_span_both_core_reviews(self):
         self.route("CORE")
@@ -844,6 +864,30 @@ class OfflineEvidence(OfflineTestCase):
         self.evidence(["finding-missing"])
         self.dispose(record)
         self.evidence([])
+
+    def test_core_record_row_reports_stale_before_verdict(self):
+        self.route("CORE")
+        self.lead_work()
+        self.task(head=self.base, verdict="changes-required")
+        self.lead_review()
+        self.evidence(["review-record-stale"])
+
+    def test_core_lead_row_reports_the_first_applicable_reason(self):
+        self.route("CORE")
+        self.lead_work()
+        self.lead_review(head=self.base)
+        self.task()
+        self.evidence(["review-stale"])  # stale precedes order
+        self.lead_review(verdict="changes-required")
+        self.task()
+        self.evidence(["review-order"])  # order precedes verdict
+        self.lead_review()
+        self.task()
+        self.assign("synthetic-replacement")
+        self.evidence(["review-source"])  # source precedes order
+        self.review(lead="synthetic-replacement", head=self.base)
+        self.assign(LEAD)
+        self.evidence(["review-stale"])  # stale precedes source
 
     def test_cli_core_in_order_passes(self):
         self.route("CORE")

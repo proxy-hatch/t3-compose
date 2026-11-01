@@ -167,20 +167,19 @@ def _compare(loaded, head, pr_ready):
             gap("review-order", lead_rev)
         elif lead_rev["data"]["verdict"] == "changes-required":
             gap("review-verdict", lead_rev)
+    elif not reviews:
+        gap("review-missing")
     else:
-        if not reviews:
-            gap("review-missing")
-        else:
-            event = reviews[-1]
-            data = event["data"]
-            actor = data["reviewer"]
-            if (data["base"], data["head"]) != (work["reviewBase"], head):
-                gap("review-stale", event)
-            elif ((lead is None and actor["kind"] != "task") or
-                  (lead is not None and (actor["kind"] != "lead" or assignments[event["seq"]] != lead))):
-                gap("review-source", event)
-            elif data["verdict"] == "changes-required":
-                gap("review-verdict", event)
+        event = reviews[-1]
+        data = event["data"]
+        actor = data["reviewer"]
+        if (data["base"], data["head"]) != (work["reviewBase"], head):
+            gap("review-stale", event)
+        elif ((lead is None and actor["kind"] != "task") or
+              (lead is not None and (actor["kind"] != "lead" or assignments[event["seq"]] != lead))):
+            gap("review-source", event)
+        elif data["verdict"] == "changes-required":
+            gap("review-verdict", event)
 
     # RC-1 validates concrete proof, severity, authorship and decision/review joins.
     # Historical findings survive replacement of a review or its author.
