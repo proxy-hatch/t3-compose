@@ -1,6 +1,6 @@
 # t3c brief v1
 Role: worker
-Tier: {{TIER}}
+Stage: {{STAGE}}
 Provider: {{PROVIDER}}
 Model: {{MODEL}}
 Reason: {{REASON}}
@@ -14,7 +14,7 @@ Unpublished-range: {{UNPUBLISHED_RANGE}}
 
 ## Role and routing
 You are the sole Worker for this Assignment, not its Feature lead or Reviewer.
-Use the tier, model and reason above. Stay on this Assignment and this model.
+Use the stage, model and reason above. Stay on this Assignment and this model.
 Start no agents, T3 tasks, threads or harnesses. Routing grants no permissions.
 Inline-instructions:
 {{INLINE_INSTRUCTIONS}}
@@ -85,12 +85,47 @@ pre-release evidence. Use `"$PY" -I -S <root>/bin/t3c` for helper commands and
 `"$PY" -I -S -B -m unittest discover -s tests -t . -v` for the full suite.
 Python children use `sys.executable` and the repository's guard bootstrap.
 
+## Budget and escalation
+Escalation-rule: hard-stop-v1
+1. Budget: your first implementation, then at most 2 repair attempts against this brief's validation commands.
+2. Hard stop: when your second repair attempt fails, do not try a third.
+3. Commit your work in progress on your branch with the message `wip(escalation): <short summary>`. Never leave it uncommitted.
+4. Then return only the block below, filled in, instead of the report in the Return section.
+5. An environment block (a missing tool, a permission or a hook) is not a repair attempt: report yourself blocked, with the exact error.
+6. A question about the spec is not an attempt: report it as a question.
+7. All other rules of this brief stay: owned paths, no push, no post, no merge, inline rules for agy and Pi.
+Fill the block with real values. WIP commit and Review base are full
+40-character SHAs. Branch is the output of `git branch --show-current`.
+Modified files are repository-relative paths separated by `, `. Write each
+attempt on one line and keep both within 150 words in total, not counting
+their labels. Indent every line of the command output by two spaces and give
+the last 15 to 30 lines of it; if it printed fewer than 15 lines, add the
+lines before it from your terminal. Remove terminal control characters and
+write `{ {` or `} }` for a doubled brace. Keep the whole block under 8 KiB.
+
+```text
+<ESCALATION_REQUEST>
+- Status: ESCALATE_TO_NEXT_STAGE
+- Model and options: <as assigned in the brief>
+- Branch: <branch>
+- WIP commit: <full SHA>
+- Review base: <full SHA>
+- Modified files: <paths>
+- What was attempted (at most 150 words):
+  1. Attempt 1: <approach, and why it failed>
+  2. Attempt 2: <approach, and why it failed>
+- Failing command and output: <command>, then the last 15 to 30 lines
+- Suspected root cause: <one or two sentences>
+</ESCALATION_REQUEST>
+```
+
 ## Commits
 Use a conventional subject and a body explaining why. Include this accurate
 agent attribution trailer; never write the owner's email:
 {{ATTRIBUTION}}
 {{PRIVACY_CORRECTIONS}}
 ## Return
+At the hard stop, return only the escalation block instead of this report.
 Return the current branch (`git branch --show-current`, since T3 can rename
 it), absolute worktree path, final head, parent and commit log. Map each
 acceptance criterion to evidence. Give every command with its result and log

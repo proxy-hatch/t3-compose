@@ -5,18 +5,19 @@ safe diagnostics. Resolve final CPython 3.15 with `PY="$(uv python find 3.15)"`.
 Here `t3c` means `"$PY" -I -S <root>/bin/t3c`.
 
 ```text
-t3c brief render --template worker|reviewer|PATH --values VALUES.json --out FILE
+t3c brief render --template worker|reviewer|reviewer-prepass|continuation|PATH --values VALUES.json --out FILE [--original-brief FILE --escalation FILE]
 t3c brief check FILE
+t3c brief check-escalation --result FILE
 ```
 
-Both commands return `{"digest":"sha256:<64 lowercase hex>"}` on success
+`render` and `check` return `{"digest":"sha256:<64 lowercase hex>"}` on success
 (exit 0). The digest covers the exact UTF-8 artifact bytes, including trailing
-newlines, for a dispatch-intent record. Neither command dispatches an agent,
+newlines, for a dispatch-intent record. No brief command dispatches an agent,
 changes Git state, evaluates code, reads credentials or selects a route.
 
 ## Rendering and values
 
-`worker` and `reviewer` select files under `<root>/skill/templates/`.
+`worker`, `reviewer`, `reviewer-prepass` and `continuation` select files under `<root>/skill/templates/`.
 Any other `--template` value is a file path, relative to the caller's current
 working directory or absolute. Values and output paths follow the same rule.
 Parents of `--out` must already exist. Output is raw Markdown, never JSON
@@ -35,59 +36,69 @@ Built-in values (all required unless noted):
 
 | Applies to | Names |
 |---|---|
-| Both | `TIER`, `PROVIDER`, `MODEL`, `REASON`, `REPOSITORY`, `PROVISIONED`, `START`, `REVIEW_BASE`, `ROUND` |
+| Both | `STAGE`, `PROVIDER`, `MODEL`, `REASON`, `REPOSITORY`, `PROVISIONED`, `START`, `REVIEW_BASE`, `ROUND` |
 | Both | `READ_FIRST`, `ROUTING_POLICY`, `SETTINGS_CHECK` |
 | Worker | `HOLDS`, `OWNED_PATHS`, `OBJECTIVE`, `INTERFACES`, `ACCEPTANCE`, `TEST_FIRST` |
 | Worker | `FAST_CHECKS`, `HEAVY_CHECKS`, `ATTRIBUTION` |
 | Reviewer | `REVIEW_HEAD`, `CONTEXT`, `QUESTIONS`, `CHECKS` |
-| Worker optional | `INLINE_INSTRUCTIONS` (default empty), `PRIVACY_FINDINGS`, `UNPUBLISHED_RANGE` (both default `none`) |
+| Optional | `INLINE_INSTRUCTIONS` (both roles, default empty) |
+| Worker optional | `PRIVACY_FINDINGS`, `UNPUBLISHED_RANGE` (both default `none`) |
 
-Use explicit prose such as “None assigned” where a required check or hold does
-not apply. Supply repository guides, approved designs, dependencies and other
-necessary context in the relevant slots. The routing policy slot identifies
-private instructions supplied by the coordinator; source templates contain no
-personal policy. `PROVIDER` is the generic harness family `agy`, `pi`, `claude`
-or `codex`, never an account or provider-instance name. Real routing selection
-and account identifiers remain in private records. `MODEL` is a public model
-label; this command does not check the live catalog or infer provider family.
-The caller must supply the actual selected family.
+`STAGE` is the matrix stage of the dispatch, `1`, `2` or `3`. Use explicit prose
+such as “None assigned” where a required check or hold does not apply. Supply
+repository guides, approved designs, dependencies and other necessary context
+in the relevant slots. The routing policy slot identifies private instructions
+supplied by the coordinator; source templates contain no personal policy.
+`PROVIDER` is the generic harness family `agy`, `pi`, `claude` or `codex`, never
+an account or provider-instance name. Real routing selection and account
+identifiers remain in private records. `MODEL` is a public model label; this
+command does not check the live catalog or infer provider family. The caller
+must supply the actual selected family.
 
-For agy and Pi Workers, `INLINE_INSTRUCTIONS` must be nonempty and carry all
-applicable rules and required outside content inline. An inaccessible path is
-not a substitute: agy's file tool cannot read outside its worktree. Content
-adequacy needs coordinator review; the checker enforces presence, not meaning.
-Reviewers accept only `claude` or `codex`, at medium or challenging tier.
+For agy and Pi Workers and Reviewers, `INLINE_INSTRUCTIONS` must be nonempty and
+carry all applicable rules and required outside content inline. An inaccessible
+path is not a substitute: agy's file tool cannot read outside its worktree.
+Content adequacy needs coordinator review; the checker enforces presence, not
+meaning. Any provider family may review; the routing records, not this command,
+decide who is eligible.
 
 External templates can use any named string slots and any layout. Plain
-external templates are rendered without imposing Worker/Reviewer sections.
-They cannot be passed to `check`. An external template beginning exactly
-`# t3c brief v1` followed by LF opts into the structured contract below,
-including the generated privacy section and structural-injection restrictions.
+external templates are rendered without imposing Worker, Reviewer or
+continuation sections. External templates cannot be passed to `check`.
+An external template beginning exactly `# t3c brief v1` followed by LF opts
+into the structured contract below, including the generated privacy section
+and structural-injection restrictions.
 
 ## Structured check contract
 
 `check` supports only version-1 Worker and Reviewer artifacts. It reads without
 rewriting or normalizing bytes. The first line is `# t3c brief v1`, followed by
 one `Field: value` per metadata field and a blank line. Required fields are
-`Role`, `Tier`, `Provider`, `Model`, `Reason`, `Repository`, `Provisioned`,
+`Role`, `Stage`, `Provider`, `Model`, `Reason`, `Repository`, `Provisioned`,
 `Start`, `Review-base`, `Round`, `Privacy-findings`, `Unpublished-range`, plus
-`Review-head` for Reviewer only. Unknown/duplicate fields fail. Values are
-nonempty single lines of at most 512 characters. Commit values are exactly
-40 hexadecimal characters; this is format validation, not object existence.
-Worker rounds are `implementation` or `corrections`; Reviewer rounds are
-`earlier-review`, `corrections-review` or `unled-final-review`. A led final-head
-review belongs to its lead and has no delegated Reviewer round here.
+`Review-head` and `Mode` for Reviewer only. `Stage` values are `1`, `2` or `3`.
+Unknown/duplicate fields fail. Values are nonempty single lines of at most 512
+characters. Commit values are exactly 40 hexadecimal characters; this is format
+validation, not object existence. Worker rounds are `implementation`,
+`corrections` or `continuation`; Reviewer rounds are `earlier-review`,
+`corrections-review` or `final-review`. A non-critical Task's lead reviews its
+own final head, so no Reviewer brief exists for it, while a core Task's final
+head, and any Task without a lead, gets a `final-review` brief.
 
 Required `##` sections must be nonempty and appear exactly once, in the order
-in the corresponding [Worker](../../skill/templates/worker.md) or
-[Reviewer](../../skill/templates/reviewer.md) source. A Worker routing section
-has exactly one `Inline-instructions:` slot; it must contain nonempty text for
-agy/Pi. Metadata-like lines, extra headings and duplicate structural markers
-inside section content fail. Structured substitution values cannot introduce
-headings or reserved field/marker lines (including indentation or case changes).
-These checks prevent multiline slots from silently changing role, provider or
-commits. They do not establish that arbitrary natural-language instructions
-are correct, or create a security boundary.
+in the corresponding [Worker](../../skill/templates/worker.md),
+[Reviewer](../../skill/templates/reviewer.md) or
+[Reviewer pre-pass](../../skill/templates/reviewer-prepass.md) source. The
+Worker section list gains `Budget and escalation` after `Validation` (with the
+rule block and shape checked as exact text); Reviewer sections include
+`Review mode`. Every routing section (Worker and
+Reviewer) has exactly one `Inline-instructions:` slot; it must contain nonempty
+text for agy/Pi. Metadata-like lines, extra headings and duplicate structural
+markers inside section content fail. Structured substitution values cannot
+introduce headings or reserved field/marker lines (including indentation or case
+changes). These checks prevent multiline slots from silently changing role,
+provider or commits. They do not establish that arbitrary natural-language
+instructions are correct, or create a security boundary.
 
 The repository section must contain this exact contiguous move-rule block:
 
@@ -100,8 +111,83 @@ Move-rule: three-case-v1
 
 Malformed rules fail even with three full hashes. Workers apply the rule only
 to their fresh own branch; Reviewers stop for coordinator reprovisioning if a
-move is required. Neither command itself moves a branch. Reading reviewed
+move is required. No brief command moves a branch. Reading reviewed
 artifacts uses exact commits; checks on a checkout need that exact review head.
+
+## Reviewer modes
+
+A Reviewer brief sets the `Mode` header to `record` (using the `reviewer`
+template) or `pre-pass` (using `reviewer-prepass`). The exact rule blocks are
+in the `Review mode` section of the two Reviewer templates and `check` verifies
+them as exact text.
+
+The pre-pass is advisory: findings use IDs `PP-<number>`, verdict is `blockers found`
+or `no blockers found`, and it cannot be used for `final-review`. A review-of-record
+brief is refused if `PP-` followed by a digit appears anywhere in it, unless an
+ASCII letter or digit comes directly before the `P` (`APP-1` is accepted; `_PP-7_`,
+`(PP-7)` and `PP-7a` are refused). In `final-review`, its `Review-head` is the head
+the lead will merge. These are format checks: a pre-pass finding with another ID
+format would not be caught.
+
+## Worker hard stop and the escalation block
+
+The Worker template carries a `Budget and escalation` section with the fixed
+`Escalation-rule: hard-stop-v1` rule block and `<ESCALATION_REQUEST>` shape,
+both verified by `check` as exact text. Exactly one escalation block may
+appear; surrounding text is ignored. The block holds the required fields in
+exact order: `Status` (`ESCALATE_TO_NEXT_STAGE`), `Model and options` (at most
+200 characters), `Branch`, `WIP commit` and `Review base` (40 hexadecimal
+characters, any case, returned lowercase), `Modified files` (repository-relative
+paths separated by `, `), two numbered attempts within 150 words in total
+(counted after their labels), a failing command with 15 to 30 lines of output
+(each empty or indented by two spaces, not all blank), and `Suspected root
+cause`. A branch name has at most 200 characters from letters, digits, `.`, `_`,
+`/` and `-`, starts with a letter or digit, and has no `..`, no `//` and no
+trailing `/`, `.` or `.lock`. A path is not empty, does not start with `/` or
+`-`, holds no comma or backslash and has no `..` component. The block is at most
+8 KiB, with no doubled braces and no control characters other than LF and tab,
+and each tag stands alone on its line.
+
+Other modules call `briefs.parse_escalation(text)` to validate the block and
+return its twelve fields (`status`, `model`, `branch`, `wipCommit`, `reviewBase`,
+`modifiedFiles`, `attempts`, `attemptWords`, `failingCommand`, `outputLines`,
+`rootCause`, `block`) or raise `CommandError`.
+
+`t3c brief check-escalation --result FILE` screens FILE against the private
+identifier list, calls `parse_escalation`, and prints one JSON object with
+`attemptWords`, `branch`, `digest` (sha256 of the block text without trailing
+newline), `modifiedFiles`, `outputLines`, `reviewBase` and `wipCommit`. Any
+failure exits 2 with empty stdout and a safe message echoing nothing from FILE.
+
+## Continuation briefs
+
+A continuation brief is a Worker brief (`Role: worker`) for the next stage
+after a Worker's hard stop, with `Round: continuation` and `Start` set to the
+earlier Worker's WIP commit. Its sections are `Role and routing`, `Worktree and
+holds`, `Repository and commits`, `Continuation`, `Escalation request`,
+`Original brief` and `Return`. The caller supplies `STAGE`, `PROVIDER`, `MODEL`,
+`REASON`, `REPOSITORY`, `PROVISIONED`, `START` (the WIP commit), `REVIEW_BASE`
+and `HOLDS`, and optionally `INLINE_INSTRUCTIONS`. The template fixes the round,
+and `render` generates the escalation block and the embed from the two files.
+
+The `Continuation` section holds the fixed `Continuation-rule: next-stage-v1`
+rule block instructing the worker to inspect `git diff <review base>..HEAD`,
+evaluate the previous attempts in the escalation block, fix the root cause or
+revert broken changes, and get validation passing. The original brief is
+embedded byte for byte behind `<<<ORIGINAL-BRIEF bytes=N sha256=HEX` and an
+`ORIGINAL-BRIEF>>>` end marker. File inputs are supplied via `--original-brief`
+and `--escalation` (both or neither) and are never taken from values JSON.
+Only the validated escalation block is embedded; surrounding text is ignored
+and no transcript of the earlier Worker is ever carried.
+
+`check` refuses a continuation brief: without the escalation block; when the
+block's WIP commit differs from `Start`; when the embedded original brief fails
+its own check; when the embed's length or digest is wrong; when the embedded
+brief is not a Worker brief of another round (refusing Reviewer briefs or
+continuations); when the original brief differs in repository or review base;
+when the escalation block's review base differs; when the rule block is
+altered; or when the escalation request and original brief sections hold
+anything other than the validated block and the exact embed.
 
 ## Bounded privacy Corrections
 

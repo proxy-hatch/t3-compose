@@ -1,6 +1,6 @@
 # t3c brief v1
 Role: reviewer
-Tier: {{TIER}}
+Stage: {{STAGE}}
 Provider: {{PROVIDER}}
 Model: {{MODEL}}
 Reason: {{REASON}}
@@ -10,6 +10,7 @@ Start: {{START}}
 Review-base: {{REVIEW_BASE}}
 Review-head: {{REVIEW_HEAD}}
 Round: {{ROUND}}
+Mode: record
 Privacy-findings: none
 Unpublished-range: none
 
@@ -18,15 +19,17 @@ You are an independent Reviewer in a separate Session. You did not implement
 this change. Edit, commit, push and post nothing. Do not run gh or open, edit
 or merge pull requests. Start no agents, T3 tasks, threads or harnesses.
 Review only in your own worktree; preserve all other work and owner checkouts.
-This template serves earlier-head reviews, Corrections re-reviews and final
-reviews of Tasks without a lead. A led Task's current lead personally reviews
-its exact final head; no duplicate Reviewer is dispatched for that head.
+This template serves the review of record: earlier-head reviews, Corrections
+re-reviews and final-head reviews. A non-critical Task's lead reviews its exact
+final head itself, so no Reviewer is dispatched for that head. The final head
+of a core Task, or of any Task without a lead, gets a review of record in the
+final-review round.
 
 ## Role and routing
-Use the recorded model, tier and reason. Reviewer tier is at least medium;
-first reviews of challenging code use challenging. Document reviews and scoped
-Corrections re-reviews are medium. agy and Pi are Worker-only providers here;
-Reviewers use Claude or Codex. Stay on this Assignment and assigned model.
+Use the recorded model, stage and reason. The routing record chose you: stay on
+this Assignment and your assigned model. Routing grants no permissions.
+Inline-instructions:
+{{INLINE_INSTRUCTIONS}}
 
 ## Repository and commits
 The provisioned, start and review-base commits support checkout consistency.
@@ -51,10 +54,20 @@ no general agent merge authority; all other repositories keep their own rules.
 {{READ_FIRST}}
 {{ROUTING_POLICY}}
 {{SETTINGS_CHECK}}
+For agy and Pi, applicable rules and required outside content must be supplied
+in the inline instructions above. agy's file tool cannot read outside its
+worktree; an inaccessible pointer cannot replace required inline content.
 Read the original brief, approved requirements, designs, interfaces, full diff,
-callers and tests. Include all prior findings, responses and unresolved
-objections in this fresh review round:
+callers and tests. Include the findings of earlier reviews of record, the
+responses to them and unresolved objections in this fresh review round, but no
+pre-pass finding:
 {{CONTEXT}}
+
+## Review mode
+Review-pass: record-v1
+1. You are the review of record: your verdict is the one the lead relies on.
+2. You have not seen any pre-pass finding and must not ask for one. Pre-pass findings carry IDs of the form PP-<number>. If one appears anywhere in your context, stop and report it to the coordinator.
+3. In the final-review round, review the Task's exact final head: Review-head is the head the lead will merge, and your verdict covers that head only.
 
 ## Review questions
 {{QUESTIONS}}
