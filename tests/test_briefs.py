@@ -8,6 +8,7 @@ import re
 import runpy
 import stat
 import sys
+import time
 from unittest.mock import patch
 
 from tests.support import OfflineTestCase, ROOT
@@ -667,3 +668,22 @@ class OfflineBriefs(OfflineTestCase):
             self.output.unlink(missing_ok=True)
             self.refusal(make_call())
             self.assertFalse(self.output.exists())
+
+    def test_blank_line_runs_are_scanned_in_linear_time(self):
+        self.success(self.render())
+        text = self.output.read_text()
+        self.output.write_text(text.replace('## Objective\n', '## Objective\n' + '\n' * 30000, 1))
+        started = time.monotonic()
+        self.success(self.invoke('brief', 'check', self.output))
+        self.success(self.render(OBJECTIVE='Implement.\n' + '\n' * 30000))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_embed_marker_length_is_bounded(self):
+        self.success(self.make_continuation())
+        text = self.output.read_text()
+        marker = re.search(r'bytes=\d+', text).group(0)
+        for digits in ('9' * 5000, '1' + '0' * 7):
+            self.output.write_text(text.replace(marker, 'bytes=' + digits, 1))
+            code, out, err = self.invoke('brief', 'check', self.output)
+            self.refusal((code, out, err))
+            self.assertIn('original brief', err)

@@ -10,9 +10,9 @@ t3c brief check FILE
 t3c brief check-escalation --result FILE
 ```
 
-Both commands return `{"digest":"sha256:<64 lowercase hex>"}` on success
+`render` and `check` return `{"digest":"sha256:<64 lowercase hex>"}` on success
 (exit 0). The digest covers the exact UTF-8 artifact bytes, including trailing
-newlines, for a dispatch-intent record. Neither command dispatches an agent,
+newlines, for a dispatch-intent record. No brief command dispatches an agent,
 changes Git state, evaluates code, reads credentials or selects a route.
 
 ## Rendering and values
@@ -111,7 +111,7 @@ Move-rule: three-case-v1
 
 Malformed rules fail even with three full hashes. Workers apply the rule only
 to their fresh own branch; Reviewers stop for coordinator reprovisioning if a
-move is required. Neither command itself moves a branch. Reading reviewed
+move is required. No brief command moves a branch. Reading reviewed
 artifacts uses exact commits; checks on a checkout need that exact review head.
 
 ## Reviewer modes
@@ -163,7 +163,10 @@ A continuation brief is a Worker brief (`Role: worker`) for the next stage
 after a Worker's hard stop, with `Round: continuation` and `Start` set to the
 earlier Worker's WIP commit. Its sections are `Role and routing`, `Worktree and
 holds`, `Repository and commits`, `Continuation`, `Escalation request`,
-`Original brief` and `Return`.
+`Original brief` and `Return`. The caller supplies `STAGE`, `PROVIDER`, `MODEL`,
+`REASON`, `REPOSITORY`, `PROVISIONED`, `START` (the WIP commit), `REVIEW_BASE`
+and `HOLDS`, and optionally `INLINE_INSTRUCTIONS`. The template fixes the round,
+and `render` generates the escalation block and the embed from the two files.
 
 The `Continuation` section holds the fixed `Continuation-rule: next-stage-v1`
 rule block instructing the worker to inspect `git diff <review base>..HEAD`,

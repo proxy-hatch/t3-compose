@@ -15,9 +15,11 @@ TOKEN = re.compile(r'\{\{([A-Z][A-Z0-9_]*)\}\}')
 FIELDS = ('Role', 'Stage', 'Provider', 'Model', 'Reason', 'Repository', 'Provisioned',
           'Start', 'Review-base', 'Review-head', 'Round', 'Mode', 'Privacy-findings',
           'Unpublished-range')
-STRUCTURE = re.compile(r'^\s*(?:#|</?ESCALATION_REQUEST>|<<<ORIGINAL-BRIEF|ORIGINAL-BRIEF>>>|(?:' +
-                       '|'.join(FIELDS) + r'|Move-rule|Review-pass|Escalation-rule|'
-                       r'Continuation-rule|Inline-instructions):)', re.I | re.M)
+# Leading whitespace stops at a newline, so a long run of blank lines is scanned once.
+STRUCTURE = re.compile(r'^[^\S\n]*(?:#|</?ESCALATION_REQUEST>|<<<ORIGINAL-BRIEF|'
+                       r'ORIGINAL-BRIEF>>>|(?:' + '|'.join(FIELDS) +
+                       r'|Move-rule|Review-pass|Escalation-rule|Continuation-rule|'
+                       r'Inline-instructions):)', re.I | re.M)
 MOVE = ('Move-rule: three-case-v1\n'
         '1. HEAD=start => continue.\n'
         '2. HEAD=provisioned AND clean AND start exists AND fresh own branch => move own branch to start only.\n'
@@ -101,7 +103,8 @@ CONTINUATION = (
     '4. The original brief below binds you in full, except for its routing fields, '
     'commits, move rule and Round, which this brief replaces. You have your own budget '
     'of 2 repair attempts and your own hard stop.')
-EMBED_BEGIN = re.compile(r'^<<<ORIGINAL-BRIEF bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})$', re.M)
+EMBED_BEGIN = re.compile(
+    r'^<<<ORIGINAL-BRIEF bytes=([1-9][0-9]{0,6}) sha256=([0-9a-f]{64})$', re.M)
 EMBED_END = 'ORIGINAL-BRIEF>>>'
 EMBEDDED = '[the original brief is embedded here]'
 
@@ -262,6 +265,8 @@ def _validate(text):
             _fail('the escalation WIP commit differs from the start commit')
         if fields['reviewBase'] != meta['Review-base'].lower():
             _fail('the escalation review base differs from this brief')
+        if re.search(r'^Round: continuation$', original.split('\n\n', 1)[0], re.M):
+            _fail('the original brief does not match this continuation')
         try:
             inner = _validate(original)
         except cli.CommandError:
