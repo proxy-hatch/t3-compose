@@ -673,3 +673,376 @@ class OfflinePublishAdapters(OfflineTestCase):
         with patch.object(process, 'run', side_effect=process.ProcessError('timeout')):
             with self.assertRaises(cli.CommandError):
                 publish._remote(Path.cwd(), URL)
+
+
+class OfflinePublishPR(OfflineTestCase):
+    setUp = OfflinePublish.setUp
+    git = OfflinePublish.git
+    add = OfflinePublish.add
+    create_work = OfflinePublish.create_work
+    native = OfflinePublish.native
+    cover = OfflinePublish.cover
+    remote = OfflinePublish.remote
+    run_child = OfflinePublish.run_child
+    events = OfflinePublish.events
+    ops = OfflinePublish.ops
+    # Reuse the guarded fixture, without repeating push cases for the PR handler.
+    def test_pr_registered(self):
+        self.assertIn(('publish', 'pr'), cli.command_names())
+
+    def setUp(self):
+        OfflinePublish.setUp(self)
+        self.args.base = 'main'
+        self.args.title_file = self.temp / 'title.txt'
+        self.args.body_file = self.temp / 'body.txt'
+        self.args.title_file.write_text('Fixture title')
+        self.args.body_file.write_text('Fixture body\n')
+        self.prs, self.reads = [], []
+        self.original_run = process.run
+        self.enterContext(patch.object(process, 'run', side_effect=self.read))
+        self.enterContext(patch.object(token_run, 'run_command', side_effect=self.create))
+
+    def row(self):
+        return {'number': 7, 'head': {'sha': self.head, 'ref': self.args.branch,
+                'repo': {'full_name': 'fixture-org/publish-fixture'}},
+                'base': {'ref': 'main', 'repo': {'full_name': 'fixture-org/publish-fixture'}},
+                'state': 'open', 'user': {'login': 'fixture-worker[bot]'}}
+
+    def read(self, argv, **kw):
+        if argv[0] != 'gh':
+            return self.original_run(argv, **kw)
+        self.assertEqual(argv[:6], ['gh', 'api', '--hostname', 'github.com', '--method', 'GET'])
+        self.assertEqual(Path.cwd(), self.repo)
+        self.reads.append(argv)
+        data = self.prs if '?' in argv[-1] else self.prs[0]
+        return subprocess.CompletedProcess(argv, 0, json.dumps(data).encode(), b'PRIVATE_SENTINEL')
+
+    def create(self, argv, path, *, local_dir):
+        self.assertEqual(Path.cwd(), self.repo)
+        self.assertEqual(local_dir, self.local)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.events()[-1]['kind'], 'op-intent')
+        self.assertTrue(all(os.path.samestat(os.fstat(fd), os.stat(os.devnull)) for fd in (1, 2)))
+        self.assertEqual(argv[:10], ['gh', 'pr', 'create', '--repo', 'fixture-org/publish-fixture',
+                                   '--head', self.args.branch, '--base', 'main', '--title=Fixture title'])
+        self.assertEqual(argv[10], '--body-file')
+        body = Path(argv[11])
+        self.assertEqual(body.read_bytes(), b'Fixture body\n')
+        self.assertEqual(stat.S_IMODE(body.stat().st_mode), 0o600)
+        self.assertNotEqual(os.environ['HOME'], str(self.temp / 'home'))
+        self.assertFalse(any(k in os.environ for k in ('GH_TOKEN', 'GITHUB_TOKEN')))
+        self.launches.append(argv)
+        self.prs = [self.row()]
+        result = token_run.RunResult(True, 0, None, 'ok', 0)
+        jsonio.atomic_replace(path, result.record())
+        os.write(1, b'PRIVATE_SENTINEL arbitrary URL\n')
+        return result
+
+    def invoke(self):
+        cwd, env = Path.cwd(), dict(os.environ)
+        descriptors = [os.fstat(fd) for fd in (1, 2)]
+        try:
+            os.chdir(self.repo)
+            return publish.pr(self.args)
+        finally:
+            self.assertEqual(Path.cwd(), self.repo)
+            os.chdir(cwd)
+            self.assertEqual(dict(os.environ), env)
+            self.assertTrue(all(map(os.path.samestat, descriptors, [os.fstat(fd) for fd in (1, 2)])))
+
+    def entry(self):
+        argv = ['t3c', '--local-dir', str(self.local), 'publish', 'pr']
+        for name in ('work', 'head', 'branch', 'base', 'title_file', 'body_file'):
+            argv.extend(['--' + name.replace('_', '-'), str(getattr(self.args, name))])
+        out, err, cwd = io.StringIO(), io.StringIO(), Path.cwd()
+        try:
+            os.chdir(self.repo)
+            with patch.object(sys, 'argv', argv), redirect_stdout(out), redirect_stderr(err):
+                with self.assertRaises(SystemExit) as exited:
+                    runpy.run_path(str(ROOT / 'bin/t3c'), run_name='__main__')
+        finally:
+            os.chdir(cwd)
+        return exited.exception.code, out.getvalue(), err.getvalue()
+
+    def pair(self):
+        return evidence.check(self.local, REPO, 'WORK', self.head, pr_ready=True)
+
+    def push_pair(self, noop=False):
+        if noop:
+            self.refs[REF] = self.head
+        with patch.object(token_run, 'run_command', side_effect=self.run_child):
+            self.assertEqual(publish.push(self.args).code, 0)
+        self.launches.clear()
+
+    def test_create_entry_exact_pair_and_order(self):
+        self.push_pair()
+        order, check, append, verify = [], evidence.check, publish._append, publish.pullrequest.verify
+        def checked(*a, **kw):
+            order.append('check')
+            return check(*a, **kw)
+        def appended(*a, **kw):
+            order.append(a[3])
+            return append(*a, **kw)
+        def verified(args):
+            order.append('verify')
+            self.assertEqual((args.head, args.base, args.author), (self.head, 'main', 'fixture-worker[bot]'))
+            return verify(args)
+        with patch.object(evidence, 'check', checked), patch.object(publish, '_append', appended), \
+                patch.object(publish.pullrequest, 'verify', verified):
+            code, out, err = self.entry()
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(json.loads(out), {'outcome': 'succeeded',
+            'reason': 'Exact PR head, base, open state and App author verified',
+            'number': 7, 'url': 'https://github.com/fixture-org/publish-fixture/pull/7'})
+        self.assertEqual(order, ['check', 'op-intent', 'verify', 'op-result'])
+        self.assertTrue(self.pair()['verified'])
+        self.assertEqual(len(self.launches), 1)
+        self.assertFalse(Path(self.launches[0][-1]).exists())
+
+    def test_reuse_noop_pair_no_child(self):
+        self.push_pair(noop=True)
+        self.prs = [self.row()]
+        self.assertEqual(self.invoke().data['outcome'], 'no-op')
+        self.assertNotIn('statusSummary', self.events()[-1]['data'])
+        self.assertEqual(self.launches, [])
+        self.assertTrue(self.pair()['verified'])
+
+    def test_privacy_text_and_branch_before_intent_entry(self):
+        for field in ('title_file', 'body_file', 'branch'):
+            with self.subTest(field):
+                original = getattr(self.args, field)
+                if field == 'branch':
+                    self.args.branch = 'PRIVATE_SENTINEL'
+                else:
+                    original.write_text('PRIVATE_SENTINEL')
+                code, out, err = self.entry()
+                self.assertEqual((code, err), (1, ''))
+                self.assertNotIn('PRIVATE_SENTINEL', out)
+                if field == 'branch':
+                    self.args.branch = original
+                else:
+                    original.write_text('Fixture title' if field == 'title_file' else 'Fixture body\n')
+        self.assertEqual((self.ops(), self.launches, self.reads), ([], [], []))
+
+    def test_invalid_text_inputs(self):
+        for raw in (b'\xff', b'\0', b'x' * (publish._LIMIT + 1)):
+            self.args.body_file.write_bytes(raw)
+            with self.assertRaises(cli.CommandError):
+                self.invoke()
+        self.args.body_file.unlink()
+        with self.assertRaises(cli.CommandError):
+            self.invoke()
+        self.args.body_file.mkdir()
+        with self.assertRaises(cli.CommandError):
+            self.invoke()
+        self.assertEqual((self.ops(), self.launches), ([], []))
+
+    def test_full_published_review_range_and_stale_corrections(self):
+        (self.repo / 'file.txt').write_text('PRIVATE_SENTINEL')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Fixture correction')
+        self.head = self.args.head = self.git('rev-parse', 'HEAD').strip()
+        self.assertEqual(self.invoke().data['outcome'], 'refused')  # stale evidence
+        self.cover(self.head)
+        self.refs[REF] = self.head  # every private commit is already published
+        self.prs = [self.row()]
+        self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertEqual((self.ops(), self.launches), ([], []))
+
+    def test_wrong_pr_fields_fail_verification_and_pair(self):
+        self.push_pair()
+        for field, value in [('head', self.base), ('base', 'other'), ('state', 'closed'), ('author', 'someone')]:
+            row = self.row()
+            if field == 'head': row['head']['sha'] = value
+            elif field == 'base': row['base']['ref'] = value
+            elif field == 'author': row['user']['login'] = value
+            else: row[field] = value
+            self.prs = [row]
+            self.assertEqual(self.invoke().data['outcome'], 'failed')
+            self.assertFalse(self.pair()['verified'])
+        self.assertFalse(self.launches)
+
+    def test_verifier_exceptions_or_malformed_never_approve(self):
+        self.prs = [self.row()]
+        for result in (None, True, {'ok': True}, {'ok': 1, 'mismatches': [], 'action': None},
+                       SimpleNamespace(ok=True),
+                       cli.Outcome({'ok': False}, 1)):
+            with patch.object(publish.pullrequest, 'verify', return_value=result):
+                self.assertEqual(self.invoke().data['outcome'], 'failed')
+            self.assertFalse(self.pair()['verified'])
+        with patch.object(publish.pullrequest, 'verify', side_effect=RuntimeError('PRIVATE_SENTINEL')):
+            self.assertEqual(self.invoke().data['outcome'], 'failed')
+        self.assertFalse(self.launches)
+
+    def test_discovery_ambiguity_failure_and_shape_never_create(self):
+        for raw in (b'[{},{}]', b'{', b'{}', b'[{"number":true}]',
+                    b'x' * (publish._LIMIT + 1), b'[{"number":7,"number":8}]'):
+            # Resolve the synthetic unknown between cases by retained no-start status.
+            with patch.object(process, 'run', side_effect=lambda argv, **kw:
+                    subprocess.CompletedProcess(argv, 0, raw, b'') if argv[0] == 'gh'
+                    else self.original_run(argv, **kw)):
+                self.assertEqual(self.invoke().data['outcome'], 'unknown')
+            self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertFalse(self.launches)
+
+    def test_interrupted_create_reconciles_without_duplicate(self):
+        def interrupted(*a, **kw):
+            self.create(*a, **kw)
+            raise InterruptedError('PRIVATE_SENTINEL')
+        with patch.object(token_run, 'run_command', side_effect=interrupted):
+            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertEqual(self.invoke().data['outcome'], 'succeeded')
+        self.assertEqual(len(self.launches), 1)
+
+    def test_missing_true_null_and_malformed_status(self):
+        for status in (None, {'childStarted': True, 'childStatus': None}, {'bad': True}):
+            def interrupted(argv, path, **kw):
+                if status is not None: jsonio.atomic_replace(path, status)
+                self.prs = [self.row()]
+                raise InterruptedError()
+            with patch.object(token_run, 'run_command', side_effect=interrupted):
+                self.assertEqual(self.invoke().data['outcome'], 'unknown')
+            expected = 'refused' if status is None else 'unknown'
+            self.assertEqual(self.invoke().data['outcome'], expected)
+            self.assertFalse(self.pair()['verified'])
+            if status is not None: break  # unknown must remain blocking
+            self.prs = []
+        self.assertFalse(self.launches)
+
+    def test_nonzero_and_refusal_same_code(self):
+        self.push_pair()
+        for result in (token_run.RunResult(False, None, 'mint-failed', None, 1),
+                       token_run.RunResult(True, 1, None, 'ok', 1)):
+            self.prs = []
+            def child(argv, path, **kw):
+                self.prs = [self.row()]
+                jsonio.atomic_replace(path, result.record())
+                return result
+            with patch.object(token_run, 'run_command', side_effect=child):
+                outcome = self.invoke().data['outcome']
+            self.assertEqual(outcome, 'failed' if result.child_started else 'refused')
+            self.assertFalse(self.pair()['verified'])
+
+    def test_revocation_failure_is_truthful(self):
+        original = self.create
+        def child(*a, **kw):
+            result = original(*a, **kw)
+            result.revocation = 'failed'
+            jsonio.atomic_replace(a[1], result.record())
+            return result
+        with patch.object(token_run, 'run_command', side_effect=child):
+            result = self.invoke()
+        self.assertEqual(result.data['outcome'], 'succeeded')
+        self.assertIn('revocation failed', result.data['reason'])
+
+    def test_actual_and_durable_disagreement_remains_unknown(self):
+        def child(argv, path, **kw):
+            jsonio.atomic_replace(path, {'childStarted': True, 'childStatus': 0, 'revocation': 'ok'})
+            return object()
+        with patch.object(token_run, 'run_command', side_effect=child):
+            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertFalse(self.pair()['verified'])
+
+    def test_persistence_failure_preserves_uncertainty(self):
+        append = publish._append
+        def fail(*a, **kw):
+            if a[3] == 'op-result': raise records.RecordError('PRIVATE_SENTINEL')
+            return append(*a, **kw)
+        with patch.object(publish, '_append', side_effect=fail):
+            with self.assertRaises(cli.CommandError): self.invoke()
+        self.assertTrue(records.uncertain_items(self.events()))
+        self.assertEqual(self.invoke().data['outcome'], 'succeeded')
+        self.assertEqual(len(self.launches), 1)
+
+    def test_other_branch_and_late_results_do_not_resolve(self):
+        self.assertEqual(self.invoke().code, 0)
+        first, result = self.events()[-2:]
+        second = self.add('op-intent', dict(first['data'], opId='fixture-next'))
+        self.add('op-result', result['data'])
+        self.args.branch = 'fixture/other'
+        self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.args.branch = 'fixture/topic'
+        self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertEqual(self.events()[-1]['data']['intentRef'], second['seq'])
+        self.assertEqual(len(self.launches), 1)
+
+    def test_current_lead_provenance_still_applies(self):
+        self.cover(self.head, lead=True)
+        self.prs = [self.row()]
+        self.assertEqual(self.invoke().code, 0)
+        self.add('lead-assignment', {'thread': 'fixture-replacement', 'assignedBy': WRITER,
+            'date': '2026-11-01', 'reason': 'Fixture replacement'})
+        self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertFalse(self.pair()['verified'])
+
+    def test_screened_bytes_bound_despite_source_changes(self):
+        discover = publish._discover
+        def changed(*a, **kw):
+            self.args.title_file.write_text('PRIVATE_SENTINEL')
+            self.args.body_file.write_text('PRIVATE_SENTINEL')
+            return discover(*a, **kw)
+        with patch.object(publish, '_discover', side_effect=changed):
+            self.assertEqual(self.invoke().code, 0)
+        self.assertEqual(len(self.launches), 1)
+
+    def test_reader_keeps_synthetic_auth_home_only_for_reads(self):
+        read = self.read
+        def inspect(argv, **kw):
+            if argv[0] == 'gh':
+                self.assertEqual(os.environ['HOME'], str(self.temp / 'home'))
+                self.assertEqual(os.environ['GH_TOKEN'], 'synthetic-reader-token')
+            return read(argv, **kw)
+        with patch.dict(os.environ, {'GH_TOKEN': 'synthetic-reader-token'}), \
+                patch.object(process, 'run', side_effect=inspect):
+            self.assertEqual(self.invoke().code, 0)
+
+    def test_discovery_failed_reads_and_wrong_targets(self):
+        for data in ([dict(self.row(), number=True)], [self.row(), self.row()]):
+            self.prs = data
+            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.prs = [self.row()]
+        self.prs[0]['head']['ref'] = 'other'
+        self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        with patch.object(publish, '_discover', side_effect=cli.CommandError('PRIVATE_SENTINEL')):
+            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertFalse(self.launches)
+
+    def test_invalid_base_head_and_helper_entry(self):
+        self.args.base = 'other'
+        self.assertEqual(self.entry()[0], 2)
+        self.args.base = 'main'
+        self.args.head = self.base
+        self.assertEqual(self.entry()[0], 2)
+        self.args.head = self.head
+        with patch.object(cli, 'helper_info', return_value={'commit': 'e' * 40, 'dirty': True,
+                                                          'root': str(self.repo)}):
+            (self.repo / 'file.txt').write_text('dirty')
+            self.assertEqual(self.entry()[0], 1)
+        self.assertFalse(self.launches)
+
+    def test_intent_failure_starts_nothing(self):
+        with patch.object(publish, '_append', side_effect=records.RecordError('PRIVATE_SENTINEL')):
+            with self.assertRaises(cli.CommandError): self.invoke()
+        self.assertEqual((self.launches, self.ops()), ([], []))
+
+    def test_true_null_existing_pr_never_counts(self):
+        self.push_pair()
+        def child(argv, path, **kw):
+            jsonio.atomic_replace(path, {'childStarted': True, 'childStatus': None})
+            self.prs = [self.row()]
+            return token_run.RunResult(True, None, None, None, 1)
+        with patch.object(token_run, 'run_command', side_effect=child):
+            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertFalse(self.pair()['verified'])
+
+    def test_wrong_head_pair_and_reopened_old_uncertainty(self):
+        self.push_pair()
+        self.assertEqual(self.invoke().code, 0)
+        old = self.events()[-2]
+        self.assertEqual(self.invoke().data['outcome'], 'no-op')
+        self.add('reconciliation', {'item': {'kind': 'operation', 'ref': old['seq']},
+            'outcome': 'in-flight', 't3Facts': {'state': 'unknown'}, 'gitFacts': {'state': 'unknown'},
+            'notes': 'Fixture reopened'})
+        self.assertFalse(self.pair()['verified'])
+        self.assertEqual(self.invoke().data['outcome'], 'unknown')
