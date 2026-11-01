@@ -92,8 +92,9 @@ shared text renderer):
 ```
 
 `commits` counts selected commits. `findings` has one item per matching field,
-with sorted 1-based **identifier-list** line numbers, never input line numbers
-or matched text. `field` is `branch`, `label`, `text`, `message`, `path` or
+with a `lines` array of sorted 1-based line numbers from the private identifier
+list that matched. These are not line numbers in the checked text, and matched
+text is never returned. `field` is `branch`, `label`, `text`, `message`, `path` or
 `file`. `commit` is the full SHA for message/tree findings, otherwise null.
 `file` is the tree path for path/blob findings, otherwise null. `label` is the
 supplied label for label/text findings, otherwise null. Unsafe dynamic metadata,
