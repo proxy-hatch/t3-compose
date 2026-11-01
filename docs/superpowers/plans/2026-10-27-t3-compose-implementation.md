@@ -2589,12 +2589,14 @@ Tasks.
     head; a non-critical Task keeps the lead's own review
     ([decision 20](#decisions)).
   - The lead protocol from [decision 20](#decisions): on a quota refusal,
-    record it, dispatch the same cell's next target with the same brief and a
-    new `clientRequestId`, continuing at the refused child's last commit when
-    it made commits; on an `<ESCALATION_REQUEST>`, dispatch the next stage's
-    primary with the original brief plus the block plus a start commit equal
-    to the WIP commit, never the failed Worker's transcript; record every
-    escalation.
+    record it, clear the refused dispatch with a stopped-and-preserved
+    reconciliation, and dispatch the same cell's next target with the same
+    brief and a new `clientRequestId`, starting at the round's previous start
+    commit or the latest completed result's commit (the refused child's
+    commits stay on its branch); on an `<ESCALATION_REQUEST>`, dispatch the
+    next stage's primary with the original brief plus the block plus a start
+    commit equal to the WIP commit, never the failed Worker's transcript;
+    record every escalation.
   - Heavy checks through `t3c heavy run`, owned by the lead when assigned or
     otherwise the manager, machine-wide serialization after writer completion
     in a clean exact-head linked worktree. Verification through

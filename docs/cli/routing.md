@@ -190,13 +190,17 @@ has exactly `role`, `lane`, `fromStage`, `toStage`, `reason`, `evidence` and
 dispatch a child or write Git state. Escalation records capability triggers;
 quota exhaustion never authorizes escalation.
 
-Every new issue or round starts with a fresh `route input`, then `route classify`
-or `route judge` (for example, reason "carries the Task class into round n").
-Select at the starting stage. When a recorded trigger occurs, run `route escalate`
-and then select the next stage. The fresh input starts the epoch: prior issue or
-round escalation chains no longer authorize higher stages. A new decision is
-required on that input. Legacy version-2 decisions and selections remain readable
-and never authorize stage advancement.
+Every new issue or round starts an epoch in exactly one of two ways: `route input`,
+then `route judge` with that `inputRef` and a reason (for example, "carries the
+Task class into round n"); or `route classify` alone, which records its own input.
+Never run `route input` and then `route classify` for the same task and policy:
+`classify` exits 2 as an unclassified input and appends no second input. Every
+later `route select` and `route escalate` of the epoch uses that `inputRef` and
+its `policyDigest`. Select at the starting stage. When a recorded trigger occurs,
+run `route escalate` and then select the next stage. The fresh input starts the
+epoch: prior issue or round escalation chains no longer authorize higher stages.
+Legacy version-2 decisions and selections remain readable and never authorize
+stage advancement.
 
 ## Exits
 

@@ -3,9 +3,9 @@
 A small T3 Code coordination package for an Engineering manager, optional Feature
 leads, Workers and independent Reviewers. The first managed project is rapid-ship.
 
-Shawn approved the design on 2026-10-27. A revision made the same day, after the
-re-home findings, takes effect when Shawn approves and merges its pull request.
-Implementation and live pilots are pending.
+Shawn approved the design on 2026-10-27. The `t3c` helper and the manager skill
+(`skill/SKILL.md`) are built. Installing the skill and the live pilots wait for
+Shawn's request.
 
 - [Design and accepted decisions](docs/superpowers/specs/2026-10-27-t3-compose-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-10-27-t3-compose-implementation.md)
