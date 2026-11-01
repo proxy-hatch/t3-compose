@@ -1,21 +1,20 @@
-"""EM-only synthetic router pilot: classify once, select if accepted, never dispatch."""
+"""EM-only synthetic router pilot: classify once with V3, derive CD-8 route, never dispatch."""
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 import sys
-from types import SimpleNamespace
 import uuid
 
 REPO = "synthetic/router-pilot"
 EXAMPLES_LIMIT = 512 * 1024
-BASELINE_FACTS = {"credentials-or-guardrails", "recovery-or-concurrency",
-                  "shared-interface", "technical-documentation"}
+BASELINE_FACTS = {"credentials-or-guardrail", "recovery-or-concurrency",
+                  "shared-interface", "document-change"}
 
 
 def load_examples(path, cfg):
     """Validate the complete public dataset before creating work or calling Jev."""
-    from t3compose import config, jsonio, schema
+    from t3compose import jsonio, schema
 
     def require(condition):
         if not condition:
@@ -26,7 +25,7 @@ def load_examples(path, cfg):
 
     value, digest = jsonio.read_json_with_digest(path, max_bytes=EXAMPLES_LIMIT)
     shape(value, ("version", "label", "examples"))
-    require(type(value["version"]) is int and value["version"] == 1)
+    require(type(value["version"]) is int and value["version"] in (1, 2))
     require(value["label"] == "synthetic")
     entries = value["examples"]
     require(isinstance(entries, list) and 12 <= len(entries) <= 32)
@@ -41,10 +40,10 @@ def load_examples(path, cfg):
         schema.validate_routing_input({"task": task, "context": None})
         facts = task["riskFacts"]
         require(len(facts) == len(set(facts)) and all(f in cfg["riskFacts"] for f in facts))
-        shape(expected, ("domain", "tier", "floors"))
-        require(expected["domain"] in config.DOMAIN_CRITERIA_KEYS)
-        require((expected["tier"] is None) if expected["domain"] == "MIXED_OR_UNCLEAR"
-                else expected["tier"] in ("easy", "medium", "challenging"))
+        shape(expected, ("lane", "criticality", "scope", "floors"))
+        require(expected["lane"] in ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"))
+        require(expected["criticality"] in ("CORE", "NON_CRITICAL"))
+        require(expected["scope"] in ("STANDARD", "COMPLEX"))
         floors = expected["floors"]
         require(isinstance(floors, list) and all(isinstance(f, str) and f in cfg["riskFacts"] for f in floors))
         require(len(floors) == len(set(floors)) and set(floors) == set(facts))
@@ -53,115 +52,202 @@ def load_examples(path, cfg):
     return entries, digest
 
 
+def derive_route(task, classification_data, cfg_risk_facts):
+    """Derive routing class locally from decision and CD-8 §3 risk floors."""
+    judgment = classification_data.get("judgment")
+    if judgment:
+        eff_lane = judgment["lane"]
+        eff_criticality = judgment["criticality"]
+        eff_scope = judgment["scope"]
+    else:
+        answers = classification_data.get("answers", {})
+        eff_lane = answers.get("lane", {}).get("choice", "BACKEND_LOGIC")
+        if eff_lane == "MIXED":
+            eff_lane = "BACKEND_LOGIC"
+        eff_criticality = answers.get("criticality", {}).get("choice", "CORE")
+        eff_scope = answers.get("scope", {}).get("choice", "COMPLEX")
+
+    applied_floors = list(task.get("riskFacts", []))
+    for fact in applied_floors:
+        floor_spec = cfg_risk_facts.get(fact, {})
+        if floor_spec.get("scope") == "COMPLEX":
+            eff_scope = "COMPLEX"
+        if floor_spec.get("criticality") == "CORE":
+            eff_criticality = "CORE"
+
+    starting_stage = 1 if eff_scope == "STANDARD" else 2
+    derived_lane = "backend-logic" if eff_lane in ("BACKEND_LOGIC", "MIXED", "backend-logic") else "ui-frontend"
+
+    return {
+        "lane": derived_lane,
+        "scope": eff_scope,
+        "criticality": eff_criticality,
+        "startingStage": starting_stage,
+        "appliedFloors": applied_floors,
+    }
+
+
 def summarize(rows):
-    """Compare selected final tiers only; gold never controls classification/selection."""
-    counts = dict.fromkeys(("selected", "matchingRoutes", "mistakenCheapRoutes",
-                           "unnecessaryExpensiveRoutes", "domainMismatches",
-                           "unexpectedSelections", "floorMismatches"), 0)
-    counts["unselected"] = {}
-    tiers = ("easy", "medium", "challenging")
+    """Compare derived final classes against gold; gold never controls decisions."""
+    counts = {
+        "derived": 0,
+        "matchingRoutes": {"scope": 0, "criticality": 0},
+        "mistakenCheapRoutes": {"scope": 0, "criticality": 0},
+        "unnecessaryExpensiveRoutes": {"scope": 0, "criticality": 0},
+        "laneMismatches": 0,
+        "floorMismatches": 0,
+        "defaultedAnswers": {
+            "byQuestion": {
+                "lane": {"count": 0, "exampleIds": []},
+                "criticality": {"count": 0, "exampleIds": []},
+                "scope": {"count": 0, "exampleIds": []},
+            },
+            "byBasis": {
+                "default-low-confidence": 0,
+                "default-insufficient-context": 0,
+                "default-jev-failure": 0,
+            },
+            "counts": {"lane": 0, "criticality": 0, "scope": 0},
+            "exampleIds": {"lane": [], "criticality": [], "scope": []},
+        },
+        "incomplete": 0,
+    }
+
     for row in rows:
-        observed = row["classification"]
-        answers = observed["answers"] if observed else {}
-        domain = answers.get("domain", {}).get("choice")
-        gold, selected = row["expected"], row["selection"]
-        row["domainMismatch"] = domain != gold["domain"] if domain is not None else None
-        row["unexpectedSelection"] = selected is not None and gold["tier"] is None
-        row["floorMismatch"] = set(selected["floorsApplied"]) != set(gold["floors"]) if selected else None
-        row["tierComparison"] = None
-        counts["domainMismatches"] += row["domainMismatch"] is True
-        counts["unexpectedSelections"] += row["unexpectedSelection"]
-        counts["floorMismatches"] += row["floorMismatch"] is True
-        if selected is None:
-            outcome = row["outcome"]
-            counts["unselected"][outcome] = counts["unselected"].get(outcome, 0) + 1
+        gold = row["expected"]
+        derived = row.get("derived")
+        judgment = row.get("judgment")
+
+        if derived is None:
+            counts["incomplete"] += 1
+            row["laneMismatch"] = None
+            row["scopeComparison"] = None
+            row["criticalityComparison"] = None
+            row["floorMismatch"] = None
             continue
-        counts["selected"] += 1
-        if row["domainMismatch"] or gold["tier"] is None:
-            continue
-        difference = tiers.index(selected["tier"]) - tiers.index(gold["tier"])
-        category, key = (("cheap", "mistakenCheapRoutes") if difference < 0 else
-                         ("expensive", "unnecessaryExpensiveRoutes") if difference > 0 else
-                         ("same", "matchingRoutes"))
-        row["tierComparison"] = category
-        counts[key] += 1
+
+        counts["derived"] += 1
+
+        # Lane comparison: normalize confident MIXED to backend-logic
+        gold_lane_norm = "backend-logic" if gold["lane"] in ("BACKEND_LOGIC", "MIXED") else "ui-frontend"
+        derived_lane_norm = derived["lane"]
+        lane_mismatch = (derived_lane_norm != gold_lane_norm)
+        row["laneMismatch"] = lane_mismatch
+        if lane_mismatch:
+            counts["laneMismatches"] += 1
+
+        # Scope comparison
+        if derived["scope"] == gold["scope"]:
+            scope_comp = "match"
+            counts["matchingRoutes"]["scope"] += 1
+        elif gold["scope"] == "COMPLEX" and derived["scope"] == "STANDARD":
+            scope_comp = "cheap"
+            counts["mistakenCheapRoutes"]["scope"] += 1
+        elif gold["scope"] == "STANDARD" and derived["scope"] == "COMPLEX":
+            scope_comp = "expensive"
+            counts["unnecessaryExpensiveRoutes"]["scope"] += 1
+        else:
+            scope_comp = "mismatch"
+        row["scopeComparison"] = scope_comp
+
+        # Criticality comparison
+        if derived["criticality"] == gold["criticality"]:
+            crit_comp = "match"
+            counts["matchingRoutes"]["criticality"] += 1
+        elif gold["criticality"] == "CORE" and derived["criticality"] == "NON_CRITICAL":
+            crit_comp = "cheap"
+            counts["mistakenCheapRoutes"]["criticality"] += 1
+        elif gold["criticality"] == "NON_CRITICAL" and derived["criticality"] == "CORE":
+            crit_comp = "expensive"
+            counts["unnecessaryExpensiveRoutes"]["criticality"] += 1
+        else:
+            crit_comp = "mismatch"
+        row["criticalityComparison"] = crit_comp
+
+        # Floor mismatch
+        floor_mismatch = (set(derived["appliedFloors"]) != set(gold["floors"]))
+        row["floorMismatch"] = floor_mismatch
+        if floor_mismatch:
+            counts["floorMismatches"] += 1
+
+        # Defaulted attribution
+        defaulted = judgment.get("defaulted", []) if judgment else []
+        basis = judgment.get("basis") if judgment else None
+        if basis in counts["defaultedAnswers"]["byBasis"]:
+            counts["defaultedAnswers"]["byBasis"][basis] += 1
+        for q in ("lane", "criticality", "scope"):
+            if q in defaulted:
+                counts["defaultedAnswers"]["byQuestion"][q]["count"] += 1
+                counts["defaultedAnswers"]["byQuestion"][q]["exampleIds"].append(row["id"])
+                counts["defaultedAnswers"]["counts"][q] += 1
+                counts["defaultedAnswers"]["exampleIds"][q].append(row["id"])
+
     return counts
 
 
-def run(args, local, entries, examples_digest, catalog_digest):
-    from t3compose import cli, jev, records, routing
+def run(args, local, entries, examples_digest, catalog_digest, cfg):
+    """Execute classification and local derivation for all examples."""
+    from t3compose import cli, jev, records
 
     run_id = "RP-" + uuid.uuid4().hex
-    report = {"version": 1, "label": "synthetic", "repository": REPO, "runId": run_id,
-              "examplesDigest": examples_digest, "catalogDigest": catalog_digest,
-              "catalogReadAt": args.catalog_read_at, "complete": False, "failure": None,
-              "results": [{"id": e["id"], "label": "synthetic", "expected": e["expected"],
-                           "workId": run_id + "-" + e["id"], "recordRefs": {},
-                           "classification": None, "selection": None, "routeExitCode": None,
-                           "outcome": "not-run", "reason": "not attempted"} for e in entries]}
+    report = {
+        "version": 2, "label": "synthetic", "repository": REPO, "runId": run_id,
+        "examplesDigest": examples_digest, "catalogDigest": catalog_digest,
+        "catalogReadAt": args.catalog_read_at, "complete": False, "failure": None,
+        "results": [{"id": e["id"], "label": "synthetic", "expected": e["expected"],
+                     "workId": run_id + "-" + e["id"], "recordRefs": {},
+                     "classification": None, "judgment": None, "derived": None,
+                     "outcome": "not-run", "reason": "not attempted"} for e in entries]
+    }
     writer, code = "manager@" + REPO, 0
     classification_fields = ("inputRef", "inputDigest", "policyDigest", "classificationRef",
                              "ruleVersion", "criteriaDigest", "riskFacts", "configuredModel",
                              "snapshotModel", "responseId", "answers", "outcome", "reason")
-    selection_fields = ("inputRef", "inputDigest", "policyDigest", "classificationRef", "selectionRef",
-                        "tier", "floorsApplied", "configDigest", "catalogReadAt", "catalogDigest",
-                        "quotaStateDigest")
+    judgment_fields = ("judgmentRef", "lane", "criticality", "scope", "defaulted", "basis", "reason")
     stage, row = "metadata", None
     try:
         commit = cli.helper_info()["commit"]
         for entry, row in zip(entries, report["results"]):
             stage = "create-work"
             row.update(outcome="incomplete", reason="work not completed")
-            work = {"workId": row["workId"], "repository": REPO, "linearIssue": None,
-                    "targetBranch": "main", "reviewBase": commit,
-                    "scope": "Synthetic router pilot; example " + entry["id"] + "; examples " + examples_digest,
-                    "designRefs": ["docs/router-pilot.md"], "ownedPaths": ["pilot/router-examples.json"],
-                    "dependencies": [], "acceptance": [{"id": "OBSERVE", "text": "Record synthetic routing evidence"}],
-                    "requiredChecks": [{"id": "L8", "kind": "fast", "command": "live/router_pilot.py"}],
-                    "writer": writer}
+            work = {
+                "workId": row["workId"], "repository": REPO, "linearIssue": None,
+                "targetBranch": "main", "reviewBase": commit,
+                "scope": "Synthetic router pilot; example " + entry["id"] + "; examples " + examples_digest,
+                "designRefs": ["docs/router-pilot.md"], "ownedPaths": ["pilot/router-examples.json"],
+                "dependencies": [], "acceptance": [{"id": "OBSERVE", "text": "Record synthetic routing evidence"}],
+                "requiredChecks": [{"id": "L8", "kind": "fast", "command": "live/router_pilot.py"}],
+                "writer": writer
+            }
             records.create_work(local, REPO, row["workId"], work, writer=writer)
+
             stage = "classify"
-            result = jev.classify(local, REPO, row["workId"], entry["task"])
+            result = jev.classify(local, REPO, row["workId"], entry["task"], decline=True)
             data = result.data
             row["classification"] = {k: data[k] for k in classification_fields}
             row["recordRefs"].update(input=data["inputRef"], classification=data["classificationRef"])
-            row.update(outcome=data["outcome"], reason=data["reason"])
-            if data["outcome"] != "accepted":
-                continue  # No context retry and no manual judgment insertion.
-            if result.code != cli.ExitCode.SUCCESS:
-                raise ValueError("inconsistent classification outcome")
-            stage = "select"
-            selection = routing.command(SimpleNamespace(
-                local_dir=local, repo=REPO, work=row["workId"], route_action="select",
-                input_ref=data["inputRef"], policy_digest=data["policyDigest"], role="worker",
-                round="first", review_scope="code", escalate=False,
-                catalog=args.catalog, catalog_read_at=args.catalog_read_at))
-            if isinstance(selection, cli.Outcome):
-                row.update(outcome="route-refused", routeExitCode=int(selection.code))
-                reason = selection.data["reason"]
-                row["reason"] = ("catalog unavailable or expired" if "catalog" in reason else
-                                 "routing policy changed" if reason.startswith("routing policy changed") else
-                                 "selection unavailable or requires judgment")
-            else:
-                row["selection"] = {k: selection[k] for k in selection_fields}
-                row["recordRefs"]["selection"] = selection["selectionRef"]
-                row.update(outcome="selected", routeExitCode=0, reason="recorded Worker first-round selection")
+            if data.get("judgment"):
+                row["judgment"] = {k: data["judgment"][k] for k in judgment_fields}
+                row["recordRefs"]["judgment"] = data["judgment"]["judgmentRef"]
+
+            stage = "derive"
+            row["derived"] = derive_route(entry["task"], data, cfg.data["riskFacts"])
+            row.update(outcome="derived", reason="locally derived routing outcome")
         report["complete"] = True
     except Exception as error:
         code = 3 if isinstance(error, cli.CommandError) and error.code == cli.ExitCode.INVALID_CONFIG else 2
         report["failure"] = {"stage": stage, "reason": "pilot interrupted; preserve and reconcile records"}
-        if row is not None:
+        if row is not None and row.get("derived") is None:
             row.update(outcome="incomplete", reason="pilot interrupted; preserve and reconcile records")
-            # A durable write can succeed before reporting an error. Never retry it.
             try:
                 events = records.load_work(local, REPO, row["workId"])["events"]
                 for event in events:
                     key = {"routing-input": "input", "routing-classification": "classification",
-                           "routing-selection": "selection"}.get(event["kind"])
+                           "routing-judgment": "judgment"}.get(event["kind"])
                     if key:
                         row["recordRefs"][key] = event["seq"]
             except Exception:
-                pass  # Work identity still locates partial evidence if storage is unreadable.
+                pass
         print("Synthetic pilot interrupted; preserve records before another run", file=sys.stderr)
     report["summary"] = summarize(report["results"])
     return report, code
@@ -185,23 +271,17 @@ def main():
         for option in ("examples", "catalog", "catalog-read-at"):
             parser.add_argument("--" + option, required=True)
         parser.add_argument("--local-dir", type=Path)
-        args = parser.parse_args()  # All needed arguments before config/state I/O.
+        args = parser.parse_args()
         local = paths.local_dir(args.local_dir)
-        cfg = config.load_config(local=local)
-        state = config.load_quota_state(local=local, config=cfg)
+        cfg = config.load_matrix_config(local=local)
         now = datetime.now(timezone.utc)
-        try:
-            for observations in state.data["quotaObservations"].values():
-                routing.evaluate_quota(observations, now)
-        except ValueError:
-            raise cli.CommandError("invalid quota observation time", cli.ExitCode.INVALID_CONFIG) from None
-        entries, examples_digest = load_examples(args.examples, cfg.data)
         _, catalog_digest = routing.load_catalog(args.catalog, args.catalog_read_at, now)
-        report, code = run(args, local, entries, examples_digest, catalog_digest)
+        entries, examples_digest = load_examples(args.examples, cfg.data)
+        report, code = run(args, local, entries, examples_digest, catalog_digest, cfg)
         print(jsonio.canonical_json(report).decode("utf-8"))
         return code
     except config.ConfigValidationError:
-        print("Synthetic pilot refused: invalid routing config or quota state", file=sys.stderr)
+        print("Synthetic pilot refused: invalid routing config", file=sys.stderr)
         return 3
     except cli.CommandError as error:
         print("Synthetic pilot refused: check arguments, configuration and records", file=sys.stderr)

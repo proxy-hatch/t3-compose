@@ -1,46 +1,45 @@
 {
-  "version": 1,
-  "label": "synthetic",
+  "version": 2, "label": "synthetic",
   "examples": [
     {
-      "id": "literal-color", "label": "synthetic",
+      "id": "ui-button-styling", "label": "synthetic",
       "task": {
-        "intent": "Synthetic: in the pure badge_color() function, replace the literal return value 'violet' with 'amber'.",
-        "acceptance": ["badge_color() returns exactly 'amber'; no other statements change."],
-        "interfaces": ["badge_color() -> str; signature stays the same"],
-        "scope": ["fictional_badge.py, one return literal"], "riskFacts": [], "dependencies": []
+        "intent": "Synthetic: update the fictional primary button CSS class to add 4px rounded corners and a subtle hover shadow.",
+        "acceptance": ["Primary button renders with 4px border radius and hover shadow; button click handlers remain unchanged."],
+        "interfaces": ["button.css class .btn-primary"],
+        "scope": ["fictional_button.css, one styling rule"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "easy", "floors": []}
+      "expected": {"lane": "UI_FRONTEND", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
     },
     {
-      "id": "literal-empty", "label": "synthetic",
+      "id": "ui-empty-state", "label": "synthetic",
       "task": {
-        "intent": "Synthetic: in empty_label(), replace the exact statement return 'none' with return 'empty'.",
-        "acceptance": ["Only that return statement changes; empty_label() returns 'empty'."],
-        "interfaces": ["empty_label() -> str; no caller changes"],
-        "scope": ["fictional_label.py, one statement"], "riskFacts": [], "dependencies": []
+        "intent": "Synthetic: implement a fictional empty-state view component showing an illustration and brief friendly text 'No items found'.",
+        "acceptance": ["Component renders illustration and exact text when items list is empty; hides when list has entries."],
+        "interfaces": ["EmptyStateView(items: list) component"],
+        "scope": ["fictional_empty_view.js, one presentation component"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "easy", "floors": []}
+      "expected": {"lane": "UI_FRONTEND", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
     },
     {
-      "id": "recipe-spelling", "label": "synthetic",
+      "id": "ui-canvas-editor", "label": "synthetic",
       "task": {
-        "intent": "Synthetic: in a fictional recipe sentence, replace 'stirr the soup' with 'stir the soup'.",
-        "acceptance": ["Return the corrected sentence with no other wording changes."],
-        "interfaces": ["Plain prose input and output"],
-        "scope": ["One fictional recipe sentence"], "riskFacts": [], "dependencies": []
+        "intent": "Synthetic: implement an interactive drag-and-drop form canvas editor with undo/redo tree and element snapping.",
+        "acceptance": ["Users can drag elements onto canvas, snap to 8px grid, and navigate undo/redo stack across 20+ operations."],
+        "interfaces": ["CanvasEditor(container, schema) component with undo/redo actions"],
+        "scope": ["fictional_canvas.js, complex client-side interaction state"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "OTHER", "tier": "easy", "floors": []}
+      "expected": {"lane": "UI_FRONTEND", "criticality": "CORE", "scope": "COMPLEX", "floors": []}
     },
     {
-      "id": "travel-rewrite", "label": "synthetic",
+      "id": "unit-test-suite", "label": "synthetic",
       "task": {
-        "intent": "Synthetic: rewrite this fictional travel paragraph for clarity: 'At dawn we crossed the glass bridge. The market was quiet. Later we returned by boat.'",
-        "acceptance": ["Keep the sequence of events and all three facts; use a warm, concise voice in two sentences."],
-        "interfaces": ["Plain prose input and output"],
-        "scope": ["One fictional travel paragraph; choose the wording"], "riskFacts": [], "dependencies": []
+        "intent": "Synthetic: add unit tests for a fictional pure string helper to assert edge-case inputs like empty string and unicode whitespace.",
+        "acceptance": ["Tests exercise empty, whitespace, and unicode strings; cover 100% of helper branches."],
+        "interfaces": ["test_clean_string() in test suite"],
+        "scope": ["fictional_test_strings.py, test-only additions"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "OTHER", "tier": "medium", "floors": []}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
     },
     {
       "id": "readme-spelling", "label": "synthetic",
@@ -48,9 +47,9 @@
         "intent": "Synthetic: in a fictional software library README, replace 'instal the package' with 'install the package'.",
         "acceptance": ["Only correct that spelling in the installation section."],
         "interfaces": ["README.md is technical documentation for the fictional Pebble library"],
-        "scope": ["README.md, one word"], "riskFacts": ["technical-documentation"], "dependencies": []
+        "scope": ["README.md, one word"], "riskFacts": ["document-change"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["technical-documentation"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
     },
     {
       "id": "design-note", "label": "synthetic",
@@ -58,9 +57,9 @@
         "intent": "Synthetic: update a fictional software module design note to say its token cache lasts ten minutes instead of five. Explain the already-decided value; implement no credential or cache behavior.",
         "acceptance": ["State ten minutes consistently in the module note; change no code."],
         "interfaces": ["Module design note, technical documentation"],
-        "scope": ["fictional-module-note.md"], "riskFacts": ["technical-documentation"], "dependencies": []
+        "scope": ["fictional-module-note.md"], "riskFacts": ["document-change"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["technical-documentation"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
     },
     {
       "id": "credential-field", "label": "synthetic",
@@ -68,9 +67,9 @@
         "intent": "Synthetic: first implement read_token(settings) in a fictional module; return settings['token'] only when it is a nonempty string, otherwise raise a fixed setup error.",
         "acceptance": ["Read exactly the token field; never include its contents in errors or logs."],
         "interfaces": ["read_token(settings) -> str"],
-        "scope": ["fictional_token.py, one small credential-reading function"], "riskFacts": ["credentials-or-guardrails"], "dependencies": []
+        "scope": ["fictional_token.py, one small credential-reading function"], "riskFacts": ["credentials-or-guardrail"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["credentials-or-guardrails"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["credentials-or-guardrail"]}
     },
     {
       "id": "command-boundary", "label": "synthetic",
@@ -78,9 +77,9 @@
         "intent": "Synthetic: first enforce a fictional outbound-command boundary. Permit only the exact argument vector ['echo', 'hello']; refuse every other vector before launch.",
         "acceptance": ["The exact permitted vector passes; extra arguments, alternate paths, and empty input fail before execution."],
         "interfaces": ["allowed(argv) -> bool is the command launch gate"],
-        "scope": ["fictional_gate.py, one allowlist check"], "riskFacts": ["credentials-or-guardrails"], "dependencies": []
+        "scope": ["fictional_gate.py, one allowlist check"], "riskFacts": ["credentials-or-guardrail"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["credentials-or-guardrails"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["credentials-or-guardrail"]}
     },
     {
       "id": "atomic-recovery", "label": "synthetic",
@@ -90,7 +89,7 @@
         "interfaces": ["save_document(path, data) and recover_document(path)"],
         "scope": ["fictional_save.py, small ordering correction"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["recovery-or-concurrency"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["recovery-or-concurrency"]}
     },
     {
       "id": "shared-writer", "label": "synthetic",
@@ -100,7 +99,7 @@
         "interfaces": ["append_entry(store, value) under simultaneous callers"],
         "scope": ["fictional_writer.py, mutual exclusion and sequence allocation"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": ["recovery-or-concurrency"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["recovery-or-concurrency"]}
     },
     {
       "id": "shared-parameter", "label": "synthetic",
@@ -110,7 +109,7 @@
         "interfaces": ["render(label: str) becomes render(text: str), consumed by two modules"],
         "scope": ["fictional_render.py and its two callers"], "riskFacts": ["shared-interface"], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": ["shared-interface"]}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "STANDARD", "floors": ["shared-interface"]}
     },
     {
       "id": "integer-parser", "label": "synthetic",
@@ -120,7 +119,7 @@
         "interfaces": ["parse_numbers(text: str) -> list[int]; ValueError for invalid input"],
         "scope": ["fictional_numbers.py, implementation and local tests only"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "medium", "floors": []}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "STANDARD", "floors": []}
     },
     {
       "id": "architecture-choice", "label": "synthetic",
@@ -130,17 +129,17 @@
         "interfaces": ["The planner/formatter responsibility boundary has not been decided"],
         "scope": ["fictional_planner.py and fictional_formatter.py, design judgment required"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "SOFTWARE_ENGINEERING", "tier": "challenging", "floors": []}
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": []}
     },
     {
-      "id": "mixed-assignment", "label": "synthetic",
+      "id": "fullstack-preference", "label": "synthetic",
       "task": {
-        "intent": "Synthetic: change a fictional list sorter to descending order and also write unrelated marketing copy for an imaginary moonlight bakery.",
-        "acceptance": ["The sort returns descending values; the unrelated bakery gets a cheerful four-line advertisement."],
-        "interfaces": ["sort_values(values) and unrelated plain marketing prose"],
-        "scope": ["fictional_sort.py plus an unrelated fictional advertisement"], "riskFacts": [], "dependencies": []
+        "intent": "Synthetic: implement a fictional user preference toggle endpoint in backend logic and wire it to a settings checkbox in the UI frontend.",
+        "acceptance": ["Backend updates preferences JSON on disk; UI checkbox reflects updated state upon toggle."],
+        "interfaces": ["PATCH /api/prefs and SettingsCheckbox component"],
+        "scope": ["fictional_prefs.py and fictional_checkbox.js"], "riskFacts": [], "dependencies": []
       },
-      "expected": {"domain": "MIXED_OR_UNCLEAR", "tier": null, "floors": []}
+      "expected": {"lane": "MIXED", "criticality": "CORE", "scope": "STANDARD", "floors": []}
     }
   ]
 }
