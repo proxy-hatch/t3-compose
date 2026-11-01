@@ -41,19 +41,25 @@ insertion order: `verified`, `head`, `prReady`, `gaps`, one `key: <JSON-value>`
 line per field, using the common CLI escaping rules. Handlers never print/exit.
 
 Gaps are ordered by implementation head, required checks in effective list
-order, latest review, findings in review-event and finding-list order,
-criteria in effective list order, then push and pull request. One gap per
-item is emitted, using the first applicable reason in each row's order:
+order, the review of record, the final review, findings in review-event and
+finding-list order, criteria in effective list order, then push and pull
+request. One gap per item is emitted, using the first applicable reason in
+each row's order:
 
 | Item | Ordered gap codes | ID / references |
 |---|---|---|
 | Implementation | `head-missing`, `head-stale` | null ID; latest Worker result or null |
 | Required check | `check-missing`, `check-stale`, `check-command`, `check-source`, `check-outcome`, `check-evidence` | check ID; selected check or null |
-| Final review | `review-missing`, `review-stale`, `review-source`, `review-verdict` | null ID; latest review or null |
+| Review of record | `review-record-missing`, `review-record-stale`, `review-record-verdict` | null ID; latest task review or null |
+| Final review | `review-missing`, `review-stale`, `review-source`, `review-order`, `review-verdict` | null ID; latest review (core work with a lead: latest lead review) or null |
 | Finding | `finding-missing`, `finding-unresolved` | finding ID, originating reviewRef; latest disposition or null |
 | Criterion | `criterion-missing`, `criterion-stale`, `criterion-source`, `criterion-evidence` | criterion ID; selected evidence or null |
 | Push | `push-missing`, `push-unresolved`, `push-stale`, `push-outcome`, `push-status`, `push-confirmation` | null ID; intent when unresolved, otherwise latest result |
 | Pull request | `pr-missing`, `pr-unresolved`, `pr-stale`, `pr-outcome`, `pr-status`, `pr-confirmation` | same as push |
+
+The review-of-record row and `review-order` apply only to core work with a
+lead; see [Reviews and findings](#reviews-and-findings). Other work has no
+review-of-record row, and its final review never reports `review-order`.
 
 ## Head, requirements and sources
 
@@ -90,13 +96,37 @@ coordinator assertions; EV-1 adds no external identity authentication.
 
 ## Reviews and findings
 
-Only the latest review event is considered for final-head clearance. It must
-cover exactly immutable `work.reviewBase` and the requested head, with verdict
-`approve` or `approve-after-fixes`. A later stale or changes-required review
-cannot be hidden behind an earlier approval. With a lead assigned it must be
-that current thread's own review, current both at the event and now. RC-1
-requires path/digest and forbids a fabricated lead task ID. A task review cannot
-substitute. Without a lead, RC-1's independently joined Reviewer task is required.
+Final-head review clearance depends on the work's criticality and on whether a
+lead is assigned. Every review that counts must cover exactly immutable
+`work.reviewBase` and the requested head, with verdict `approve` or
+`approve-after-fixes`, and a later stale or changes-required review cannot be
+hidden behind an earlier approval.
+
+**Criticality** is core unless the work's latest version-3 routing decision
+says otherwise. A decision is a `routing-classification` with `configVersion`
+3 and outcome `accepted`, whose `answers.criticality.choice` gives the
+criticality, or a `routing-judgment` with `configVersion` 3, whose
+`criticality` gives it. The decision with the highest event sequence wins.
+Version-2 routing records, `retry-with-context` and `defaulted`
+classifications and `routing-selection` events never decide, so work with no
+version-3 decision counts as core. The check reads the criticality as
+recorded; it neither reads the routing configuration nor reapplies risk
+floors.
+
+- **Core work with a lead** needs two reviews. The review of record is the
+  latest review by a `task` reviewer, RC-1's independently joined Reviewer
+  task. The lead's check is the latest review by the `lead` reviewer: it must
+  be the current lead thread's own review, current both at the event and now.
+  RC-1 requires path/digest and forbids a fabricated lead task ID. The check
+  must be recorded after the review of record, so a newer review of record
+  puts the earlier check out of order and the lead checks again. The two are
+  selected separately: a later lead review does not replace the review of
+  record, and a later task review does not replace the lead's check.
+- **Non-critical work with a lead** considers only the latest review event. It
+  must be the current lead thread's own review, as above. A task review cannot
+  substitute.
+- **Work without a lead** considers only the latest review event, whatever the
+  criticality. It must be RC-1's independently joined Reviewer task.
 
 Every finding of every historical review still needs a disposition, keyed by
 `(review event sequence, finding ID)`. Use the latest disposition for that pair.
