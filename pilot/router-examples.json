@@ -1,0 +1,145 @@
+{
+  "version": 2, "label": "synthetic",
+  "examples": [
+    {
+      "id": "ui-button-styling", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: update the fictional primary button CSS class to add 4px rounded corners and a subtle hover shadow.",
+        "acceptance": ["Primary button renders with 4px border radius and hover shadow; button click handlers remain unchanged."],
+        "interfaces": ["button.css class .btn-primary"],
+        "scope": ["fictional_button.css, one styling rule"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "UI_FRONTEND", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
+    },
+    {
+      "id": "ui-empty-state", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: implement a fictional empty-state view component showing an illustration and brief friendly text 'No items found'.",
+        "acceptance": ["Component renders illustration and exact text when items list is empty; hides when list has entries."],
+        "interfaces": ["EmptyStateView(items: list) component"],
+        "scope": ["fictional_empty_view.js, one presentation component"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "UI_FRONTEND", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
+    },
+    {
+      "id": "ui-canvas-editor", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: implement an interactive drag-and-drop form canvas editor with undo/redo tree and element snapping.",
+        "acceptance": ["Users can drag elements onto canvas, snap to 8px grid, and navigate undo/redo stack across 20+ operations."],
+        "interfaces": ["CanvasEditor(container, schema) component with undo/redo actions"],
+        "scope": ["fictional_canvas.js, complex client-side interaction state"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "UI_FRONTEND", "criticality": "CORE", "scope": "COMPLEX", "floors": []}
+    },
+    {
+      "id": "unit-test-suite", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: add unit tests for a fictional pure string helper to assert edge-case inputs like empty string and unicode whitespace.",
+        "acceptance": ["Tests exercise empty, whitespace, and unicode strings; cover 100% of helper branches."],
+        "interfaces": ["test_clean_string() in test suite"],
+        "scope": ["fictional_test_strings.py, test-only additions"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": []}
+    },
+    {
+      "id": "readme-spelling", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: in a fictional software library README, replace 'instal the package' with 'install the package'.",
+        "acceptance": ["Only correct that spelling in the installation section."],
+        "interfaces": ["README.md is technical documentation for the fictional Pebble library"],
+        "scope": ["README.md, one word"], "riskFacts": ["document-change"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+    },
+    {
+      "id": "design-note", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: update a fictional software module design note to say its token cache lasts ten minutes instead of five. Explain the already-decided value; implement no credential or cache behavior.",
+        "acceptance": ["State ten minutes consistently in the module note; change no code."],
+        "interfaces": ["Module design note, technical documentation"],
+        "scope": ["fictional-module-note.md"], "riskFacts": ["document-change"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+    },
+    {
+      "id": "credential-field", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: first implement read_token(settings) in a fictional module; return settings['token'] only when it is a nonempty string, otherwise raise a fixed setup error.",
+        "acceptance": ["Read exactly the token field; never include its contents in errors or logs."],
+        "interfaces": ["read_token(settings) -> str"],
+        "scope": ["fictional_token.py, one small credential-reading function"], "riskFacts": ["credentials-or-guardrail"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["credentials-or-guardrail"]}
+    },
+    {
+      "id": "command-boundary", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: first enforce a fictional outbound-command boundary. Permit only the exact argument vector ['echo', 'hello']; refuse every other vector before launch.",
+        "acceptance": ["The exact permitted vector passes; extra arguments, alternate paths, and empty input fail before execution."],
+        "interfaces": ["allowed(argv) -> bool is the command launch gate"],
+        "scope": ["fictional_gate.py, one allowlist check"], "riskFacts": ["credentials-or-guardrail"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["credentials-or-guardrail"]}
+    },
+    {
+      "id": "atomic-recovery", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: repair a fictional atomic-save routine's interrupted-recovery invariant. After interruption immediately before or after rename, recovery must retain a complete old or new document.",
+        "acceptance": ["Exercise both interruption points; recovery neither truncates the destination nor replaces it with a partial temporary file."],
+        "interfaces": ["save_document(path, data) and recover_document(path)"],
+        "scope": ["fictional_save.py, small ordering correction"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["recovery-or-concurrency"]}
+    },
+    {
+      "id": "shared-writer", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: correct a fictional shared writer so two simultaneous appenders cannot claim the same sequence number or overwrite each other's entry.",
+        "acceptance": ["A synchronized two-writer test retains both successful entries under distinct sequence numbers; failed writes leave readable history."],
+        "interfaces": ["append_entry(store, value) under simultaneous callers"],
+        "scope": ["fictional_writer.py, mutual exclusion and sequence allocation"], "riskFacts": ["recovery-or-concurrency"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": ["recovery-or-concurrency"]}
+    },
+    {
+      "id": "shared-parameter", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: migrate the shared fictional render(label) API to render(text), with the exact same behavior. Rename the keyword in both consumers and their tests.",
+        "acceptance": ["Both consumers use text=; output stays identical; no label= call remains."],
+        "interfaces": ["render(label: str) becomes render(text: str), consumed by two modules"],
+        "scope": ["fictional_render.py and its two callers"], "riskFacts": ["shared-interface"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "STANDARD", "floors": ["shared-interface"]}
+    },
+    {
+      "id": "integer-parser", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: implement an isolated comma-separated integer parser. Choose a clear internal design and tests within one module.",
+        "acceptance": ["Allow optional signs and surrounding ASCII spaces; reject empty tokens, nondecimal characters, and values outside signed 32-bit range; return [] for empty input."],
+        "interfaces": ["parse_numbers(text: str) -> list[int]; ValueError for invalid input"],
+        "scope": ["fictional_numbers.py, implementation and local tests only"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "STANDARD", "floors": []}
+    },
+    {
+      "id": "architecture-choice", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: resolve an unsettled architecture for a fictional planner and formatter. Decide whether the planner should own presentation tokens or the formatter should derive them, then implement the decision.",
+        "acceptance": ["Compare coupling and extensibility; justify ownership and preserve output behavior across two modules."],
+        "interfaces": ["The planner/formatter responsibility boundary has not been decided"],
+        "scope": ["fictional_planner.py and fictional_formatter.py, design judgment required"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX", "floors": []}
+    },
+    {
+      "id": "fullstack-preference", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: implement a fictional user preference toggle endpoint in backend logic and wire it to a settings checkbox in the UI frontend.",
+        "acceptance": ["Backend updates preferences JSON on disk; UI checkbox reflects updated state upon toggle."],
+        "interfaces": ["PATCH /api/prefs and SettingsCheckbox component"],
+        "scope": ["fictional_prefs.py and fictional_checkbox.js"], "riskFacts": [], "dependencies": []
+      },
+      "expected": {"lane": "MIXED", "criticality": "CORE", "scope": "STANDARD", "floors": []}
+    }
+  ]
+}
