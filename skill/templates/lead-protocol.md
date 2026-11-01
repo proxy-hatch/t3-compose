@@ -23,15 +23,17 @@ only when the child gave no response. Then act on the cause.
 - **Quota refusal:** a usage limit, an exhausted quota, a credits error
   (HTTP 402), or a rate limit whose retry time is over 5 minutes or is missing.
   1. Record it: `t3c quota record --instance I --model M --kind K
-     --observed-at T --evidence TEXT`. K is `usage-limit`, `quota-exhausted`,
-     `credits` or `rate-limit`. For a pool, I is the account.
+     --observed-at T [--reset-at T] --evidence TEXT`. K is `usage-limit`,
+     `quota-exhausted`, `credits` or `rate-limit`. For a pool, I is the
+     account.
   2. Clear the refused dispatch: append a `reconciliation` record for it with
      the outcome `stopped-and-preserved`. A refused child has no recordable
      result, and the store needs the dispatch cleared before the next Worker
      intent. Do the same for a refused Reviewer.
-  3. Dispatch the next target of the same cell, with the same brief and a new
+  3. Take the next target of the same cell, with the same brief and a new
      `clientRequestId`. Start at the round's previous start commit, or at the
-     latest completed result's commit. Then append the new `dispatch-intent`.
+     latest completed result's commit. Append the new `dispatch-intent`
+     before the call, then dispatch.
   4. The refused child's commits, if it made any, stay on its branch. The new
      brief may name that branch for read-only reference. A `delegate_task`
      cannot reopen another child's worktree, and work that was not committed
@@ -39,10 +41,14 @@ only when the child gave no response. Then act on the cause.
 - **Transient error:** a rate limit with a retry time of 5 minutes or less, an
   "at capacity" answer, or a 5xx error. Retry the same target once after the
   stated wait (1 minute when none is stated). If it fails again, treat the
-  target as unavailable for this dispatch only. Record nothing: this is not
-  quota evidence.
-- **Environment block:** a missing tool, a permission or a hook. The target is
-  unavailable for this dispatch. Record no quota evidence and rotate no account.
+  target as unavailable for this dispatch only. Record no quota refusal: this
+  is not quota evidence. Do record the skipped target and the reason in
+  {{LEAD_LOG}}.
+- **Environment block, capability or role block:** a missing tool, a permission
+  or a hook; a provider, model or option that the saved catalog does not offer;
+  or a driver kind blocked for the role. The target is unavailable for this
+  dispatch. Record no quota refusal and rotate no account. Record the skipped
+  target and the reason in {{LEAD_LOG}}, and take the next target of the cell.
 - **Failure inside the work:** not a failover. Handle it as a review finding or
   as a hard stop (see Escalation).
 
@@ -72,32 +78,40 @@ an `<ESCALATION_REQUEST>` block. Then:
 2. In the Worker's worktree (read only), confirm that the WIP commit exists, is
    the branch's head and has the subject `wip(escalation): ...`, and that the
    tree is clean.
-3. Render the continuation brief with `t3c brief render --template
+3. Record the escalation before you select or dispatch at the next stage. Run
+   `t3c route escalate` when the helper has that command. Until then append an
+   entry to {{LEAD_LOG}} with the role, the stages, the reason
+   `worker-hard-stop`, a short evidence text and the WIP commit.
+4. Render the continuation brief with `t3c brief render --template
    continuation --original-brief ORIGINAL --escalation FILE --values VALUES
-   --out BRIEF`. ORIGINAL is the brief the failed Worker received. In VALUES,
-   `START` is the WIP commit, `REVIEW_BASE` is unchanged and `STAGE` is the next
-   stage. Run `t3c brief check BRIEF`.
-4. Dispatch BRIEF with `delegate_task` on the next stage's primary, with a new
-   `clientRequestId`. Quota failover applies to that dispatch as above. The
-   round starts at the WIP commit: a hard-stopped Worker completes its turn, so
-   the commit is a recordable result.
-5. Never pass the failed Worker's transcript.
-6. Record the escalation. Run `t3c route escalate` when the helper has that
-   command. Until then append an entry to {{LEAD_LOG}} with the role, the
-   stages, the reason `worker-hard-stop`, a short evidence text and the WIP
-   commit.
+   --out BRIEF`. ORIGINAL is the first Worker brief of the round, the one that
+   is not itself a continuation: when the failed Worker was a continuation,
+   use that same original again, never the continuation brief it received
+   (the checker refuses a continuation inside a continuation). FILE is the
+   latest block. In VALUES, `START` is the latest WIP commit, `REVIEW_BASE` is
+   unchanged and `STAGE` is the next stage. Run `t3c brief check BRIEF`.
+5. Append the `dispatch-intent` for BRIEF, then dispatch it with
+   `delegate_task` on the next stage's primary, with a new `clientRequestId`.
+   Quota failover applies to that dispatch as above. The round starts at the
+   WIP commit: a hard-stopped Worker completes its turn, so the commit is a
+   recordable result.
+6. Never pass the failed Worker's transcript.
 
 These are not escalations: an environment block, a quota refusal and a
 question about the spec. Report an environment block or a spec question to
 whoever can resolve it.
 
-Other triggers move work to the next stage, and you record each of them:
+Other triggers move work to the next stage, and each is recorded:
 - a review finding still open after 2 Corrections rounds: run the next
   Corrections round at the next stage;
 - a review deadlock, where the Worker disputes a finding and the reviewer
   raises it again: a reviewer at the next stage decides;
 - a reviewer that fails twice for a reason other than quota: the next stage
   takes the review;
+- the lead stalled: a second issue of the Task needs stage 3, or a merge or
+  post-merge verification fails twice. Tell the manager, who replaces the lead
+  thread at the next stage. The new lead resumes from the Task log and the
+  records, so keep both current;
 - a failure at stage 3: the item goes to the manager, then to the owner.
 
 ## Routing records

@@ -196,10 +196,11 @@ own protocol for quota failover, escalation and routing records. It is a plain
 built-in template: it has no `# t3c brief v1` header, so `render` applies none of
 the structured checks, and `check` refuses its output. It takes one value,
 `LEAD_LOG`, the name or path of the log where the lead writes prose records, and
-a missing value is refused like any other. Extra values are screened and ignored.
-The template, the values and the output are privacy-screened as for any other
-template. The text names no model, account or private record; the routing policy
-and the brief values carry those.
+a missing value is refused like any other. Extra values are screened and ignored,
+and `--original-brief` and `--escalation` are not read for it. The template, the
+values and the output are privacy-screened as for any other template. The text
+names no model, account or private record; the routing policy and the brief
+values carry those.
 
 ## Bounded privacy Corrections
 
