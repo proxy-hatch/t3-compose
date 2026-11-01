@@ -15,6 +15,10 @@ def _valid_config_dict():
     return json.loads((ROOT / "docs/examples/agent-routing.example.json").read_text(encoding="utf-8"))
 
 
+def _matrix_config_dict():
+    return json.loads((ROOT / "docs/examples/agent-routing.v3.example.json").read_text())
+
+
 def _valid_state_dict():
     return json.loads((ROOT / "docs/examples/agent-routing-state.example.json").read_text(encoding="utf-8"))
 
@@ -410,12 +414,13 @@ class OfflineConfigValidation(OfflineTestCase):
                 for index, item in enumerate(value):
                     yield from objects(item, (*path, index))
         for base, validate in ((_valid_config_dict(), cfg.validate_config_data),
+                               (_matrix_config_dict(), cfg.validate_config_data),
                                (_valid_state_dict(), cfg.validate_quota_state_data)):
             for path, obj in objects(base):
                 if path and path[-1] in ("providerPools", "riskFacts", "options", "quotaObservations"):
                     continue  # These mappings have dynamic keys, not closed field sets.
                 changes = [("extra", "__unexpected__"), ("shape", None)]
-                changes += [("missing", key) for key in obj if not (key == "roles" and "providerInstanceId" in obj)]
+                changes += [("missing", key) for key in obj if not (base.get("version") == 3 and (key == "prePass" or (path and path[0] == "riskFacts" and key in ("scope", "criticality")))) and not (key == "roles" and "providerInstanceId" in obj)]
                 changes += [("type", key) for key, value in obj.items() if not isinstance(value, (dict, list))]
                 for kind, key in changes:
                     with self.subTest(path=path, kind=kind, key=key):
@@ -452,3 +457,213 @@ class OfflineConfigValidation(OfflineTestCase):
                     else:
                         with self.assertRaises(cfg.ConfigValidationError):
                             cfg.validate_config_data(data)
+
+
+class OfflineMatrixConfigValidation(OfflineTestCase):
+    def test_schema_vocabulary_matches_config(self):
+        from t3compose import config, schema
+        self.assertEqual(dict(config.MATRIX_LANES), schema._MATRIX_LANES)
+        self.assertEqual(config.ROLE_BLOCK_ROLES, schema._V3_ROLES)
+        classification = _matrix_config_dict()["classification"]
+        for question, options in schema._V3_QUESTIONS.items():
+            self.assertEqual(options, tuple(classification[question]["criteria"]))
+
+    def setUp(self):
+        super().setUp()
+        self.local = self.temp / ".local"
+        self.local.mkdir()
+        self.config_path = self.local / "agent-routing.json"
+        self.state_path = self.local / "agent-routing-state.json"
+    write_json = OfflineConfigValidation.write_json
+    assert_invalid = OfflineConfigValidation.assert_invalid
+    def test_matrix_accessors_and_digest(self):
+        cfg = _cfg()
+        base = _matrix_config_dict()
+        self.write_json(self.config_path, base)
+        self.write_json(self.state_path, _valid_state_dict())
+        real_open, opened = builtins.open, []
+        with patch.object(builtins, "open", side_effect=lambda f, *a, **kw: (opened.append(str(f)), real_open(f, *a, **kw))[1]):
+            loaded = cfg.load_matrix_config(self.config_path)
+        self.assertEqual(opened, [str(self.config_path)])
+        self.assertEqual((loaded.notices, loaded.data["version"]), ((), 3))
+        self.assertEqual(loaded.digest, "sha256:" + hashlib.sha256(self.config_path.read_bytes()).hexdigest())
+        self.assertEqual(cfg.load_matrix_config().digest, loaded.digest)
+        self.assertEqual(cfg.load_matrix_config(local=self.local).digest, loaded.digest)
+        for obj in (loaded.data, loaded.data["matrix"]["worker"]["backend-logic"]["2"]["primary"]["options"], cfg.MATRIX_LANES):
+            with self.assertRaises(TypeError):
+                obj["new"] = True
+        self.assertIsInstance(loaded.data["manager"]["quotaFallback"], tuple)
+        self.assertEqual(cfg.load_quota_state(config=loaded).digest, cfg.load_quota_state(config=loaded.data).digest)
+        for raw, accessor, path, rule in (
+            (base, cfg.load_config, "version", "expected-version-2"),
+            *[(raw, cfg.load_matrix_config, "version", "expected-version-3") for raw in
+              (_valid_config_dict(), {"version": 1}, {"version": "3"}, {"version": True}, {})],
+            ([], cfg.load_matrix_config, "$", "expected-object"),
+        ):
+            self.write_json(self.config_path, raw)
+            with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                accessor(self.config_path)
+            self.assertEqual(ctx.exception.to_payload(), {"valid": False, "errors": [{"path": path, "rule": rule}]})
+        for content, rule in (("{", "invalid-json"), (" " * 16385, "size-limit-exceeded")):
+            self.config_path.write_text(content)
+            with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                cfg.load_matrix_config(self.config_path)
+            self.assertEqual(ctx.exception.errors[0]["rule"], rule)
+        self.config_path.unlink()
+        with self.assertRaises(cfg.ConfigValidationError) as ctx:
+            cfg.load_matrix_config(self.config_path)
+        self.assertEqual(ctx.exception.errors[0]["rule"], "unreadable-file")
+
+    def test_matrix_policy_projection(self):
+        cfg, base = _cfg(), _matrix_config_dict()
+        digest = cfg.compute_policy_digest(base)
+        included = [("classification", "ruleVersion"), ("riskFacts", "shared-interface", "description"),
+                    ("riskFacts", "credentials-or-guardrail", "scope"), ("riskFacts", "shared-interface", "criticality"),
+                    *[("classification", q, "instructions") for q in ("lane", "criticality", "scope")],
+                    *[("classification", q, "criteria", next(iter(base["classification"][q]["criteria"]))) for q in ("lane", "criticality", "scope")],
+                    *[("jev", k) for k in ("provider", "model", "minConfidence", "maxContextRetries")]]
+        excluded = [(k,) for k in ("manager", "matrix", "helpers", "providerPools", "roleBlocks", "quota", "escalation")]
+        excluded += [("jev", k) for k in ("timeoutSeconds", "keyFile")]
+        for paths, changes in ((included, True), (excluded, False)):
+            for path in paths:
+                data = copy.deepcopy(base)
+                target = data
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = "changed"
+                self.assertEqual(cfg.compute_policy_digest(data) != digest, changes, path)
+        for indent in (None, 2):
+            self.config_path.write_text(json.dumps(base, indent=indent))
+            self.assertEqual(cfg.load_matrix_config(self.config_path).policy_digest, digest)
+
+    def test_matrix_rules(self):
+        cfg, base = _cfg(), _matrix_config_dict()
+        cell = ("matrix", "worker", "backend-logic", "2")
+        sel = (*cell, "primary")
+        cases = [
+            (sel, {"model": "x", "options": {}}, "missing-selection-target"),
+            ((*sel, "providerPool"), "agy-synth-pool", "disjoint-selection-keys"),
+            ((*sel, "providerInstanceId"), "agy-synth-alpha", "direct-selection-names-pool-member"),
+            ((*sel, "model"), "", "invalid-string"), ((*sel, "options"), [], "expected-object"),
+            ((*sel, "options"), {"": "x"}, "invalid-option-key"),
+            ((*sel, "options", "bad"), 1, "invalid-option-value"),
+            ((*sel, "roles"), ["worker"], "unknown-key"),
+            ((*cell, "quotaFallback"), {}, "expected-list"),
+            ((*cell, "quotaFallback"), [base["matrix"]["worker"]["backend-logic"]["2"]["primary"]], "fallback-equals-primary"),
+            ((*cell, "quotaFallback"), [base["manager"]["primary"]] * 2, "duplicate-fallback"),
+            (("helpers", "text", "primary", "providerPool"), "absent", "unknown-provider-pool"),
+            (("helpers", "text", "primary", "options"), {"effort": "high"}, "pool-options-must-be-empty"),
+            (("manager", "primary"), base["helpers"]["text"]["primary"], "expected-direct-selection"),
+            (("manager", "quotaFallback"), [base["helpers"]["text"]["primary"]], "expected-direct-selection"),
+            (("roleBlocks",), {}, "expected-list"),
+            (("roleBlocks", 0, "driverKind"), "other", "invalid-driver-kind"),
+            (("roleBlocks", 0, "role"), "manager", "invalid-role-block-role"),
+            (("roleBlocks", 0, "reason"), "", "invalid-string"),
+            (("roleBlocks",), base["roleBlocks"] * 2, "duplicate-role-block"),
+            (("riskFacts",), {}, "empty-object"), (("riskFacts",), [], "expected-object"),
+            (("riskFacts", "BAD"), {"description": "x"}, "invalid-fact-id"),
+            (("riskFacts", "shared-interface", "scope"), "STANDARD", "invalid-floor"),
+            (("riskFacts", "shared-interface", "criticality"), "NON_CRITICAL", "invalid-floor"),
+            (("riskFacts", "shared-interface", "floor"), "medium", "unknown-key"),
+            (("jev", "uncertainResult"), "manager-judgment", "unknown-key"),
+        ]
+        for key in ("master", "modelPreferences", "easyWorker", "textHelper", "roundTiers", "availabilityFallback"):
+            cases.append(((key,), {}, "unknown-key"))
+        for path, maximum, rule in ((("quota", "refusalRetryMinutes"), 1440, "invalid-refusal-retry-minutes"),
+                                    (("escalation", "repairAttempts"), 10, "invalid-repair-attempts"),
+                                    (("escalation", "correctionsRoundsPerFinding"), 10, "invalid-corrections-rounds-per-finding")):
+            for value in (0, maximum + 1, True, "30", 30.0):
+                cases.append((path, value, rule))
+            for value in (1, maximum):
+                data = copy.deepcopy(base)
+                data[path[0]][path[1]] = value
+                cfg.validate_config_data(data)
+        for key, values, rule in (
+            ("provider", ("other",), "invalid-jev-provider"),
+            ("minConfidence", (0, 1.1, True, "0.6"), "invalid-min-confidence"),
+            ("maxContextRetries", (-1, 2, True, 1.0), "invalid-max-context-retries"),
+            ("timeoutSeconds", (0, 121, True, 1.0), "invalid-timeout-seconds"),
+        ):
+            cases.extend((("jev", key), value, rule) for value in values)
+        cases += [(("jev", "keyFile", "path"), "relative", "expected-absolute-path"),
+                  (("providerPools",), {}, "empty-object"),
+                  (("providerPools", "agy-synth-pool", "selection"), "random", "invalid-pool-selection-mode"),
+                  (("providerPools", "agy-synth-pool", "providerInstanceIds"), [], "empty-list"),
+                  (("providerPools", "agy-synth-pool", "providerInstanceIds"), ["x", "x"], "duplicate-instance-id"),
+                  (("providerPools", "other"), base["providerPools"]["agy-synth-pool"], "duplicate-pool-member")]
+        for path, value, rule in cases:
+            with self.subTest(path=path, rule=rule):
+                data = copy.deepcopy(base)
+                target = data
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = copy.deepcopy(value)
+                with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                    cfg.validate_config_data(data)
+                expected_path = ".".join(str(k) for k in path).replace("roleBlocks.0", "roleBlocks[0]")
+                if rule == "disjoint-selection-keys":
+                    expected_path = expected_path.rsplit(".", 1)[0]
+                elif rule in ("fallback-equals-primary", "duplicate-fallback"):
+                    expected_path += "[0]" if rule == "fallback-equals-primary" else "[1]"
+                elif rule == "expected-direct-selection":
+                    expected_path += "[0].providerPool" if path[-1] == "quotaFallback" else ".providerPool"
+                elif rule == "duplicate-role-block":
+                    expected_path += "[1]"
+                elif rule == "invalid-option-key":
+                    pass
+                elif rule in ("duplicate-instance-id", "duplicate-pool-member"):
+                    expected_path += "[1]" if rule == "duplicate-instance-id" else ".providerInstanceIds[0]"
+                self.assertIn({"path": expected_path, "rule": rule}, [dict(e) for e in ctx.exception.errors])
+        for path in (("manager",), ("helpers", "text"), ("matrix", "feature-lead", "default", "1"), cell):
+            data = copy.deepcopy(base)
+            target = data
+            for key in path:
+                target = target[key]
+            target["prePass"] = []  # Only the placement error, without selection errors.
+            self.assertEqual(self.assert_invalid(data, ".".join(path) + ".prePass", "pre-pass-outside-reviewer-cell").to_payload()["errors"],
+                             [{"path": ".".join(path) + ".prePass", "rule": "pre-pass-outside-reviewer-cell"}])
+        for lane in ("core", "non-critical"):
+            for stage in ("1", "3"):
+                data = copy.deepcopy(base)
+                data["matrix"]["reviewer"][lane][stage]["prePass"] = base["manager"]["primary"]
+                cfg.validate_config_data(data)
+        data = copy.deepcopy(base)
+        high = data["matrix"]["worker"]["backend-logic"]["2"]["quotaFallback"][0]
+        xhigh = copy.deepcopy(high)
+        xhigh["options"]["effort"] = "xhigh"
+        data["matrix"]["worker"]["backend-logic"]["2"]["quotaFallback"] = [high, xhigh]
+        cfg.validate_config_data(data)
+
+    def test_matrix_cli(self):
+        base, cfg = _matrix_config_dict(), _cfg()
+        self.write_json(self.state_path, _valid_state_dict())
+        example = ROOT / "docs/examples/agent-routing.v3.example.json"
+        def invoke(path):
+            proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), "config", "check", "--config", str(path)), text=True, capture_output=True)
+            self.assertEqual(proc.stderr, "")
+            return proc.returncode, json.loads(proc.stdout)
+        code, output = invoke(example)
+        self.assertEqual(code, 0)
+        self.assertEqual(output, {"version": 3, "digest": "sha256:" + hashlib.sha256(example.read_bytes()).hexdigest(),
+            "stateDigest": "sha256:" + hashlib.sha256(self.state_path.read_bytes()).hexdigest(),
+            "policyDigest": cfg.load_matrix_config(example).policy_digest, "ruleVersion": base["classification"]["ruleVersion"],
+            "riskFacts": {k: {key: val for key, val in v.items() if key != "description"} for k, v in base["riskFacts"].items()}, "notices": []})
+        for path, value, error_path, rule in (
+            (("manager", "quotaFallback"), [base["helpers"]["search"]["primary"]] * 2, "manager.quotaFallback[1]", "duplicate-fallback"),
+            (("manager", "prePass"), base["manager"]["primary"], "manager.prePass", "pre-pass-outside-reviewer-cell"),
+            (("matrix", "worker", "backend-logic", "2"), None, "matrix.worker.backend-logic.2", "missing-key"),
+            (("riskFacts", "shared-interface", "criticality"), "OTHER", "riskFacts.shared-interface.criticality", "invalid-floor"),
+            (("roleBlocks", 0, "role"), "other", "roleBlocks[0].role", "invalid-role-block-role"),
+            (("quota", "refusalRetryMinutes"), 1441, "quota.refusalRetryMinutes", "invalid-refusal-retry-minutes"),
+        ):
+            data, target = copy.deepcopy(base), None
+            target = data
+            for key in path[:-1]:
+                target = target[key]
+            if value is None:
+                del target[path[-1]]
+            else:
+                target[path[-1]] = value
+            self.write_json(self.config_path, data)
+            code, output = invoke(self.config_path)
+            self.assertEqual((code, output), (3, {"valid": False, "errors": [{"path": error_path, "rule": rule}]}))

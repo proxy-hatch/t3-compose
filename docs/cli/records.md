@@ -77,7 +77,7 @@ termination and filesystem ownership/lock facts, then rerun repair; never infer
 death from silence or permission failure. Partial creation requires manual
 artifact reconciliation, not a second `work new` over the same reservation.
 
-All 21 event kinds now undergo schema and history validation on append and load.
+All 22 event kinds now undergo schema and history validation on append and load.
 The [store contract](../records.md) defines checkpoint, transfer and CD-4 evidence
 requirements. RC-1 dependents and Stage 2 remain gated until RC-1c merges after
 lead review. No live or EV-1 Task verification decision is made here.

@@ -29,6 +29,17 @@ JEV_KEYS = ("provider", "model", "minConfidence", "maxContextRetries", "uncertai
 FALLBACK_KEYS = ("roles", "manager", "chains", "recordReason", "reportReason")
 FACT_ID_RE = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
 
+MATRIX_LANES = MappingProxyType({
+    "feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend"),
+    "reviewer": ("non-critical", "core"),
+})
+MATRIX_STAGES = ("1", "2", "3")
+HELPER_NAMES = ("verifier", "search", "text")
+ROLE_BLOCK_ROLES = ("feature-lead", "worker", "reviewer", "verifier", "search", "text")
+DRIVER_KINDS = ("claudeAgent", "codex", "antigravity", "pi")
+MATRIX_CONFIG_KEYS = ("version", "manager", "matrix", "helpers", "providerPools", "roleBlocks",
+                      "quota", "classification", "riskFacts", "escalation", "jev")
+
 
 @dataclass(frozen=True)
 class LoadedConfig:
@@ -228,22 +239,7 @@ def _selection_summary(obj):
     return {key: obj[key], "model": obj["model"], "options": thaw_value(obj["options"])}
 
 
-def validate_config_data(raw):
-    errors = []
-    if not isinstance(raw, dict):
-        raise ConfigValidationError([{"path": "$", "rule": "expected-object"}])
-    version = raw.get("version")
-    if _int_not_bool(version) and version == 1:
-        missing = _collect_missing_v2_sections(raw)
-        errors.append({"path": "version", "rule": "unsupported-version-1", "missingSections": list(missing)})
-        errors.extend({"path": s, "rule": "missing-version-2-section"} for s in VERSION_2_NEW_SECTIONS if s not in raw)
-        errors.extend({"path": k, "rule": "unknown-key"} for k in sorted(raw) if k not in TOP_LEVEL_CONFIG_KEYS)
-        raise ConfigValidationError(errors, missing_sections=missing)
-
-    _check_keys(raw, "$", TOP_LEVEL_CONFIG_KEYS, (), errors)
-    if not _int_not_bool(version) or version != 2:
-        _err(errors, "version", "invalid-version")
-
+def _validate_pools(raw, errors):
     pools, pool_members = {}, set()
     if "providerPools" in raw:
         raw_pools = raw["providerPools"]
@@ -273,6 +269,50 @@ def validate_config_data(raw):
                                 pool_members.add(inst)
                                 valid_ids.append(inst)
                         pools[p_name] = valid_ids
+    return pools, pool_members
+
+
+def _validate_jev(raw, keys, errors):
+    if "jev" in raw and _check_keys(raw["jev"], "jev", keys, (), errors):
+        raw_jev = raw["jev"]
+        if "provider" in raw_jev and raw_jev["provider"] != "openrouter":
+            _err(errors, "jev.provider", "invalid-jev-provider")
+        _check_str_field(raw_jev, "model", "jev", errors)
+        if "minConfidence" in raw_jev and (not _num_not_bool(raw_jev["minConfidence"]) or not (0 < raw_jev["minConfidence"] <= 1)):
+            _err(errors, "jev.minConfidence", "invalid-min-confidence")
+        if "maxContextRetries" in raw_jev and (not _int_not_bool(raw_jev["maxContextRetries"]) or raw_jev["maxContextRetries"] not in (0, 1)):
+            _err(errors, "jev.maxContextRetries", "invalid-max-context-retries")
+        if "uncertainResult" in keys and "uncertainResult" in raw_jev and raw_jev["uncertainResult"] != "manager-judgment":
+            _err(errors, "jev.uncertainResult", "invalid-uncertain-result")
+        if "timeoutSeconds" in raw_jev and (not _int_not_bool(raw_jev["timeoutSeconds"]) or not (1 <= raw_jev["timeoutSeconds"] <= 120)):
+            _err(errors, "jev.timeoutSeconds", "invalid-timeout-seconds")
+        if "keyFile" in raw_jev and _check_keys(raw_jev["keyFile"], "jev.keyFile", ("path", "field"), (), errors):
+            kf = raw_jev["keyFile"]
+            if "path" in kf and (not _nonempty_str(kf["path"]) or not kf["path"].startswith("/")):
+                _err(errors, "jev.keyFile.path", "expected-absolute-path")
+            _check_str_field(kf, "field", "jev.keyFile", errors)
+
+
+def validate_config_data(raw):
+    errors = []
+    if not isinstance(raw, dict):
+        raise ConfigValidationError([{"path": "$", "rule": "expected-object"}])
+    version = raw.get("version")
+    if _int_not_bool(version) and version == 1:
+        missing = _collect_missing_v2_sections(raw)
+        errors.append({"path": "version", "rule": "unsupported-version-1", "missingSections": list(missing)})
+        errors.extend({"path": s, "rule": "missing-version-2-section"} for s in VERSION_2_NEW_SECTIONS if s not in raw)
+        errors.extend({"path": k, "rule": "unknown-key"} for k in sorted(raw) if k not in TOP_LEVEL_CONFIG_KEYS)
+        raise ConfigValidationError(errors, missing_sections=missing)
+
+    if _int_not_bool(version) and version == 3:
+        return _validate_matrix_config(raw)
+
+    _check_keys(raw, "$", TOP_LEVEL_CONFIG_KEYS, (), errors)
+    if not _int_not_bool(version) or version != 2:
+        _err(errors, "version", "invalid-version")
+
+    pools, pool_members = _validate_pools(raw, errors)
 
     allowed_roles = set(FALLBACK_ROLES)
     raw_fb = raw.get("availabilityFallback")
@@ -334,24 +374,7 @@ def validate_config_data(raw):
             if rk in raw_rt and raw_rt[rk] not in ("medium", "challenging"):
                 _err(errors, f"roundTiers.{rk}", "invalid-reviewer-tier")
 
-    if "jev" in raw and _check_keys(raw["jev"], "jev", JEV_KEYS, (), errors):
-        raw_jev = raw["jev"]
-        if "provider" in raw_jev and raw_jev["provider"] != "openrouter":
-            _err(errors, "jev.provider", "invalid-jev-provider")
-        _check_str_field(raw_jev, "model", "jev", errors)
-        if "minConfidence" in raw_jev and (not _num_not_bool(raw_jev["minConfidence"]) or not (0 < raw_jev["minConfidence"] <= 1)):
-            _err(errors, "jev.minConfidence", "invalid-min-confidence")
-        if "maxContextRetries" in raw_jev and (not _int_not_bool(raw_jev["maxContextRetries"]) or raw_jev["maxContextRetries"] not in (0, 1)):
-            _err(errors, "jev.maxContextRetries", "invalid-max-context-retries")
-        if "uncertainResult" in raw_jev and raw_jev["uncertainResult"] != "manager-judgment":
-            _err(errors, "jev.uncertainResult", "invalid-uncertain-result")
-        if "timeoutSeconds" in raw_jev and (not _int_not_bool(raw_jev["timeoutSeconds"]) or not (1 <= raw_jev["timeoutSeconds"] <= 120)):
-            _err(errors, "jev.timeoutSeconds", "invalid-timeout-seconds")
-        if "keyFile" in raw_jev and _check_keys(raw_jev["keyFile"], "jev.keyFile", ("path", "field"), (), errors):
-            kf = raw_jev["keyFile"]
-            if "path" in kf and (not _nonempty_str(kf["path"]) or not kf["path"].startswith("/")):
-                _err(errors, "jev.keyFile.path", "expected-absolute-path")
-            _check_str_field(kf, "field", "jev.keyFile", errors)
+    _validate_jev(raw, JEV_KEYS, errors)
 
     notices = []
     if isinstance(raw_fb, dict) and "chains" in raw_fb:
@@ -398,13 +421,151 @@ def validate_config_data(raw):
     return freeze_value(raw), tuple(freeze_value(n) for n in notices)
 
 
+def _validate_matrix_selection(obj, path, pools, members, errors, direct=False):
+    before = len(errors)
+    if not _check_keys(obj, path, ("model", "options"), ("providerInstanceId", "providerPool"), errors):
+        return None
+    has_direct, has_pool = "providerInstanceId" in obj, "providerPool" in obj
+    if has_direct == has_pool:
+        _err(errors, path, "disjoint-selection-keys" if has_direct else "missing-selection-target")
+    _check_str_field(obj, "model", path, errors)
+    if "options" in obj:
+        _validate_options(obj["options"], f"{path}.options", errors)
+    if has_pool:
+        name = obj["providerPool"]
+        if not _nonempty_str(name):
+            _err(errors, f"{path}.providerPool", "invalid-string")
+        elif name not in pools:
+            _err(errors, f"{path}.providerPool", "unknown-provider-pool")
+        if direct:
+            _err(errors, f"{path}.providerPool", "expected-direct-selection")
+        if "options" in obj and obj["options"] != {}:
+            _err(errors, f"{path}.options", "pool-options-must-be-empty")
+    if has_direct:
+        name = obj["providerInstanceId"]
+        if not _nonempty_str(name):
+            _err(errors, f"{path}.providerInstanceId", "invalid-string")
+        elif name in members:
+            _err(errors, f"{path}.providerInstanceId", "direct-selection-names-pool-member")
+    if len(errors) == before:
+        return ("direct" if has_direct else "pool", name, obj["model"], canonical_json(obj["options"]))
+    return None
+
+
+def _validate_cell(obj, path, pools, members, errors, *, reviewer=False, direct=False):
+    if not _check_keys(obj, path, ("primary", "quotaFallback"), ("prePass",), errors):
+        return
+    primary = None
+    if "primary" in obj:
+        primary = _validate_matrix_selection(obj["primary"], f"{path}.primary", pools, members, errors, direct)
+    if "quotaFallback" in obj:
+        fallbacks = obj["quotaFallback"]
+        if not isinstance(fallbacks, list):
+            _err(errors, f"{path}.quotaFallback", "expected-list")
+        else:
+            seen = set()
+            for i, sel in enumerate(fallbacks):
+                fp = f"{path}.quotaFallback[{i}]"
+                identity = _validate_matrix_selection(sel, fp, pools, members, errors, direct)
+                if identity is not None:
+                    if identity == primary:
+                        _err(errors, fp, "fallback-equals-primary")
+                    if identity in seen:
+                        _err(errors, fp, "duplicate-fallback")
+                    seen.add(identity)
+    if "prePass" in obj:
+        if reviewer:
+            _validate_matrix_selection(obj["prePass"], f"{path}.prePass", pools, members, errors)
+        else:
+            _err(errors, f"{path}.prePass", "pre-pass-outside-reviewer-cell")
+
+
+def _validate_matrix_config(raw):
+    errors = []
+    _check_keys(raw, "$", MATRIX_CONFIG_KEYS, (), errors)
+    pools, members = _validate_pools(raw, errors)
+    if "manager" in raw:
+        _validate_cell(raw["manager"], "manager", pools, members, errors, direct=True)
+    if "matrix" in raw and _check_keys(raw["matrix"], "matrix", MATRIX_LANES, (), errors):
+        for role, lanes in MATRIX_LANES.items():
+            rp = f"matrix.{role}"
+            if role in raw["matrix"] and _check_keys(raw["matrix"][role], rp, lanes, (), errors):
+                for lane in lanes:
+                    lp = f"{rp}.{lane}"
+                    lane_obj = raw["matrix"][role].get(lane)
+                    if lane in raw["matrix"][role] and _check_keys(lane_obj, lp, MATRIX_STAGES, (), errors):
+                        for stage in MATRIX_STAGES:
+                            if stage in lane_obj:
+                                _validate_cell(lane_obj[stage], f"{lp}.{stage}", pools, members, errors, reviewer=role == "reviewer")
+    if "helpers" in raw and _check_keys(raw["helpers"], "helpers", HELPER_NAMES, (), errors):
+        for name in HELPER_NAMES:
+            if name in raw["helpers"]:
+                _validate_cell(raw["helpers"][name], f"helpers.{name}", pools, members, errors)
+    if "roleBlocks" in raw:
+        blocks, seen = raw["roleBlocks"], set()
+        if not isinstance(blocks, list):
+            _err(errors, "roleBlocks", "expected-list")
+        else:
+            for i, block in enumerate(blocks):
+                bp = f"roleBlocks[{i}]"
+                if _check_keys(block, bp, ("driverKind", "role", "reason", "evidence"), (), errors):
+                    for k in ("driverKind", "role", "reason", "evidence"):
+                        _check_str_field(block, k, bp, errors)
+                    for k, allowed, rule in (("driverKind", DRIVER_KINDS, "invalid-driver-kind"),
+                                              ("role", ROLE_BLOCK_ROLES, "invalid-role-block-role")):
+                        if k in block and block[k] not in allowed:
+                            _err(errors, f"{bp}.{k}", rule)
+                    pair = (block.get("driverKind"), block.get("role"))
+                    if all(_nonempty_str(v) for v in pair):
+                        if pair in seen:
+                            _err(errors, bp, "duplicate-role-block")
+                        seen.add(pair)
+    for section, fields in (("quota", (("refusalRetryMinutes", 1440, "invalid-refusal-retry-minutes"),)),
+                             ("escalation", (("repairAttempts", 10, "invalid-repair-attempts"),
+                                             ("correctionsRoundsPerFinding", 10, "invalid-corrections-rounds-per-finding")))):
+        if section in raw and _check_keys(raw[section], section, tuple(k for k, _, _ in fields), (), errors):
+            for k, maximum, rule in fields:
+                if k in raw[section] and (not _int_not_bool(raw[section][k]) or not 1 <= raw[section][k] <= maximum):
+                    _err(errors, f"{section}.{k}", rule)
+    questions = {"lane": ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"), "criticality": ("CORE", "NON_CRITICAL"),
+                 "scope": ("STANDARD", "COMPLEX", "INSUFFICIENT_CONTEXT")}
+    if "classification" in raw and _check_keys(raw["classification"], "classification", ("ruleVersion", *questions), (), errors):
+        cls = raw["classification"]
+        _check_str_field(cls, "ruleVersion", "classification", errors)
+        for name, criteria in questions.items():
+            qp = f"classification.{name}"
+            if name in cls and _check_keys(cls[name], qp, ("instructions", "criteria"), (), errors):
+                _check_str_field(cls[name], "instructions", qp, errors)
+                if "criteria" in cls[name] and _check_keys(cls[name]["criteria"], f"{qp}.criteria", criteria, (), errors):
+                    for key in criteria:
+                        _check_str_field(cls[name]["criteria"], key, f"{qp}.criteria", errors)
+    if "riskFacts" in raw:
+        facts = raw["riskFacts"]
+        if not isinstance(facts, dict) or not facts:
+            _err(errors, "riskFacts", "expected-object" if not isinstance(facts, dict) else "empty-object")
+        else:
+            for fid, fact in sorted(facts.items()):
+                fp = f"riskFacts.{fid}"
+                if not isinstance(fid, str) or not FACT_ID_RE.fullmatch(fid):
+                    _err(errors, fp, "invalid-fact-id")
+                if _check_keys(fact, fp, ("description",), ("scope", "criticality"), errors):
+                    _check_str_field(fact, "description", fp, errors)
+                    for key, expected in (("scope", "COMPLEX"), ("criticality", "CORE")):
+                        if key in fact and fact[key] != expected:
+                            _err(errors, f"{fp}.{key}", "invalid-floor")
+    _validate_jev(raw, tuple(k for k in JEV_KEYS if k != "uncertainResult"), errors)
+    if errors:
+        raise ConfigValidationError(errors)
+    return freeze_value(raw), ()
+
+
 def routing_policy_projection(config_data):
     """Project exact config fields that govern classification and risk-floor freshness."""
     jev = config_data["jev"]
     return {
         "classification": thaw_value(config_data["classification"]),
         "riskFacts": thaw_value(config_data["riskFacts"]),
-        "jev": {k: jev[k] for k in ("provider", "model", "minConfidence", "maxContextRetries", "uncertainResult")},
+        "jev": {k: jev[k] for k in ("provider", "model", "minConfidence", "maxContextRetries", *(() if config_data["version"] == 3 else ("uncertainResult",)))},
     }
 
 
@@ -462,12 +623,27 @@ def _read_bounded_json(path, label):
         raise ConfigValidationError([{"path": label, "rule": "size-limit-exceeded" if "limit exceeded" in str(exc) else "invalid-json"}]) from None
 
 
-def load_config(path=None, *, local=None):
-    """Read, validate, and return deeply read-only routing config and digests without caching."""
+def _load_config(path=None, *, local=None, expected_version=None):
     target = Path(path) if path is not None else (Path(local) if local is not None else local_dir()) / DEFAULT_CONFIG_NAME
     raw, digest = _read_bounded_json(target, "config")
+    if expected_version == 3 and not isinstance(raw, dict):
+        raise ConfigValidationError([{"path": "$", "rule": "expected-object"}])
+    version = raw.get("version") if isinstance(raw, dict) else None
+    if ((expected_version == 2 and _int_not_bool(version) and version == 3) or
+            (expected_version == 3 and (not _int_not_bool(version) or version != 3))):
+        raise ConfigValidationError([{"path": "version", "rule": f"expected-version-{expected_version}"}])
     frozen, notices = validate_config_data(raw)
     return LoadedConfig(data=frozen, digest=digest, policy_digest=compute_policy_digest(frozen), notices=notices)
+
+
+def load_config(path=None, *, local=None):
+    """Load version-2 config without caching; refuse version 3 before validation."""
+    return _load_config(path, local=local, expected_version=2)
+
+
+def load_matrix_config(path=None, *, local=None) -> LoadedConfig:
+    """Load version-3 config in one bounded read, without caching or opening keys."""
+    return _load_config(path, local=local, expected_version=3)
 
 
 def load_quota_state(path=None, *, local=None, config=None):
@@ -488,7 +664,7 @@ def check_config_command(args):
     state_path = Path(args.state) if args.state is not None else args.local_dir / DEFAULT_STATE_NAME
     errors, missing_sections, loaded_cfg, loaded_state = [], (), None, None
     try:
-        loaded_cfg = load_config(config_path)
+        loaded_cfg = _load_config(config_path)
     except ConfigValidationError as exc:
         errors.extend(thaw_value(e) for e in exc.errors)
         missing_sections = exc.missing_sections
@@ -501,6 +677,15 @@ def check_config_command(args):
         if missing_sections:
             payload["missingSections"] = list(missing_sections)
         return Outcome(payload, ExitCode.INVALID_CONFIG)
+    if loaded_cfg.data["version"] == 3:
+        return {
+            "version": 3, "digest": loaded_cfg.digest, "policyDigest": loaded_cfg.policy_digest,
+            "stateDigest": loaded_state.digest,
+            "ruleVersion": loaded_cfg.data["classification"]["ruleVersion"],
+            "riskFacts": {fid: {k: info[k] for k in ("scope", "criticality") if k in info}
+                          for fid, info in loaded_cfg.data["riskFacts"].items()},
+            "notices": [],
+        }
     return {
         "digest": loaded_cfg.digest, "policyDigest": loaded_cfg.policy_digest,
         "stateDigest": loaded_state.digest,
