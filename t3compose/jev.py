@@ -148,23 +148,14 @@ def _retry(events, task, context, policy, maximum, decline=False):
                             "reason": "identical input already classified/decided; reuse its evidence"},
                            cli.ExitCode.JUDGMENT_NEEDED)
 
-    if context is not None:
-        allowed = (len(inputs) == 1 and maximum >= 1 and not decided and
-                   prior["data"]["outcome"] == "retry-with-context" and
-                   context.get("priorClassificationRef") == prior["seq"] and
-                   _information({k: v for k, v in context.items() if k != "priorClassificationRef"}))
-        if allowed:
-            return True
-        reason = ("identical input already classified/decided; reuse its evidence" if decided
-                  else "retry refused; use eligible context once or rerun with --decline-retry")
-        return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
-                            "reason": reason},
-                           cli.ExitCode.JUDGMENT_NEEDED)
-
+    if (context is not None and len(inputs) == 1 and maximum >= 1 and not decided and
+            prior["data"]["outcome"] == "retry-with-context" and
+            context.get("priorClassificationRef") == prior["seq"] and
+            _information({k: v for k, v in context.items() if k != "priorClassificationRef"})):
+        return True
     reason = ("identical input already classified/decided; reuse its evidence" if decided
               else "retry refused; use eligible context once or rerun with --decline-retry")
-    return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
-                        "reason": reason},
+    return cli.Outcome({**prior["data"], "classificationRef": prior["seq"], "reason": reason},
                        cli.ExitCode.JUDGMENT_NEEDED)
 
 

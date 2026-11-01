@@ -529,6 +529,74 @@ class OfflineJev(OfflineTestCase):
         code, _, calls, _ = self.invoke(context={"priorClassificationRef": 1, "details": "info"})
         self.assertEqual((code, calls), (2, []))
 
+    def test_zero_context_retries_default_at_once(self):
+        self.cfg["jev"]["maxContextRetries"] = 0
+        self.save_config()
+        low = response(crit_conf=0.3)
+        code, data, calls, err = self.invoke(low)
+        self.assertEqual((code, err, len(calls)), (0, "", 1))
+        self.assertEqual(data["outcome"], "defaulted")
+        self.assertEqual(data["reason"], "uncertain answers; applied fixed defaults")
+        self.assertEqual(data["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(data["judgment"]["defaulted"], ["criticality"])
+        kinds = ["routing-input", "routing-classification", "routing-judgment"]
+        self.assertEqual([e["kind"] for e in self.events()], kinds)
+        # No retry exists to use or decline: every later attempt is refused without a call.
+        context = {"priorClassificationRef": data["classificationRef"], "details": "More detail"}
+        for kwargs in ({}, {"decline": True}, {"context": context}):
+            with self.subTest(attempt=sorted(kwargs)):
+                code, refused, calls, _ = self.invoke(**kwargs)
+                self.assertEqual((code, calls), (4, []))
+                self.assertIn("reuse its evidence", refused["reason"])
+        self.assertEqual([e["kind"] for e in self.events()], kinds)
+        # The decline flag on a fresh request is harmless when no retry would be offered.
+        self.new_work()
+        code, declined, calls, _ = self.invoke(low, decline=True)
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(declined["judgment"]["basis"], "default-low-confidence")
+        self.assertEqual(declined["judgment"]["defaulted"], ["criticality"])
+
+    def test_ineligible_context_leaves_a_pending_retry_usable(self):
+        low = response(crit_conf=0.3)
+        code, first, calls, _ = self.invoke(low)
+        self.assertEqual((code, len(calls)), (4, 1))
+        pending = [e["kind"] for e in self.events()]
+        ref = first["classificationRef"]
+        for context in ({"priorClassificationRef": ref + 1, "details": "wrong reference"},
+                        {"priorClassificationRef": ref},
+                        {"priorClassificationRef": ref, "details": "  "},
+                        {"details": "no reference"}):
+            with self.subTest(context=context):
+                code, refused, calls, _ = self.invoke(context=context)
+                self.assertEqual((code, calls), (4, []))
+                self.assertEqual(refused["outcome"], "retry-with-context")
+                self.assertIn("--decline-retry", refused["reason"])
+                self.assertEqual([e["kind"] for e in self.events()], pending)
+        # The refusals spent nothing: the eligible retry still works, once.
+        context = {"priorClassificationRef": ref, "details": "Eligible detail"}
+        code, second, calls, _ = self.invoke(low, context=context)
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(second["outcome"], "defaulted")
+        code, refused, calls, _ = self.invoke(low, context=context)
+        self.assertEqual((code, calls), (4, []))
+        self.assertIn("reuse its evidence", refused["reason"])
+
+    def test_jev_failure_on_the_context_retry_defaults_every_answer(self):
+        code, first, calls, _ = self.invoke(response(crit_conf=0.3))
+        self.assertEqual((code, len(calls)), (4, 1))
+        context = {"priorClassificationRef": first["classificationRef"], "details": "More detail"}
+        code, second, calls, _ = self.invoke(context=context, fault=URLError(KEY))
+        self.assertEqual((code, len(calls)), (0, 1))
+        self.assertEqual(second["outcome"], "defaulted")
+        self.assertEqual(second["answers"], {"unknown": "invalid Jev response"})
+        self.assertEqual(second["judgment"]["basis"], "default-jev-failure")
+        self.assertEqual(second["judgment"]["defaulted"], ["lane", "criticality", "scope"])
+        self.assertEqual([e["kind"] for e in self.events()],
+                         ["routing-input", "routing-classification", "routing-input",
+                          "routing-classification", "routing-judgment"])
+        code, refused, calls, _ = self.invoke(context=context)
+        self.assertEqual((code, calls), (4, []))
+
     def test_transport_and_parse_failures_record_judgment(self):
         faults = [TimeoutError(KEY), URLError(KEY)]
         faults += [HTTPError("https://synthetic.invalid", n, KEY, {}, io.BytesIO(KEY.encode()))
@@ -627,8 +695,8 @@ class OfflineJev(OfflineTestCase):
     def test_transport_cleanup_failure_never_exposes_exception_text(self):
         jev = importlib.import_module("t3compose.jev")
         stream = io.BytesIO()
+        error = HTTPError("https://synthetic.invalid", 401, KEY, {}, stream)
         try:
-            error = HTTPError("https://synthetic.invalid", 401, KEY, {}, stream)
             error.close = Mock(side_effect=RuntimeError(KEY))
             opener = Mock()
             opener.open.side_effect = error
@@ -637,6 +705,8 @@ class OfflineJev(OfflineTestCase):
                     jev.open_http(Mock(), timeout=1)
             self.assertNotIn(KEY, str(caught.exception) + repr(caught.exception))
         finally:
+            vars(error).pop("close", None)  # Really close it: an unclosed one warns when collected.
+            error.close()
             stream.close()
 
     def test_opener_tls_redirects_and_safe_exception_text(self):

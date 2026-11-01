@@ -111,9 +111,11 @@ beyond the reference; the helper cannot judge its semantic relevance.
 With `maxContextRetries: 1`, only one such retry is allowed. With zero, no
 retry is offered and defaults apply at once. Every persisted matching input
 consumes an attempt, even when its classification is missing; incomplete history
-requires reconciliation. Changing only context, omitting it, or pointing to an
-older result cannot restart the budget. A context without matching history is
-invalid (exit 2).
+requires reconciliation. A classification whose judgment append failed (exit 2) is
+also incomplete history: a re-run is refused (exit 4) and does not write the
+judgment, so the manager records the decision with `t3c route judge`. Changing
+only context, omitting it, or pointing to an older result cannot restart the
+budget. A context without matching history is invalid (exit 2).
 
 ### Declining the retry
 
@@ -153,7 +155,7 @@ invalid or matching list blocks the request. Matches report only list line numbe
 The config is loaded once per invocation via `load_matrix_config(local=local)`
 (a version-2 config exits 3). The input is persisted before HTTP,
 then the classification references it and the policy actually used. A policy
-edit during HTTP makes that record stale for RT-1 selection, which must check
+edit during HTTP makes that record stale for route selection, which must check
 the current policy; no cached config or new digest substitutes for the old one.
 
 ## EM-only L2b check
