@@ -4,7 +4,10 @@ Status: design decisions approved by Shawn on 2026-10-27. This revision, made on
 2026-10-28, records Shawn's [re-home](#decisions-accepted-at-the-re-home),
 [publication](#decisions-on-t3-compose-publication) and
 [implementation-plan](#decisions-on-the-implementation-plan) decisions, and the
-[findings](#findings). It takes effect when its pull request merges. No
+[findings](#findings). The revision made on 2026-11-01 records Shawn's model
+routing matrix decision ([decision 20](#decisions-on-the-implementation-plan));
+the public matrix is [docs/routing-matrix.md](../../routing-matrix.md). It
+takes effect when its pull request merges. No
 decisions remain [open](#open-decisions).
 Implementation and live validation are pending.
 
@@ -19,12 +22,14 @@ quality of the existing Claude-managed work while assigning bounded implementati
 to cheaper Workers. These goals and the quality criterion are owner requirements.
 
 Quality is evaluated against the applicable repository rules, approved designs,
-required checks, review of the final commit (by the assigned Feature lead when a
+required checks, review of the final commit (for a core Task by the review of
+record at the Task's reviewer stage, with the lead checking its result and
+clearing the head; for a non-critical Task by the assigned Feature lead when a
 Task has one, or by a separate independent Reviewer when it does not; plan
-decision 13), and resolved review findings. A cheaper model never reduces those
-requirements. One successful pilot can demonstrate the workflow, but cannot
-establish general quality equivalence between models. The owner judges the pilot
-against the existing standard.
+decisions 13 and 20), and resolved review findings. A cheaper model never
+reduces those requirements. One successful pilot can demonstrate the
+workflow, but cannot establish general quality equivalence between models.
+The owner judges the pilot against the existing standard.
 
 ## Decision and alternatives
 
@@ -103,15 +108,26 @@ They commit on their branch only; an assigned Feature lead publishes its Task's
 own pull request, and the manager publishes for Tasks without a lead (see
 [Checks and publication](#checks-and-publication)).
 
-Reviewers are separate Claude or Codex agents. They assess specification
-compliance, repository standards, correctness and test adequacy against an exact
-base and head. They report findings without editing the reviewed tree. agy is
-never a Reviewer.
+Reviewers are independent agents selected by the routing matrix's reviewer
+rows — one row for non-critical reviews and one for core reviews, each with
+three stages and ordered quota fallbacks (see
+[Routing and personal configuration](#routing-and-personal-configuration) and
+[docs/routing-matrix.md](../../routing-matrix.md)). They assess specification
+compliance, repository standards, correctness and test adequacy against an
+exact base and head. They report findings without editing the reviewed tree.
+A stage-1 core review runs a pre-pass before the review of record; the
+pre-pass is never the review of record. (This replaces "agy is never a
+Reviewer": pool models may serve reviewer cells only where the matrix places
+them.)
 
 Include an optional feature-lead role in version one. When a Feature lead is
 assigned, it coordinates earlier independent reviews, runs or assigns required
-checks, personally reviews and clears the Task's final head (with no separate
-Reviewer dispatched for that final head), maintains current evidence and finding
+checks, clears the Task's final head (for a non-critical Task, the lead's own
+review is the final-head review, with no separate Reviewer dispatched for
+that final head, the 2026-10-28 decision; for a core Task, the review of
+record reviews the final head at the Task's reviewer stage, and the lead
+checks its result, records the evidence and clears the head, the 2026-11-01
+decision 20), maintains current evidence and finding
 dispositions, and publishes its Task's own pull request with the machine
 prerequisites and integration evidence in the pull request body (without
 authority to change other Tasks' pull requests; merge authority follows the
@@ -165,9 +181,13 @@ dispatches, local integration coordination, its Task's final-head review and
 verification, and publishing its Task's own pull request. When a feature lead is
 assigned, it must hold the original requirements, relevant designs and
 interfaces, the final diff, callers and tests, and the check and review evidence
-needed to personally review the final head. Under plan decision 13, when a Task
-has a feature lead, the lead's own review is the final-head review and no
-separate Reviewer reviews that head; reviews of earlier heads (Worker rounds and
+needed to review the final head. Under plan decisions 13 and 20, when a Task
+has a feature lead: for a non-critical Task, the lead's own review is the
+final-head review and no separate Reviewer reviews that head; for a core
+Task, the review of record reviews the final head at the Task's reviewer
+stage, and the lead checks its result, records the evidence and clears the
+head — decision 20 supersedes decision 13's rule for core Tasks. Reviews of
+earlier heads (Worker rounds and
 Corrections re-reviews) still use separate Reviewers, and Tasks without a
 feature lead still require a separate Reviewer on the final head. The lead runs
 or assigns required checks (including the repository's heavy required check),
@@ -192,9 +212,8 @@ introduces no new deployment authority, no automatic readiness rule, and no
 general merge authority beyond each repository's rules and plan decision 19's
 own-Task t3-compose lead grant. A feature lead delegates project edits and makes
 no implementation edits itself, so it cannot approve its own implementation when
-it reviews a Worker's final head. Its software-engineering coordination route
-uses the configured selection at the Task's tier, at least medium; challenging
-engineering decisions use the challenging tier.
+it reviews a Worker's final head. Its coordination route is the matrix's
+Feature lead cell at the Task's current stage.
 
 Only the parent that created a T3 child manages that child's task lifecycle. Thus
 the lead manages its Workers; the master manages the lead. A lead cannot manage a
@@ -216,97 +235,132 @@ creates a security boundary or that full-access agents cannot bypass its records
 ## Routing and personal configuration
 
 Use `.local/agent-routing.json` in the t3-compose root as the canonical personal
-routing config. This file and its adjacent policy and quota state are Git-ignored. The adjacent Markdown file explains operating rules and points to it.
-The config selects models and reasoning options for the medium and challenging
-tiers in each domain, the easy Worker pool and the text helper. These are
-preferences, not hard-coded behavior. The master remains Opus 5.5; only Shawn
-chooses a change to the Engineering manager's identity. Account identifiers and
+routing config, version 3. This file and its adjacent policy and quota state are
+Git-ignored. The adjacent private Markdown file explains operating rules and
+points to it. The exact instance, pool and account identifiers live in that
+config and in no tracked file; the public matrix is
+[docs/routing-matrix.md](../../routing-matrix.md). Account identifiers and
 observed quota state remain private. Package source contains no credentials.
 
 Load and validate the config before every dispatch. Valid changes apply to future
 dispatches without restarting the manager. Running children keep their recorded
 selection. Invalid configuration blocks new routing rather than silently keeping
 a cached value. Record the config digest with each selection so later changes do
-not obscure why a model was chosen. Personal configuration can change models,
-reasoning, account order and thresholds, but cannot waive repository requirements.
+not obscure why a model was chosen. Personal configuration selects cells,
+accounts, reasoning and thresholds from the matrix, but cannot waive repository
+requirements.
 
-The configurable routing rule includes classification criteria, task-risk floors
-and round tiers, not only model names. The current config captures model choices,
-the confidence threshold and the approved availability fallback chains.
-Implementation must add the classification criteria, task-risk floors and round
-tiers below.
-Code validates and applies those values; it must not hide changeable routing
-preferences in prompts or constants. Repository rules, including agy never
-Reviewer, remain separate constraints.
+The routing matrix's cells cover the Feature lead (the default lane), Workers
+(backend-logic and ui-frontend lanes) and Reviewers (non-critical and core),
+each with three stages. A cell names one primary and an ordered quota-fallback
+list, walked once on refusals; the list may be empty, holds no duplicates and
+never contains the primary. The stage-1 core reviewer cell adds a pre-pass that
+runs before the review of record. It has no fallback, is skipped when refused
+or unavailable, and is never the review of record. A skipped pre-pass writes
+no selection record, because a selection always names its chosen target. The
+public matrix holds the owner's table, the helpers and his rules; helper cells
+(the verifier and the text helper, plus an unused search entry that MX-3b
+removes) live in config as cells, not code constants. The version-3 config's
+Jev section keeps the version-2 keys except `uncertainResult`, because the
+per-answer default handling is fixed in code; a pre-pass may be configured only
+on a reviewer cell, and is refused everywhere else; a role block names one of
+the four supported driver kinds.
 
-The manager declares a Task's risk facts from a configured list. Each fact has a
-configured minimum tier, its floor, which is medium or challenging; there is no
-easy floor. The first-round Worker tier is the higher of the difficulty, from
-Jev or recorded manager judgment, and every applicable floor. Easy first-round
-work goes to agy only when no floor applies. A floor counts what a Task changes.
-The first implementation of code that handles credentials or enforces a
-guardrail, and recovery or concurrency invariants, is challenging. Shared
-interface changes are medium. Documents are medium; technical documentation of
-a software project counts as software engineering. Exact-text mechanical edits
-can use the easy tier. These are the initial values from
-[plan decision 1](#decisions-on-the-implementation-plan), dated 2026-10-27.
+Lanes and stages: Jev's `MIXED` lane answer maps to backend-logic. A Task's
+starting stage is 1 for standard scope and 2 for complex scope, and applies to
+the lead, the Workers and the Reviewers; every new round (first, Corrections,
+re-review) starts at the starting stage. Escalation is vertical and per issue.
+After two failed repairs, the next-stage Worker continues the work. When the
+same finding is still unresolved after two Corrections rounds, the next
+Corrections round uses the next stage. When a Worker disputes a finding and
+the reviewer raises it again, a reviewer at the next stage decides. After a
+reviewer fails twice for a reason other than quota, such as no verdict or
+malformed output, the next stage takes the review. When a second issue of a
+Task needs stage 3, or a merge or post-merge verification fails twice, the
+manager replaces the lead at the next stage, and the replacement resumes from
+the Task log and records. When stage 3 fails, the item goes to the manager and
+then to the owner. Each escalation is recorded. Environment blocks, quota
+refusals and spec questions are not escalations.
 
-Corrections rounds with enumerated findings use the easy tier, even when a
-floor set the first round's tier. A brief that adds unresolved work is split or
-classified afresh. Repeated correctness failures escalate to a medium-tier
-Worker. Document reviews and scoped Corrections re-reviews use the medium tier.
-First reviews of challenging code follow the Task's tier, including escalations;
-other first reviews are at least medium. agy is never a Reviewer. The config's
-`roundTiers` values set the Corrections, scoped re-review and document-review
-tiers; plan decisions 5 and 6 supply their initial values. Risk facts, floors
-and domain criteria are also config values, not constants.
+Classification: Jev answers lane, criticality and scope; the minimum confidence
+is 0.6; an uncertain answer allows one retry with more context. A
+still-uncertain answer takes its fixed default — scope `COMPLEX`,
+criticality `CORE`, lane `BACKEND_LOGIC` — while a confident answer is
+kept. The judgment records which answers took their default. A Jev API
+error or a malformed answer applies the same defaults, recorded with the
+error. A lead may record its own judgment with a reason, in either direction.
+Risk floors are deterministic, applied after Jev, and only raise; a floor counts
+what a Task changes, not what it mentions: the first implementation of code
+that handles credentials or enforces a guardrail, and recovery or concurrency
+invariants, make the scope `COMPLEX` and the criticality `CORE`; shared interface
+changes make the criticality `CORE`; a document change has no effect. These are
+plan decision 1's floors, dated 2026-10-27; decision 20 maps them to scope and
+criticality. The question wording, floors and criteria are config values, not
+constants. Work outside software engineering is not routed by `t3c`; the
+manager handles it by hand. Technical documentation of a software project
+counts as software engineering.
 
-The manager resolves each selection against T3's live catalog. A model is
-available only when the catalog lists it and its provider reports
-`canRunChildTask: true`. A failed provider status check counts as unavailable.
-A listed model does not prove remaining quota. Persist a dispatch's selection
-and reason so the owner can see why cheap work was escalated.
+Reactive failover: always dispatch the primary; never estimate or pre-check
+quota. Classify a failed child by its own response. A quota refusal — a usage
+limit, an exhausted quota, a credits error, or a rate limit whose retry time is
+over 5 minutes or missing — is recorded and the next target is dispatched at
+once. A transient error — a rate limit of 5 minutes or less, "at capacity", or
+a 5xx — is retried once on the same target after the stated wait, 1 minute when
+none is stated, and never recorded as quota. An environment block makes the
+target unavailable for this dispatch; it is not quota. A failure inside the
+work is not a failover; it follows the escalation protocol. Refusal memory
+lasts 30 minutes, keyed by provider instance and model, or by pool account and
+model; every dispatcher skips a remembered key until 30 minutes after the
+refusal was observed. A reported reset time is recorded but never used for
+skipping, because it can be wrong.
 
-Resolve a pool selection from the active account in pool order, wrapping around.
-Skip an account that does not offer the requested model and options; record
-"model not offered". This is not quota evidence and does not change the active
-account. Skip confirmed exhausted accounts until their reset time passes or
-availability evidence clears them. Quota observations apply per account to all
-its pool models, not per model. Select the first eligible offering account;
-never select an unavailable account. The active account missing from the catalog,
-reporting `canRunChildTask: false`, or failing its status check stops with exit 4,
-without rotation. This rule applies before walking the pool. `easyWorker` uses
-the same model-aware walk. Record the chosen account and every skipped account
-with its reason in the private routing-selection record. Walking accounts is
-not a fallback. If none is eligible, use the selection's one fallback or exit 5.
+The pool walk: start at the active account, go in pool order, wrap around once.
+Skip an account that does not offer the requested model and options, or that
+has a live refusal for them; the active account's refusal moves the active
+pointer to the next account. Walking accounts is not a fallback. Availability
+follows the catalog availability contract; an unavailable target is skipped with
+its reason recorded. A driver kind that failed a capability probe for a role is
+unavailable for that role, with the reason and evidence recorded.
 
-Resolve the old attempt before retrying. Preserve its work and supply a continuation
-brief. Tool failures and correctness failures are not quota evidence. Repeated
-correctness failures escalate to a medium-tier Worker. An unavailable master is
-reported to the owner; the package does not replace the Engineering manager
-without Shawn's explicit choice. For Workers, Reviewers and Feature leads, apply
-the configured availability fallback at the selected tier. The config names
-each source and target selection and its options; each chain has exactly one
-target. Re-home decision 3 added reverse chains. A direct `Selection` may
-carry an optional `roles` list: a non-empty subset of
-`availabilityFallback.roles`; absent means all of them. A direct selection never
-names a pool member. Under plan decision 12, a `PoolSelection` may be a medium
-preference or either endpoint of a medium chain only with exactly
-`"roles": ["worker"]`. Missing roles, another role or the challenging tier
-fails validation. `easyWorker` and `textHelper` retain their existing schema and
-semantics. agy is never a Reviewer. A role the selection does not serve treats
-it as unavailable and may use that selection's
-one fallback, once. Check the target's tier, role eligibility and live
-availability. If it is unavailable too, or no chain applies, report to Shawn
-(exit 5); never fall back twice or follow the target's own chain. Plan decision 9
-supports GLM 5.3 as a medium Worker selection; plan decision 12 adds Argon
-through the agy subscription. Shawn chose Argon as the medium software-engineering
-Worker preference, with Sol as its one fallback; GLM remains unplaced. Medium
-Reviewers and Feature leads use that fallback to Sol. The Engineering manager
-applies the choice in private config. Argon needs no new API exception.
-Record and report the reason, preserve all quality
-requirements, and resolve the original attempt before retrying. Availability
-fallback grants no extra permissions.
+A dry cell: when no target in a cell can serve, `t3c route select` exits 5 with
+the earliest time a remembered refusal expires. The dispatcher waits and tries
+again; a dry cell never escalates to another stage. At stage 3 the item waits
+and the manager reports to the owner.
+
+Metered use: the Pi harness is metered, and the config may place it in any
+matrix or helper position except the manager; every driver kind other than the
+subscription drivers and the Pi harness stays unavailable for every role.
+Every metered selection records `billing: "per-token"` and states it in its
+output; a lead lists its metered uses in its merge line. Under the owner's GLM
+budget (decision 20), the default placement makes GLM a last-resort quota
+fallback only, never a primary, a lead, a pre-pass or a helper; its thinking
+is low (GLM-5.3-Flash) or high (GLM 5.3), never max; and every cell's primary
+is a subscription model. In the two stage-1 Worker cells, whose primary is the
+small-quota agy pool, a subscription target follows GLM; where GLM is the last
+fallback, a GLM refusal leaves the cell dry (exit 5), and the work waits. A
+credit cap on the GLM key is the hard guarantee: at the cap the provider
+answers 402, a credits error, which is a quota refusal. Placement only lowers
+the rate.
+
+The manager row: the Engineering manager's primary is Opus medium for
+project-management work, with Astra as its quota fallback — medium for project
+management, high for the final GUI/OS verification gate. The owner starts
+manager threads. `t3c` records the manager and never selects it; a manager
+selection never resolves to the Pi harness. When Opus refuses, the owner
+switches the manager thread to Astra with the harness's model control, which
+keeps the conversation and still delivers child completions; a new manager
+thread on Astra, resuming from the index, the global log and the records, is
+the alternative. Only the owner changes the Engineering manager's identity.
+
+Corrections rounds run at the Task's starting stage; a brief that adds
+unresolved work is split or classified afresh. Resolve the old attempt before
+retrying: preserve its work and supply a continuation brief. A quota fallback
+grants no extra permissions.
+
+Selections record the role (including helpers), lane, stage, pass, round,
+criticality and scope, every target tried (in order from the primary, with no
+gaps) with its account and reason, the chosen target's index (0 is the
+primary) and the billing field.
 
 ## Jev decision routing
 
@@ -314,9 +368,10 @@ Use Jev through OpenRouter, as explicitly authorized by the owner on 2026-10-27.
 The helper calls OpenRouter's Decisions API directly; no Harness or T3 provider
 runs Jev (plan decision 11).
 The Jev exception is limited to the router. Claude, Codex and agy execution
-continues through the existing subscription Harnesses; plan decision 9 adds
-only the GLM medium Worker selection in Pi through OpenRouter as a second
-exception.
+continues through the existing subscription Harnesses; plan decision 9 added
+GLM in Pi through OpenRouter as a second exception, and decision 20 keeps it
+metered, as a last-resort quota fallback under the owner's budget, never the
+manager.
 Jev credentials stay in the existing private credential configuration; never
 place them in briefs, source, logs or argv. The routing adapter reads its own
 key from the `OPENROUTER_API_KEY` environment variable
@@ -333,18 +388,18 @@ Use these approaches as references; preserve MIT attribution when reusing code.
 The adapter sends original task intent, acceptance criteria, relevant interfaces,
 scope and task-specific risk facts. Omit repeated global instructions and credential
 or account data; boilerplate safety language must not make every task appear hard.
-Ask closed-choice questions for domain (software engineering, other, mixed/unclear)
-and difficulty (easy, medium, challenging, insufficient context). These are
-classification results, not free-form model identifiers. The domain criteria must
-say that technical documentation of a software project counts as software
-engineering, as plan decision 1 confirms. In the live check, jev-1.14 classified
-a README spelling fix as domain OTHER (F3).
+Ask closed-choice questions for lane (`BACKEND_LOGIC`, `UI_FRONTEND`,
+`MIXED`), criticality (`CORE`: logic, stateful code, an API, security or a
+shared contract; `NON_CRITICAL`: UI, CRUD, tests only or wording) and scope
+(`STANDARD`, `COMPLEX`, `INSUFFICIENT_CONTEXT`). These are classification
+results, not free-form model identifiers.
 
-Code maps accepted classifications to the owner's routes. It independently applies
-role exclusions (especially agy never Reviewer), hard task-risk floors, live model
-catalog validation and sequential account exhaustion. Mixed/unclear work returns
-to the manager to classify or split. Cross-cutting API changes, security boundaries
-and unresolved engineering design do not become easy solely because Jev says so.
+Code maps accepted classifications to the matrix. It independently applies role
+blocks, risk floors, live catalog validation and the account walk. The `MIXED`
+lane answer maps to backend-logic; work outside software engineering is not
+routed by `t3c`. Cross-cutting API changes, security boundaries
+and unresolved engineering design do not become standard scope solely because
+Jev says so.
 
 Validate response shape, choice membership, finite probability values and the
 documented probability totals. Distinguish the chosen option's probability from
@@ -353,13 +408,18 @@ minimum confidence, as the owner requested. Store it as `jev.minConfidence` in
 the config and apply it to each required classification's confidence. It is a
 starting setting, not a claim of measured accuracy. Shawn can adjust it from
 qualitative pilot observations; a calibration study is not an entry requirement.
-Low confidence gets at most one retry with relevant extra context, then
-manager judgment with an explicit reason. API or malformed-response failures also
-fall back to recorded manager judgment, never silent selection of the cheapest model.
+Low confidence or `INSUFFICIENT_CONTEXT` gets at most one retry with relevant
+extra context; a still-uncertain answer alone takes its fixed default (scope
+`COMPLEX`, criticality `CORE`, lane `BACKEND_LOGIC`); a confident answer is
+kept, and the judgment records which answers took their default. API or
+malformed-response failures apply the same defaults, recorded with the
+error; nothing stops for the manager. A lead may instead record its own
+judgment with a reason, in either direction.
 
-Store the task-input digest, routing-rule version, domain criteria, declared risk
-facts, configured Jev model, the response's snapshot and ID, classification,
-probabilities, confidence, fallback/override reason and final selection.
+Store the task-input digest, routing-rule version, the classification
+criteria, declared risk facts, configured Jev model, the response's snapshot
+and ID, classification, probabilities, confidence, fallback/override reason
+and final selection.
 Reclassify when task-relevant inputs or policy change. A new snapshot behind the
 configured Jev alias is not a policy change. Availability and quota are checked
 at dispatch even when classification is reused.
@@ -530,9 +590,10 @@ the takeover exception under
    run the repository's settings doctor, inspect the approved plan and check that
    no other manager, Feature lead or Worker owns the work being assigned. When a
    Feature lead is assigned to a Task, it runs the Task's local dispatch,
-   earlier-round independent reviews, required checks, its own final-head review
-   and its Task's pull request publication below with the original requirements,
-   relevant designs and interfaces, callers and tests in context; when there is
+   earlier-round independent reviews, required checks, its Task's final-head
+   review and its Task's pull request publication below with the original
+   requirements, relevant designs and interfaces, callers and tests in context;
+   when there is
    no Feature lead, the manager performs that Task-level coordination,
    commissions an independent Reviewer through the final head, and publishes the
    Task's pull request (plan decision 13).
@@ -558,26 +619,34 @@ the takeover exception under
    lifecycle.
 6. Commission independent review of the exact review base and head for earlier
    Worker rounds and Corrections re-reviews, and for the final head when the
-   Task has no Feature lead. Every delegated review round gets a new T3
-   delegated task containing the brief, prior findings, responses and unresolved
+   Task has no Feature lead or is core (decision 20). Every delegated review
+   round gets a new T3 delegated task containing the brief, prior findings,
+   responses and unresolved
    objections; never use the child's backing thread to start that round. When a
-   Task has an assigned Feature lead, the lead personally reviews the exact
-   final head against the original requirements, relevant designs and
-   interfaces, the final diff, callers and tests, and the check and review
-   evidence, records its review evidence and clears that head; no separate
-   Reviewer reviews that final head, and because the lead makes no project
-   edits, this does not approve its own implementation (plan decision 13).
+   Task has an assigned Feature lead and is non-critical, the lead personally
+   reviews the exact final head against the original requirements, relevant
+   designs and interfaces, the final diff, callers and tests, and the check and
+   review evidence, records its review evidence and clears that head, and no
+   separate Reviewer reviews that final head. When the Task is core, the review
+   of record reviews the exact final head at the Task's reviewer stage, and the
+   lead checks the result against the same requirements and evidence, records
+   its review evidence and clears that head. In both cases, because the lead
+   makes no project edits, this does not approve its own implementation (plan
+   decision 13).
 7. Send Corrections to a Worker with a brief whose start commit is the previous
    head; the review base does not change. Any new commit invalidates prior final
    acceptance until its required checks and review are current. Neither the
    manager nor a Feature lead marks an unresolved finding resolved merely because
-   the Worker disagrees. For a factual dispute, obtain one second independent
-   review of the original finding and evidence. Unresolved acceptance-blocking
-   disputes and product decisions go to Shawn.
+   the Worker disagrees. When the Worker disputes a finding and the reviewer
+   raises it again, a reviewer at the next stage decides the deadlock (decision
+   20; this replaces the earlier second independent review). Unresolved
+   acceptance-blocking disputes and product decisions go to Shawn.
 8. Mark work verified only when all acceptance criteria have current evidence,
    required checks passed on the current head, and the current head is cleared
-   by the current Feature lead's final-head review (when the Task has a lead) or
-   by an independent Reviewer (when it does not). An assigned Feature lead
+   by the current Feature lead's final-head review (on a non-critical Task), by
+   the review of record at the Task's reviewer stage with the lead checking its
+   result and clearing the head (on a core Task), or by an independent Reviewer
+   (when the Task has no lead). An assigned Feature lead
    publishes its Task's own pull request with the machine prerequisites and
    integration evidence in the pull request body (without authority to change
    other Tasks' pull requests; merge authority follows the repository's rules,
@@ -748,12 +817,13 @@ that a branch update brings into a range goes to Shawn.
 ## Design refinement
 
 Approved designs are the starting point. A new finding can justify a revision;
-record the evidence and the affected decision. Commission difficult software design
-work to the configured challenging software-engineering selection, and difficult
-non-engineering design work to the configured challenging non-engineering selection.
+record the evidence and the affected decision. Commission design work through
+the matrix: the Task's lane and scope decide the stage, and the floors apply.
 Use independent review for earlier design heads and Corrections re-reviews.
-The current Feature lead reviews a led Task's exact final design head; without a
-lead an independent Reviewer does so, under plan decision 13.
+On a non-critical Task, the current Feature lead reviews a led Task's exact
+final design head, and on a core Task the review of record does so at the
+Task's reviewer stage with the lead checking its result; without a lead an
+independent Reviewer does so (plan decisions 13 and 20).
 Refinements that change product scope or an owner decision go to Shawn before
 dependent implementation. Unaffected tasks can continue.
 
@@ -812,9 +882,8 @@ a first manager context restart: that thread reconstructs state from the
 records. It then reconciles existing work, as described under
 [Taking over existing Claude work](#taking-over-existing-claude-work), and chooses
 one bounded unfinished task whose requirements are approved and whose files have
-no active writer. Choose the Worker tier from its risk; preserve the challenging
-floor for a sensitive merge-guard change. A medium Worker-only pool selection
-under plan decision 12 does not lower any first-round floor.
+no active writer. Choose the Worker's lane, criticality and scope from the
+Task's risk facts; the floors apply (decision 20).
 
 The first live pilot must demonstrate:
 
@@ -873,24 +942,32 @@ rounds and Corrections re-reviews) still go to separate Reviewers, and the
 Feature lead's own review is the final-head review, with no separate Reviewer
 dispatched for that head; when a Task has no Feature lead, a separate Reviewer
 still reviews the final head.
+On 2026-11-01, decision 20 refined it again: for a core Task, the review of
+record, at the Task's reviewer stage, reviews the final head independently and
+the lead checks its result; for a non-critical Task, the Feature lead's own
+final-head review stands.
 A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
 
 1. The Worker implements the Task and runs the required checks.
 2. Earlier-head reviews and Corrections re-reviews use a separate Reviewer,
    reading the diff, callers and tests against the approved brief and repository
-   standards. Final-head review follows step 4; a led Task gets no separate
-   Reviewer on that head.
+   standards. Final-head review follows step 4; a non-critical led Task gets no
+   separate Reviewer on that head, and a core Task's review of record provides
+   the separate review (decision 20).
 3. The Worker makes required Corrections. Each finding receives an explicit disposition.
 4. After Corrections, when the Task has an assigned Feature lead, the lead holds
    the original requirements, relevant designs and interfaces, the final diff,
-   callers and tests, and the check and review evidence, personally reviews the
-   exact final head commit, records its review evidence and clears it; no
-   separate Reviewer reviews that final head. When the Task has no Feature lead,
-   a separate Reviewer checks the final head commit after Corrections. Because a
-   Feature lead makes no project edits, its final-head review does not approve
-   its own implementation. Required checks must also cover that exact final
-   commit.
-5. For a Task with a Feature lead, the lead verifies that required checks, its
+   callers and tests, and the check and review evidence. On a non-critical Task,
+   the lead personally reviews the exact final head commit, records its review
+   evidence and clears it, and no separate Reviewer reviews that final head. On
+   a core Task, the review of record, at the Task's reviewer stage, reviews the
+   exact final head commit independently, and the lead checks its result,
+   records its review evidence and clears it (decision 20). When the Task has no
+   Feature lead, a separate Reviewer checks the final head commit after
+   Corrections. Because a Feature lead makes no project edits, its final-head
+   review does not approve its own implementation. Required checks must also
+   cover that exact final commit.
+5. For a Task with a Feature lead, the lead verifies that required checks, the
    final-head review and all finding dispositions are current on the exact final
    commit, publishes its Task's own pull request under the repository's identity
    and privacy gates with the machine prerequisites and integration evidence in
@@ -921,12 +998,12 @@ A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
 For who runs a repository's heavy required check, see
 [Checks and publication](#checks-and-publication).
 
-Use the configurable engineering model preferences for the Reviewer. Document
-reviews and scoped Corrections re-reviews use the configured round tiers,
-initially medium. First reviews of challenging code follow the Task's tier,
-including escalations; other first reviews are at least medium. agy is never
-a Reviewer. Review independence requires a separate Session that did not implement
-the change; it does not require a different model vendor.
+Reviewers are selected by the matrix's reviewer rows — non-critical and core —
+at the review's stage, with the stage-1 core pre-pass running before the review
+of record; the pre-pass is never the review of record. Corrections rounds run
+at the Task's starting stage. Review independence requires a separate Session
+that did not implement the change; it does not require a different model
+vendor.
 
 There is no initial quick-scan stage. A quick scan cannot replace the required
 review, whether by the current lead or an independent Reviewer. Merge authority
@@ -1276,6 +1353,59 @@ numbers match the plan's Decisions section.
   changes, routing values and model placement, the rapid-ship pilot (L9),
   product decisions and anything unclear remain Shawn's, with no grant to do
   rapid-ship work.
+- **Decision 20, 2026-11-01: model routing matrix.**
+  Shawn supplied his model routing matrix and wrote: "Review it and let's
+  first finalize the design - anything to improve? Then implement according
+  to this more sophisticated routing rule. Ofc, use Jev to do the model
+  routing, especially now it's more context-based." He accepted the
+  Engineering manager's clarifications and answered: "Core reviewer on core
+  Tasks (Recommended)"; "After 30 minutes (Recommended)"; "Take the stronger
+  option (Recommended)"; "Full matrix now". The fixed defaults apply per
+  answer: only an uncertain answer takes its default, a confident answer
+  is kept, and the judgment records which answers took their default. The
+  binding private record and the accepted clarifications are recorded in
+  `.local/`; the public matrix is
+  [docs/routing-matrix.md](../../routing-matrix.md), and
+  [Routing and personal configuration](#routing-and-personal-configuration)
+  carries the contract.
+  The matrix replaces: the version-2 domain × difficulty tiers; RT-1's tier
+  arithmetic; `availabilityFallback` and "never fall back twice"; "agy is
+  never a Reviewer"; "GLM serves Workers only" (decision 12 and RT-1b's Pi
+  rule); Corrections on Flash High; the escalation of repeated failures to a
+  medium Worker; quota gating by "exhausted until the reset, or an
+  `available` observation"; and, for core Tasks only, "the lead reviews the
+  final head itself". It keeps: the catalog availability contract (RT-1's
+  aggregate rules); the model-aware pool account walk (CD-1), with quota now
+  remembered per account and model; the records, digests and freshness of
+  inputs; the Jev adapter's security rules (JV-1); the billing record for
+  metered use (decision 9); results and exits (CD-2); the 1,200-line PR
+  limit; and the Engineering manager's shared contracts, except where this
+  decision names a change.
+  The implementation plan's Tasks MX-1, MX-2, MX-3a, MX-3b and MX-4 implement
+  it, DOC-5 records it in these documents, and RP-1 relabels its examples
+  after MX-2. Engineering manager amendment: version-2 configs keep loading
+  until MX-3b removes version 2 with a migration message.
+  Budget amendment, 2026-11-01. Shawn wrote: "we're burning GLM credits way
+  too fast ... We need to use it more conservatively, targetting $20/month
+  instead of in 2 days". The Engineering manager made these placement
+  changes, and the owner may adjust any of them. GLM is a last-resort quota
+  fallback only: never a primary, a lead, a pre-pass or a helper. Its thinking
+  is low (GLM-5.3-Flash) or high (GLM 5.3), never max. Every cell's primary is
+  a subscription model. In the two stage-1 Worker cells, whose primary is the
+  small-quota agy pool, a subscription target follows GLM: Sol (high) in the
+  backend cell and Sonnet (high) in the ui-frontend cell. Where GLM is the
+  last fallback, a GLM refusal, for example at its credit cap, leaves the cell
+  dry: it exits 5, and the work waits for the earliest remembered refusal to
+  expire. The core pre-pass is Gemini 3.8 Flash (high) from the agy pool,
+  skipped if no pool account can serve. The search
+  helper is not used, and leads search themselves; the schema keeps its entry
+  until MX-3b removes it. The ui-frontend Worker's stage 3 becomes Sonnet
+  (xhigh) with Opus (high) as its quota fallback, so that escalating from
+  stage 2 raises capability. The changed cells are in
+  [docs/routing-matrix.md](../../routing-matrix.md). Every GLM use records
+  `billing: "per-token"`, and a lead lists its GLM uses in its merge line. A
+  credit cap on the GLM key, recommended to the owner, is the hard guarantee:
+  at the cap the provider answers 402, a quota refusal.
 
 ## Findings
 

@@ -45,9 +45,11 @@ identifier list in `.local/`.
 
 t3-compose is a public GitHub repository. Tasks land through pull requests after
 review and required check evidence on the final head. When a Task has a Feature
-lead, the lead's own review is the final-head review, with no separate Reviewer
-on that head, and the lead owns final-head review coordination and check
-evidence. Earlier-head Worker and Corrections reviews use independent Reviewers;
+lead, the lead owns final-head review coordination and check evidence; a core
+Task's final head is reviewed by the review of record at the Task's reviewer
+stage (decision 20: the [model routing matrix](docs/routing-matrix.md)), while
+a non-critical Task's final head is reviewed by the lead itself. Earlier-head
+Worker and Corrections reviews use independent Reviewers;
 a Task without a Feature lead also uses an independent Reviewer on its final
 head. The Engineering manager owns priorities across Tasks, shared interfaces,
 and delivery, operational and integration readiness. Workers edit project files
