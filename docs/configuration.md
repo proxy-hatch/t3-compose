@@ -18,7 +18,7 @@ Downstream modules (`jev`, `routing`, `quota`, `records`) consume:
 - `validate_config_data(raw)`: dispatches integer version `3` to matrix validation, preserves the version-1 refusal and version-2 validation, and returns deeply read-only data and notices. Booleans never count as versions. Unknown versions retain `invalid-version`.
 - `MATRIX_LANES`: read-only mapping of `feature-lead` to `("default",)`, `worker` to `("backend-logic", "ui-frontend")`, and `reviewer` to `("non-critical", "core")`. `MATRIX_STAGES` is `("1", "2", "3")`; `HELPER_NAMES` is `("verifier", "search", "text")`; `ROLE_BLOCK_ROLES` contains the three matrix roles followed by the three helpers; `DRIVER_KINDS` is `("claudeAgent", "codex", "antigravity", "pi")`.
 - `LoadedConfig`: frozen dataclass with deeply read-only `data` (`MappingProxyType` and `tuple`), exact file byte `digest` (`sha256:<hex>`), canonical `policy_digest` (`sha256:<hex>`), and read-only `notices` tuple.
-- `load_quota_state(path=None, *, local=None, config=None) -> LoadedQuotaState`: reads and validates the quota state file in a single bounded 16 KiB read. Accepts version-2 or version-3 `LoadedConfig` or data. When `config` is supplied, verifies that `activeProviderInstanceId` and every key in `quotaObservations` belong to a configured provider pool.
+- `load_quota_state(path=None, *, local=None, config=None) -> LoadedQuotaState`: reads and validates the quota state file in a single bounded 16 KiB read. Accepts version-2 or version-3 `LoadedConfig` or data. When `config` is supplied, verifies that `activeProviderInstanceId` and every key in `quotaObservations` belong to a configured provider pool. Optional refusals are checked for shape only, without membership or timestamp evaluation.
 - `LoadedQuotaState`: frozen dataclass with deeply read-only `data` and exact file byte `digest` (`sha256:<hex>`).
 - `routing_policy_projection(config_data) -> dict`, `compute_policy_digest(config_data) -> str`, and `ConfigValidationError` (carrying read-only `.errors` and `.missing_sections`).
 
@@ -82,3 +82,21 @@ Top-level object keys are closed and required:
 ## Quota state schema and migration compatibility (L1)
 
 `.local/agent-routing-state.json` requires `activeProviderInstanceId` (configured pool member), `quotaObservations` (mapping pool-member IDs to lists of `{observedAt, status: "exhausted" | "available", resetAt: string | null, evidence}` objects), and `note` (string). Observations are per account across all pool models; model rollout gaps are not recorded as quota exhaustion. If an earlier prose state file stored a single observation object under an instance key instead of a list, `t3c config check` refuses it with exit `3` (`state.quotaObservations.<instance> (expected-list)`). During post-merge step L1, wrap each legacy single observation object in a one-element list `[{...}]` with `observedAt`, `status`, `resetAt` and `evidence`.
+
+
+The optional top-level `refusals` list defaults to none when absent. Every entry
+has exactly `providerInstanceId`, `model`, `kind`, `observedAt`, `resetAt` and
+`evidence`. Instance (direct provider or pool account), model, observation and
+evidence are non-empty strings. `kind` is one of `usage-limit`, `quota-exhausted`,
+`credits`, `rate-limit` (`REFUSAL_KINDS`); the exact keys are `REFUSAL_KEYS`.
+`resetAt` is null or a non-empty string. No membership check applies to refusals;
+they remain valid when pools change. Duplicate instance/model keys are valid.
+
+Shape errors use `state.refusals (expected-list)`, `state.refusals[i]
+(expected-object)`, or `state.refusals[i].<key>` with `unknown-key`, `missing-key`
+or `invalid-string`. Invalid kind uses `invalid-refusal-kind`, invalid reset
+uses `invalid-reset-at`. `config check` accepts valid shapes under both config
+versions. It does not evaluate refusal times. The [quota commands](cli/quota.md)
+check UTC timestamps and expiry, serialize writes with a state lock, and publish
+atomically with mode 0600. Old observations stay readable and preserved but no
+longer gate quota commands. The state retains its required keys unchanged.
