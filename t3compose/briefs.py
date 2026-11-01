@@ -15,8 +15,9 @@ TOKEN = re.compile(r'\{\{([A-Z][A-Z0-9_]*)\}\}')
 FIELDS = ('Role', 'Stage', 'Provider', 'Model', 'Reason', 'Repository', 'Provisioned',
           'Start', 'Review-base', 'Review-head', 'Round', 'Mode', 'Privacy-findings',
           'Unpublished-range')
-STRUCTURE = re.compile(r'^\s*(?:#|(?:' + '|'.join(FIELDS) +
-                       r'|Move-rule|Review-pass|Inline-instructions):)', re.I | re.M)
+STRUCTURE = re.compile(r'^\s*(?:#|</?ESCALATION_REQUEST>|(?:' + '|'.join(FIELDS) +
+                       r'|Move-rule|Review-pass|Escalation-rule|Inline-instructions):)',
+                       re.I | re.M)
 MOVE = ('Move-rule: three-case-v1\n'
         '1. HEAD=start => continue.\n'
         '2. HEAD=provisioned AND clean AND start exists AND fresh own branch => move own branch to start only.\n'
@@ -25,7 +26,8 @@ MOVE_BLOCK = re.compile('^' + re.escape(MOVE) + '$', re.M)
 SECTIONS = {
     'worker': ('Role and routing', 'Worktree and holds', 'Repository and commits',
                'Read first', 'Owned paths', 'Objective', 'Interfaces', 'Acceptance',
-               'Test first', 'Validation', 'Commits', 'Return'),
+               'Test first', 'Validation', 'Budget and escalation', 'Commits',
+               'Return'),
     'reviewer': ('Independence', 'Role and routing', 'Repository and commits',
                  'Read first', 'Review mode', 'Review questions', 'Checks',
                  'Findings format', 'Verdict', 'Return'),
@@ -53,6 +55,38 @@ REVIEW_MODES = {
 REVIEW_BLOCKS = {mode: re.compile('^' + re.escape(block) + '$', re.M)
                  for mode, block in REVIEW_MODES.items()}
 PRE_PASS_ID = re.compile(r'\bPP-[0-9]+\b')
+HARD_STOP = (
+    'Escalation-rule: hard-stop-v1\n'
+    "1. Budget: your first implementation, then at most 2 repair attempts against "
+    "this brief's validation commands.\n"
+    '2. Hard stop: when your second repair attempt fails, do not try a third.\n'
+    '3. Commit your work in progress on your branch with the message '
+    '`wip(escalation): <short summary>`. Never leave it uncommitted.\n'
+    '4. Then return only the block below, filled in, instead of the report in the '
+    'Return section.\n'
+    '5. An environment block (a missing tool, a permission or a hook) is not a repair '
+    'attempt: report yourself blocked, with the exact error.\n'
+    '6. A question about the spec is not an attempt: report it as a question.\n'
+    '7. All other rules of this brief stay: owned paths, no push, no post, no merge, '
+    'inline rules for agy and Pi.')
+ESCALATION = (
+    '<ESCALATION_REQUEST>\n'
+    '- Status: ESCALATE_TO_NEXT_STAGE\n'
+    '- Model and options: <as assigned in the brief>\n'
+    '- Branch: <branch>\n'
+    '- WIP commit: <full SHA>\n'
+    '- Review base: <full SHA>\n'
+    '- Modified files: <paths>\n'
+    '- What was attempted (at most 150 words):\n'
+    '  1. Attempt 1: <approach, and why it failed>\n'
+    '  2. Attempt 2: <approach, and why it failed>\n'
+    '- Failing command and output: <command>, then the last 15 to 30 lines\n'
+    '- Suspected root cause: <one or two sentences>\n'
+    '</ESCALATION_REQUEST>')
+HARD_STOP_BLOCK = re.compile('^' + re.escape(HARD_STOP) + '$', re.M)
+ESCALATION_BLOCK = re.compile('^' + re.escape(ESCALATION) + '$', re.M)
+ESCALATION_LIMIT, ESCALATION_WORDS, ESCALATION_OUTPUT = 8192, 150, (15, 30)
+BRANCH = re.compile(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,199}')
 
 
 def _fail(message='invalid brief input'):
@@ -166,6 +200,11 @@ def _validate(text):
         content = block.sub('', content, count=1)
         if meta['Mode'] == 'record' and PRE_PASS_ID.search(text):
             _fail('a review of record cannot carry pre-pass findings')
+    if meta['Role'] == 'worker':
+        for block in (HARD_STOP_BLOCK, ESCALATION_BLOCK):
+            if not block.search(sections['Budget and escalation']):
+                _fail('invalid hard stop rules')
+            content = block.sub('', content, count=1)
     routing = sections['Role and routing']
     if (routing.count('Inline-instructions:') != 1 or
             not re.search(r'^Inline-instructions:(?:\n|$)', routing, re.M)):
@@ -274,6 +313,90 @@ def check(args):
     return _digest(text)
 
 
+def parse_escalation(text):
+    """Validate the one escalation block in text and return its fields.
+
+    Raises CommandError (exit 2) with a public message when the block is missing,
+    repeated, malformed or over a limit. Text outside the block is ignored.
+    """
+    if not isinstance(text, str) or UNSAFE.search(text):
+        _fail('invalid escalation text')
+    lines = text.split('\n')
+    opens = [n for n, line in enumerate(lines) if line == '<ESCALATION_REQUEST>']
+    closes = [n for n, line in enumerate(lines) if line == '</ESCALATION_REQUEST>']
+    if len(opens) != 1 or len(closes) != 1 or opens[0] > closes[0]:
+        _fail('exactly one escalation block is required')
+    block = '\n'.join(lines[opens[0]:closes[0] + 1])
+    if len(block.encode('utf-8')) > ESCALATION_LIMIT:
+        _fail('escalation block exceeds byte limit')
+    if '{{' in block or '}}' in block:
+        _fail('escalation block cannot hold a doubled brace')
+    body, pos = lines[opens[0] + 1:closes[0]], 0
+
+    def field(label):
+        nonlocal pos
+        prefix = '- ' + label + ': '
+        if (pos >= len(body) or not body[pos].startswith(prefix) or
+                not body[pos][len(prefix):].strip()):
+            _fail('escalation field missing, empty or out of order: ' + label)
+        pos += 1
+        return body[pos - 1][len(prefix):].strip()
+
+    if field('Status') != 'ESCALATE_TO_NEXT_STAGE':
+        _fail('invalid escalation status')
+    model, branch = field('Model and options'), field('Branch')
+    wip, base, files = field('WIP commit'), field('Review base'), field('Modified files')
+    if (len(model) > 200 or not BRANCH.fullmatch(branch) or '..' in branch or
+            '//' in branch or branch.endswith(('/', '.', '.lock'))):
+        _fail('invalid escalation model or branch')
+    if not (re.fullmatch('[0-9a-fA-F]{40}', wip) and re.fullmatch('[0-9a-fA-F]{40}', base)):
+        _fail('escalation commits must be full 40-hex values')
+    paths = files.split(', ')
+    if any(not path or path[0] in '/-' or ',' in path or '\\' in path or
+           '..' in path.split('/') for path in paths):
+        _fail('invalid escalation file list')
+    if pos >= len(body) or body[pos] != '- What was attempted (at most 150 words):':
+        _fail('escalation attempts are missing')
+    pos += 1
+    attempts = []
+    for number in (1, 2):
+        match = re.fullmatch(r'  %d\. Attempt %d: (\S.*)' % (number, number),
+                             body[pos] if pos < len(body) else '')
+        if not match:
+            _fail('escalation attempts must be two numbered lines')
+        attempts.append(match[1].strip())
+        pos += 1
+    words = sum(len(attempt.split()) for attempt in attempts)
+    if words > ESCALATION_WORDS:
+        _fail('escalation attempts exceed 150 words')
+    command = field('Failing command and output')
+    output = []
+    while pos < len(body) and (body[pos] == '' or body[pos].startswith('  ')):
+        output.append(body[pos])
+        pos += 1
+    if (not ESCALATION_OUTPUT[0] <= len(output) <= ESCALATION_OUTPUT[1] or
+            not any(line.strip() for line in output)):
+        _fail('escalation output must be 15 to 30 lines indented by two spaces')
+    cause = field('Suspected root cause')
+    if pos != len(body):
+        _fail('unexpected text in escalation block')
+    return {'status': 'ESCALATE_TO_NEXT_STAGE', 'model': model, 'branch': branch,
+            'wipCommit': wip.lower(), 'reviewBase': base.lower(), 'modifiedFiles': paths,
+            'attempts': attempts, 'attemptWords': words, 'failingCommand': command,
+            'outputLines': len(output), 'rootCause': cause, 'block': block}
+
+
+def check_escalation(args):
+    patterns = identifier_list.load_identifiers(args.local_dir)
+    text = _read_text(args.result)
+    _screen(patterns, text)
+    fields = parse_escalation(text)
+    result = _digest(fields['block'])
+    result.update({key: fields[key] for key in (
+        'attemptWords', 'branch', 'modifiedFiles', 'outputLines', 'reviewBase', 'wipCommit')})
+    return result
+
+
 def register(registry):
     group = registry.group('brief')
     parser = group.add_parser('render')
@@ -284,3 +407,6 @@ def register(registry):
     parser = group.add_parser('check')
     parser.add_argument('file', type=Path)
     parser.set_defaults(handler=check)
+    parser = group.add_parser('check-escalation')
+    parser.add_argument('--result', type=Path, required=True)
+    parser.set_defaults(handler=check_escalation)

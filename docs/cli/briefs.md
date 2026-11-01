@@ -7,6 +7,7 @@ Here `t3c` means `"$PY" -I -S <root>/bin/t3c`.
 ```text
 t3c brief render --template worker|reviewer|reviewer-prepass|PATH --values VALUES.json --out FILE
 t3c brief check FILE
+t3c brief check-escalation --result FILE
 ```
 
 Both commands return `{"digest":"sha256:<64 lowercase hex>"}` on success
@@ -87,7 +88,9 @@ Required `##` sections must be nonempty and appear exactly once, in the order
 in the corresponding [Worker](../../skill/templates/worker.md),
 [Reviewer](../../skill/templates/reviewer.md) or
 [Reviewer pre-pass](../../skill/templates/reviewer-prepass.md) source. The
-Reviewer sections now include `Review mode`. Every routing section (Worker and
+Worker section list gains `Budget and escalation` after `Validation` (with the
+rule block and shape checked as exact text); Reviewer sections include
+`Review mode`. Every routing section (Worker and
 Reviewer) has exactly one `Inline-instructions:` slot; it must contain nonempty
 text for agy/Pi. Metadata-like lines, extra headings and duplicate structural
 markers inside section content fail. Structured substitution values cannot
@@ -113,31 +116,41 @@ artifacts uses exact commits; checks on a checkout need that exact review head.
 ## Reviewer modes
 
 A Reviewer brief sets the `Mode` header to `record` (using the `reviewer`
-template) or `pre-pass` (using `reviewer-prepass`). `check` verifies that the
-`## Review mode` section contains the exact corresponding rule block:
-
-```text
-Review-pass: record-v1
-1. You are the review of record: your verdict is the one the lead relies on.
-2. You have not seen any pre-pass finding and must not ask for one. Pre-pass findings carry IDs of the form PP-<number>. If one appears anywhere in your context, stop and report it to the coordinator.
-3. In the final-review round, review the Task's exact final head: Review-head is the head the lead will merge, and your verdict covers that head only.
-```
-
-or:
-
-```text
-Review-pass: advisory-v1
-1. This is an advisory pre-pass. It is never the review of record and never replaces it.
-2. Label every finding with an ID of the form PP-<number>: PP-1, PP-2 and so on.
-3. Return exactly one verdict: `blockers found` or `no blockers found`. Never return approve, approve after fixes or changes required.
-4. The lead may send blocking findings to a Corrections round. The reviewer of record never sees your findings.
-```
+template) or `pre-pass` (using `reviewer-prepass`). The exact rule blocks are
+in the `Review mode` section of the two Reviewer templates and `check` verifies
+them as exact text.
 
 The pre-pass is advisory: findings use IDs `PP-<number>`, verdict is `blockers found`
 or `no blockers found`, and it cannot be used for `final-review`. A review-of-record
 brief is refused if any `PP-<number>` ID appears anywhere in it; in `final-review`,
 its `Review-head` is the head the lead will merge. These are format checks: a
 pre-pass finding with another ID format would not be caught.
+
+## Worker hard stop and the escalation block
+
+The Worker template carries a `Budget and escalation` section with the fixed
+`Escalation-rule: hard-stop-v1` rule block and `<ESCALATION_REQUEST>` shape,
+both verified by `check` as exact text. Exactly one escalation block may
+appear; surrounding text is ignored. The block holds the required fields in
+exact order: `Status` (`ESCALATE_TO_NEXT_STAGE`), `Model and options` (at most
+200 characters), `Branch`, 40-hex lowercase `WIP commit` and `Review base`,
+comma-separated repo-relative `Modified files`, two numbered attempts within
+150 words total, a failing command with 15 to 30 indented lines of output (not
+all blank), and `Suspected root cause`. Branch names must be valid Git branch
+refs without traversal or lock suffixes. Modified files cannot start with a
+slash or hyphen, nor contain commas, backslashes or `..`. The block is at most
+8 KiB, with no doubled braces or control characters.
+
+Other modules call `briefs.parse_escalation(text)` to validate the block and
+return its twelve fields (`status`, `model`, `branch`, `wipCommit`, `reviewBase`,
+`modifiedFiles`, `attempts`, `attemptWords`, `failingCommand`, `outputLines`,
+`rootCause`, `block`) or raise `CommandError`.
+
+`t3c brief check-escalation --result FILE` screens FILE against the private
+identifier list, calls `parse_escalation`, and prints one JSON object with
+`attemptWords`, `branch`, `digest` (sha256 of the block text without trailing
+newline), `modifiedFiles`, `outputLines`, `reviewBase` and `wipCommit`. Any
+failure exits 2 with empty stdout and a safe message echoing nothing from FILE.
 
 ## Bounded privacy Corrections
 

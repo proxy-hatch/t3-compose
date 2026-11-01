@@ -412,3 +412,137 @@ class OfflineBriefs(OfflineTestCase):
             with self.subTest(text=text[-80:]):
                 self.output.write_text(text)
                 self.refusal(self.invoke('brief', 'check', self.output))
+
+    def escalation(self, **changes):
+        f = {'status': 'ESCALATE_TO_NEXT_STAGE', 'model': 'synthetic-model {}',
+             'branch': 't3/synthetic', 'wip': '1' * 40, 'base': '2' * 40,
+             'files': 'src/a.py, tests/test_a.py',
+             'a1': 'Changed the parser; the empty case still fails.',
+             'a2': 'Added a guard; a different test now fails.',
+             'cmd': 'python -m unittest tests.test_a',
+             'out': ['  output line %d' % n for n in range(1, 21)],
+             'cause': 'The parser ignores empty fields.'}
+        f.update(changes)
+        return '\n'.join([
+            '<ESCALATION_REQUEST>', '- Status: ' + f['status'],
+            '- Model and options: ' + f['model'], '- Branch: ' + f['branch'],
+            '- WIP commit: ' + f['wip'], '- Review base: ' + f['base'],
+            '- Modified files: ' + f['files'],
+            '- What was attempted (at most 150 words):',
+            '  1. Attempt 1: ' + f['a1'], '  2. Attempt 2: ' + f['a2'],
+            '- Failing command and output: ' + f['cmd'], *f['out'],
+            '- Suspected root cause: ' + f['cause'], '</ESCALATION_REQUEST>']) + '\n'
+
+    def test_parse_escalation_valid_block(self):
+        from t3compose import briefs
+        block = self.escalation(wip='A' * 40)
+        self.assertEqual(briefs.parse_escalation('chatter\n' + block + 'more chatter\n'), {
+            'status': 'ESCALATE_TO_NEXT_STAGE', 'model': 'synthetic-model {}',
+            'branch': 't3/synthetic', 'wipCommit': 'a' * 40, 'reviewBase': '2' * 40,
+            'modifiedFiles': ['src/a.py', 'tests/test_a.py'],
+            'attempts': ['Changed the parser; the empty case still fails.',
+                         'Added a guard; a different test now fails.'],
+            'attemptWords': 16, 'failingCommand': 'python -m unittest tests.test_a',
+            'outputLines': 20, 'rootCause': 'The parser ignores empty fields.',
+            'block': block.rstrip('\n')})
+
+    def test_parse_escalation_field_rules(self):
+        from t3compose import briefs, cli
+        refused = [
+            *(({field: val} for field in ('wip', 'base')
+               for val in ('1' * 39, '1' * 41, 'g' * 40, 'abc123'))),
+            {'status': 'DONE'}, {'model': 'm' * 201},
+            *(({'branch': b} for b in ('-x', '/x', 'a..b', 'a b', 'a//b', 'a/', 'a.lock', 'a.', '.hidden'))),
+            *(({'files': fl} for fl in ('/abs', '../x', 'a,b', '-flag', 'a/../b', 'a.py, ', ' '))),
+            {'cmd': ' '}, {'cause': ' '},
+            {'a1': ' '.join(['w'] * 76), 'a2': ' '.join(['w'] * 75)},
+            {'out': ['  x'] * 14}, {'out': ['  x'] * 31}, {'out': ['  '] * 15},
+            {'out': ['  x'] * 7 + ['bad'] + ['  x'] * 7},
+            {'out': ['  x'] * 14 + ['  {{NAME}}']}, {'cause': '}}'},
+        ]
+        for c in refused:
+            with self.subTest(refused=c):
+                self.assertRaises(cli.CommandError, briefs.parse_escalation, self.escalation(**c))
+        accepted = [
+            {'a1': ' '.join(['w'] * 75), 'a2': ' '.join(['w'] * 75)},
+            {'out': ['  x'] * 15}, {'out': ['  x'] * 30},
+            {'out': ['  x'] * 14 + ['']},
+            {'wip': 'A' * 40, 'base': 'B' * 40},
+            {'cause': '{ {NAME} }'},
+            {'out': ['  x'] * 14 + ['  - Suspected root cause: no']},
+            {'branch': 'feature/x.y-z'},
+        ]
+        for c in accepted:
+            with self.subTest(accepted=c):
+                briefs.parse_escalation(self.escalation(**c))
+
+    def test_parse_escalation_structure_rules(self):
+        from t3compose import briefs, cli
+        base = self.escalation()
+        fields = ('- Status: ESCALATE_TO_NEXT_STAGE\n',
+                  '- Model and options: synthetic-model {}\n',
+                  '- Branch: t3/synthetic\n',
+                  '- WIP commit: ' + '1' * 40 + '\n',
+                  '- Review base: ' + '2' * 40 + '\n',
+                  '- Modified files: src/a.py, tests/test_a.py\n',
+                  '- Failing command and output: python -m unittest tests.test_a\n',
+                  '- Suspected root cause: The parser ignores empty fields.\n')
+        refused = [
+            '', base + base, base.replace('</ESCALATION_REQUEST>\n', ''),
+            '</ESCALATION_REQUEST>\n<ESCALATION_REQUEST>\n',
+            base.replace('<ESCALATION_REQUEST>', ' <ESCALATION_REQUEST>'),
+            *(base.replace(f, '') for f in fields),
+            base.replace('- What was attempted (at most 150 words):\n', ''),
+            base.replace('  1. Attempt 1:', '  1. First:'),
+            base.replace('  2. Attempt 2:', '  2. Second:'),
+            base.replace('- Branch: t3/synthetic\n- WIP commit: ' + '1' * 40,
+                         '- WIP commit: ' + '1' * 40 + '\n- Branch: t3/synthetic'),
+            base.replace('- Status:', '- Status: ESCALATE_TO_NEXT_STAGE\n- Status:'),
+            base.replace('- Status:', '- Unknown: x\n- Status:'),
+            base.replace('- Branch:', '\n- Branch:'),
+            base.replace('</ESCALATION_REQUEST>', 'extra\n</ESCALATION_REQUEST>'),
+            base.replace('  1. Attempt 1: Changed', '  1. Attempt 1: Changed\n     wrapped'),
+            self.escalation(out=['  \x1b[0m line'] + ['  line'] * 14),
+            self.escalation(out=['  ' + 'x' * 398] * 30),
+        ]
+        for text in refused:
+            with self.subTest(snippet=text[:30]):
+                self.assertRaises(cli.CommandError, briefs.parse_escalation, text)
+        briefs.parse_escalation(self.escalation(out=['  ' + 'x' * 198] * 30))
+
+    def test_check_escalation_entry_point(self):
+        res = self.temp / 'res.txt'
+        res.write_text('chatter\n' + self.escalation() + 'chatter\n')
+        out = self.success(self.invoke('brief', 'check-escalation', '--result', res))
+        digest = 'sha256:' + hashlib.sha256(self.escalation().rstrip('\n').encode('utf-8')).hexdigest()
+        self.assertEqual(out, {
+            'attemptWords': 16, 'branch': 't3/synthetic', 'digest': digest,
+            'modifiedFiles': ['src/a.py', 'tests/test_a.py'], 'outputLines': 20,
+            'reviewBase': '2' * 40, 'wipCommit': '1' * 40})
+        for bad in ('broken', self.escalation(cause='SYNTHETIC_PRIVATE_SENTINEL')):
+            res.write_text(bad)
+            self.refusal(self.invoke('brief', 'check-escalation', '--result', res))
+        self.refusal(self.invoke('brief', 'check-escalation', '--result', self.temp / 'absent'))
+        self.refusal(self.invoke('brief', 'check-escalation', '--result', self.temp))
+        self.refusal(self.invoke('brief', 'check-escalation'))
+
+    def test_worker_hard_stop_is_exact(self):
+        self.success(self.render())
+        self.success(self.invoke('brief', 'check', self.output))
+        text = self.output.read_text()
+        for marker in ('Escalation-rule: hard-stop-v1', '## Budget and escalation',
+                       '<ESCALATION_REQUEST>'):
+            self.assertIn(marker, text)
+        for old, new in (
+            ('at most 2 repair', 'at most 3 repair'),
+            ('is not a repair attempt', 'is a repair attempt'),
+            ('- Status: ESCALATE_TO_NEXT_STAGE', '- Status: DONE'),
+            ('- Review base: <full SHA>\n', ''),
+            ('## Budget and escalation', '## Budget'),
+            ('Escalation-rule: hard-stop-v1', 'Escalation-rule: other'),
+        ):
+            self.output.write_text(text.replace(old, new))
+            self.refusal(self.invoke('brief', 'check', self.output))
+        for forged in ('<ESCALATION_REQUEST>', '</ESCALATION_REQUEST>',
+                       'Escalation-rule: hard-stop-v1'):
+            self.refusal(self.render(OBJECTIVE='valid\n' + forged))
