@@ -4,7 +4,7 @@ This specification describes the `t3compose.config` command module implemented b
 
 ## `t3c config check`
 
-Validate the version-2 or version-3 personal routing configuration and per-account quota state file, and print the configuration digests, rule version, risk-fact floors, round tiers and notices.
+Validate the version-2 or version-3 personal routing configuration and per-account quota state file, and print the configuration digests, rule version, risk-fact floors and notices, plus round tiers for version 2 and the version number for version 3.
 
 ```sh
 PY="$(uv python find 3.15)"
@@ -28,7 +28,7 @@ Handlers derive default paths exclusively from `args.local_dir`. Both files are 
 | `3` | `ExitCode.INVALID_CONFIG` | Config or state file cannot be read, exceeds 16 KiB, contains invalid JSON, is version 1, or fails any schema rule. | One JSON object (`Outcome(data, ExitCode.INVALID_CONFIG)`) with `valid: false`, `errors` (`[{"path": ..., "rule": ...}]`) and optional `missingSections`. | Empty. |
 | `2` | `ExitCode.INVALID_INPUT` | Invalid CLI flags or unexpected helper failure. | Empty. | Sanitized public diagnostic. |
 
-Exit `0` returns `{digest, policyDigest, stateDigest, ruleVersion, riskFacts, roundTiers, notices}`. Exit `3` returns `{valid: false, errors: [{"path": "<schema.path>", "rule": "<rule>"}]}` (plus `missingSections` when `version == 1`), never raw input values, secret paths from inside config or backend exception details. Quota-state errors use paths prefixed with `state.` (such as `state.activeProviderInstanceId` or `state.quotaObservations.<instance>[0].status`).
+Version-2 exit `0` returns `{digest, policyDigest, stateDigest, ruleVersion, riskFacts, roundTiers, notices}`. Exit `3` returns `{valid: false, errors: [{"path": "<schema.path>", "rule": "<rule>"}]}` (plus `missingSections` when `version == 1`), never raw input values, secret paths from inside config or backend exception details. Quota-state errors use paths prefixed with `state.` (such as `state.activeProviderInstanceId` or `state.quotaObservations.<instance>[0].status`).
 
 Version 3 success (exit `0`) returns:
 

@@ -140,6 +140,12 @@ def _valid_v3_routing_payloads():
 
 
 class OfflineRoutingV3(OfflineTestCase):
+    def refuse(self, kind, data, path, rule):
+        from t3compose.schema import SchemaError, validate_event_data
+        with self.assertRaises(SchemaError) as ctx:
+            validate_event_data(kind, data)
+        self.assertEqual((ctx.exception.path, ctx.exception.rule), (path, rule))
+
     def check(self, kind, data, valid=True):
         from t3compose.schema import SchemaError, validate_event_data
         with self.subTest(kind=kind, data=data):
@@ -245,13 +251,48 @@ class OfflineRoutingV3(OfflineTestCase):
         direct = {"providerInstanceId": "prov-synth", "model": "model-synth", "options": {"thinking": True}}
         data = copy.deepcopy(base)
         data.update(selection=direct, chosenPoolAccount=None,
-                    targetsTried=[{"index": 1, "selection": direct, "account": None, "reason": "Chosen"}], chosenIndex=1)
+                    targetsTried=[{"index": 0, "selection": base["selection"], "account": None, "reason": "Refused"},
+                                  {"index": 1, "selection": direct, "account": None, "reason": "Chosen"}], chosenIndex=1)
         self.check(kind, data)
+        cases = []
+        changed = copy.deepcopy(base)
+        changed["targetsTried"][0]["selection"]["model"] = "model-other-synth"
+        cases.append((changed, "targetsTried[1].selection", "same index requires same selection"))
+        cases.append(({**base, "chosenIndex": 1, "targetsTried": [
+            {"index": 0, "selection": direct, "account": "acct-synth-x", "reason": "Refused"},
+            {**base["targetsTried"][-1], "index": 1}]},
+            "targetsTried[0].account", "direct target requires null account"))
+        changed = copy.deepcopy(data)
+        changed["selection"] = changed["targetsTried"][-1]["selection"] = {**direct, "roles": ["worker"]}
+        cases.append((changed, "selection", "unknown field"))
+        changed = copy.deepcopy(base)
+        for selection in [changed["selection"], *(t["selection"] for t in changed["targetsTried"])]:
+            selection["options"] = {"x": True}
+        cases.append((changed, "selection.options", "pool options must be empty"))
+        changed = copy.deepcopy(base)
+        changed["chosenPoolAccount"] = changed["targetsTried"][-1]["account"] = None
+        cases.append((changed, "chosenPoolAccount", "chosenPoolAccount must match pool vs direct selection"))
+        changed = copy.deepcopy(data)
+        changed["targetsTried"][-1]["selection"] = {**direct, "model": "model-other-synth"}
+        cases.append((changed, "selection", "chosen target must match last target tried"))
+        changed = copy.deepcopy(base)
+        for target in changed["targetsTried"]:
+            target["index"] = 1
+        changed["chosenIndex"] = 1
+        cases.append((changed, "targetsTried[0].index", "first target must be the primary"))
+        changed = copy.deepcopy(data)
+        changed["targetsTried"][-1]["index"] = changed["chosenIndex"] = 2
+        cases.append((changed, "targetsTried[1].index", "target indices must not skip a target"))
+        for changed, path, rule in cases:
+            with self.subTest(rule=rule):
+                self.refuse(kind, changed, "event.data." + path, rule)
+        self.check(kind, {**data, "targetsTried": [
+            {**target, "reason": "Refused"} for target in base["targetsTried"]] + [data["targetsTried"][-1]]})
         for invalid in (None, "", "subscription", "per-request", True, 1, [], {}):
             self.check(kind, {**data, "billing": invalid}, False)
         self.check(kind, {**data, "billing": "per-token"})
         for patch_ in ({"chosenPoolAccount": "acct-synth"}, {"chosenIndex": True}, {"stage": True},
-                       {"targetsTried": []}, {"chosenIndex": 0},
+                       {"targetsTried": []},
                        {"selection": {**direct, "roles": ["worker"]}},
                        {"selection": {**direct, "providerPool": "pool-synth"}},
                        {"selection": {"providerPool": "pool-synth", "model": "m", "options": {"x": True}}}):
@@ -266,17 +307,21 @@ class OfflineRoutingV3(OfflineTestCase):
         changed.update(selection=direct, chosenPoolAccount=None, chosenIndex=1)
         self.check(kind, changed)
         self.check(kind, {**changed, "selection": base["selection"], "chosenPoolAccount": base["chosenPoolAccount"]}, False)
-        for patch_ in ({"index": True}, {"index": 2}, {"selection": direct}):
+        self.refuse(kind, {**data, "chosenIndex": 0}, "event.data.chosenIndex", "chosen target must match last target tried")
+        changed = {**base, "targetsTried": data["targetsTried"] + [base["targetsTried"][-1]]}
+        self.refuse(kind, changed, "event.data.targetsTried[2].index", "target indices must not decrease")
+        for patch_ in ({"index": True}, {"selection": direct}):
             changed = copy.deepcopy(base)
             changed["targetsTried"][0].update(patch_)
             self.check(kind, changed, False)
         changed = copy.deepcopy(data)
-        changed["targetsTried"][0]["account"] = "acct-synth"
+        changed["targetsTried"][-1]["account"] = "acct-synth"
         self.check(kind, changed, False)
         changed = copy.deepcopy(base)
         changed["targetsTried"][-1]["account"] = "acct-synth-other"
         self.check(kind, changed, False)
-        self.check(kind, {**data, "role": "reviewer", "lane": "core", "pass": "pre"}, False)
+        self.refuse(kind, {**data, "role": "reviewer", "lane": "core", "pass": "pre"},
+                    "event.data.targetsTried[1].index", "pre-pass cannot use fallback")
 
     def test_escalation_constraints_and_utf8_bound(self):
         kind = "routing-escalation"

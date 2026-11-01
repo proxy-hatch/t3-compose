@@ -106,6 +106,7 @@ Every `events/<seq>.json` envelope requires exact keys:
      Routing sets it for every final metered Worker selection and reports it
      in `route select` output. Schema validation adds no instance/model naming
      heuristic; driver eligibility is enforced by routing against the catalog.
+
    **Version-3 routing shapes (items 2–4):** The shapes above remain the
    version-2 contract. Records already written keep their shapes and validation
    results. For these three kinds only, absence of `configVersion` selects the
@@ -135,7 +136,9 @@ Every `events/<seq>.json` envelope requires exact keys:
      Required `defaulted` is a list of question names (`lane|criticality|scope`),
      without repeats. Each listed answer equals its fixed default:
      lane `BACKEND_LOGIC`, criticality `CORE`, scope `COMPLEX`; unlisted
-     answers retain any valid confident value. Manual requires an empty list;
+     answers retain any valid confident value. A confident `MIXED` lane is
+     recorded as `BACKEND_LOGIC`, since `MIXED` maps to backend-logic, and is
+     not listed. Manual requires an empty list;
      default-jev-failure requires all three names; default-low-confidence and
      default-insufficient-context require at least one name.
    - **Selection:** `configVersion: 3`, `inputRef` (`pos_int`),
@@ -150,7 +153,14 @@ Every `events/<seq>.json` envelope requires exact keys:
      `selection` (`v3_selection`), `chosenPoolAccount` (`text|null`),
      `chosenIndex` (`nonneg_int`), `targetsTried` (nonempty list of exact
      `{index: nonneg_int, selection: v3_selection, account: text|null, reason: text}`).
-     Optional `billing` is exactly `"per-token"`, with the same rules above.
+     `lane` is the cell's matrix lane, not the classification's lane; `stage`
+     is the integer form of the config's stage key `"1"` to `"3"`; `criticality`
+     and `scope` are the values after risk floors. In `targetsTried`, index 0
+     is the cell's primary and index k its k-th quota fallback; a pool target
+     appears once per account walked, and a target skipped as a whole has a
+     null account.
+     Optional `billing` is exactly `"per-token"` or absent; it marks every
+     metered selection, whatever its role.
      A `v3_selection` has exactly one of `providerInstanceId` and `providerPool`
      (`text`), `model: text`, and `options` (string or boolean values);
      no `roles`; pool options must be `{}`.
@@ -162,10 +172,14 @@ Every `events/<seq>.json` envelope requires exact keys:
      criticality; every other role has null pass. Helpers require all seven
      classification/matrix fields null and empty floors.
      The chosen account is non-null iff the selection is a pool.
-     Tried indices never decrease; repeated indices have equal selections;
-     direct targets have null account. The last target matches chosenIndex,
-     selection and chosenPoolAccount exactly. Pre-pass requires chosenIndex
-     and every tried index zero.
+     The first tried index is 0, and each later index equals the previous one
+     or the next; repeated indices have equal selections; direct targets have
+     null account. The last target matches chosenIndex, selection and
+     chosenPoolAccount exactly. Pre-pass requires chosenIndex and every tried
+     index zero. A selection always names its chosen target, so a refused or
+     unavailable pre-pass, which has no fallback and is skipped, writes no
+     `routing-selection`; version-3 routing reports the skip and its reason in
+     its command output instead.
      Existing `records.py` joins apply unchanged to these version-3 shapes.
 
 5. **`dispatch-intent`**:

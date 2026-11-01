@@ -460,6 +460,14 @@ class OfflineConfigValidation(OfflineTestCase):
 
 
 class OfflineMatrixConfigValidation(OfflineTestCase):
+    def test_schema_vocabulary_matches_config(self):
+        from t3compose import config, schema
+        self.assertEqual(dict(config.MATRIX_LANES), schema._MATRIX_LANES)
+        self.assertEqual(config.ROLE_BLOCK_ROLES, schema._V3_ROLES)
+        classification = _matrix_config_dict()["classification"]
+        for question, options in schema._V3_QUESTIONS.items():
+            self.assertEqual(options, tuple(classification[question]["criteria"]))
+
     def setUp(self):
         super().setUp()
         self.local = self.temp / ".local"

@@ -386,6 +386,7 @@ _V3_QUESTIONS = {
 }
 _MATRIX_LANES = {"feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend"),
                  "reviewer": ("non-critical", "core")}
+_V3_ROLES = (*_MATRIX_LANES, "verifier", "search", "text")
 
 def _check_config_version(value, path):
     if not _is_int(value) or value != 3:
@@ -458,9 +459,14 @@ def _post_v3_selection(data, path):
     previous = None
     for idx, target in enumerate(data["targetsTried"]):
         target_path = f"{path}.targetsTried[{idx}]"
-        if previous is not None:
+        if previous is None:
+            if target["index"] != 0:
+                _fail(f"{target_path}.index", "first target must be the primary")
+        else:
             if target["index"] < previous["index"]:
                 _fail(f"{target_path}.index", "target indices must not decrease")
+            if target["index"] > previous["index"] + 1:
+                _fail(f"{target_path}.index", "target indices must not skip a target")
             if target["index"] == previous["index"] and target["selection"] != previous["selection"]:
                 _fail(f"{target_path}.selection", "same index requires same selection")
         if "providerInstanceId" in target["selection"] and target["account"] is not None:
@@ -701,7 +707,7 @@ ROUTING_V3_SCHEMAS = MappingProxyType({
     }, post=_post_v3_judgment),
     "routing-selection": _spec({
         "configVersion": _check_config_version, "inputRef": _check_pos_int, "inputDigest": _check_digest, "policyDigest": _check_digest,
-        "classificationRef": _nullable(_check_pos_int), "role": _check_enum(*_MATRIX_LANES, "verifier", "search", "text"),
+        "classificationRef": _nullable(_check_pos_int), "role": _check_enum(*_V3_ROLES),
         "lane": _nullable(_check_enum("default", "backend-logic", "ui-frontend", "non-critical", "core")),
         "stage": _nullable(_int_enum(1, 2, 3)), "pass": _nullable(_check_enum("pre", "record")),
         "round": _nullable(_check_enum("first", "corrections", "re-review")),

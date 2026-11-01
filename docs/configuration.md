@@ -8,7 +8,7 @@ The owner changes routing values, model preferences, account order, thresholds a
 
 The helper loads and validates the configuration from disk on every call without caching across commands or calls. A valid change applies to the next dispatch only, without restarting the manager, while running children keep their recorded selection. Invalid configuration exits `3` (`ExitCode.INVALID_CONFIG`) and blocks new routing rather than falling back to a cached or default value.
 
-Synthetic, public examples live at [`docs/examples/agent-routing.example.json`](examples/agent-routing.example.json) and [`docs/examples/agent-routing-state.example.json`](examples/agent-routing-state.example.json). Command options, output and exit codes are specified in [`docs/cli/config.md`](cli/config.md).
+Synthetic, public examples live at [`docs/examples/agent-routing.example.json`](examples/agent-routing.example.json) (version 2), [`docs/examples/agent-routing.v3.example.json`](examples/agent-routing.v3.example.json) (version 3) and [`docs/examples/agent-routing-state.example.json`](examples/agent-routing-state.example.json). Command options, output and exit codes are specified in [`docs/cli/config.md`](cli/config.md).
 
 ## Python API (`t3compose.config`)
 
