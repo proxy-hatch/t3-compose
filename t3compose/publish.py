@@ -6,11 +6,15 @@ import re
 import tempfile
 import uuid
 
-from . import cli, evidence, github_app, identifier_list, jsonio, privacy
+from . import cli, evidence, github_app, identifier_list, privacy
 from . import process, records, schema, token_preconditions, token_run
 
 _SHA = re.compile(r'[0-9a-f]{40}')
 _LIMIT = privacy.MAX_BYTES
+# Controlled values: the private HOME config sets them and no other source may differ.
+_SAFE = (('http.followRedirects', 'false'), ('push.followTags', 'false'),
+         ('push.recurseSubmodules', 'no'), ('core.hooksPath', os.devnull))
+_WATCHED = r'^(http(\..*)?\.followredirects|push\..*|core\.hookspath|protocol\..*)$'
 
 
 def _fail(reason, code=2):
@@ -32,9 +36,8 @@ def _environment(repo):
                'GIT_NO_LAZY_FETCH': '1', 'GIT_GRAFT_FILE': os.devnull,
                'GIT_OPTIONAL_LOCKS': '0', 'GIT_ALLOW_PROTOCOL': 'https',
                'LC_ALL': 'C'}
-        Path(home, '.gitconfig').write_text(
-            '[http]\n followRedirects = false\n[push]\n followTags = false\n'
-            ' recurseSubmodules = no\n[core]\n hooksPath = /dev/null\n')
+        Path(home, '.gitconfig').write_text(''.join(
+            '[{}]\n {} = {}\n'.format(*key.split('.'), value) for key, value in _SAFE))
         try:
             os.environ.clear()
             os.environ.update(env)
@@ -46,14 +49,17 @@ def _environment(repo):
             os.environ.update(before)
 
 
-def _git(repo, *args, input=None, codes=(0,)):
+def _git(repo, *args, input=None, codes=(0,), as_child=False):
+    """Read-only Git. as_child shows the configuration a push child will see."""
     env = dict(os.environ)
-    # Read-only network inspection cannot use stored credentials or redirects.
-    settings = [('credential.helper', ''), ('http.followRedirects', 'false'),
-                ('protocol.ssh.allow', 'never'), ('core.hooksPath', os.devnull)]
-    env['GIT_CONFIG_COUNT'] = str(len(settings))
-    for i, (key, value) in enumerate(settings):
-        env[f'GIT_CONFIG_KEY_{i}'], env[f'GIT_CONFIG_VALUE_{i}'] = key, value
+    if as_child:
+        env = token_run.sanitized_environment(env)
+    else:
+        # Read-only network inspection cannot use stored credentials or redirects.
+        settings = [('credential.helper', ''), ('protocol.ssh.allow', 'never'), *_SAFE]
+        env['GIT_CONFIG_COUNT'] = str(len(settings))
+        for i, (key, value) in enumerate(settings):
+            env[f'GIT_CONFIG_KEY_{i}'], env[f'GIT_CONFIG_VALUE_{i}'] = key, value
     try:
         result = process.run(['git', *args], cwd=repo, env=env, input=input,
                              capture_output=True, timeout=30, check=False)
@@ -63,6 +69,14 @@ def _git(repo, *args, input=None, codes=(0,)):
             not isinstance(result.stdout, bytes) or len(result.stdout) > _LIMIT):
         _fail('Git inspection incomplete; report to coordinator')
     return result.stdout
+
+
+def _overrides(repo):
+    """Refuse a watched setting, from any source or include, that is not ours."""
+    raw = _git(repo, 'config', '--includes', '--get-regexp', _WATCHED, codes=(0, 1), as_child=True)
+    allowed = {(key.lower() + ' ' + value).encode() for key, value in _SAFE}
+    if any(line not in allowed for line in raw.splitlines()):
+        _fail('remove unsafe publication overrides before publication')
 
 
 def _remote(repo, url):
@@ -187,7 +201,10 @@ def _finish(local, repo, work, intent, outcome, summary=None):
     if summary is not None:
         data['statusSummary'] = summary
     _append(local, repo, work, 'op-result', data)
-    return _out(outcome, data['confirmation'], 0 if outcome in {'succeeded', 'no-op'} else 1)
+    reason = data['confirmation']
+    if (summary or {}).get('revocation') == 'failed':  # CD-2's warning, which _quiet discards
+        reason += '; token revocation failed, so the token expires on its own'
+    return _out(outcome, reason, 0 if outcome in {'succeeded', 'no-op'} else 1)
 
 
 @contextmanager
@@ -316,16 +333,9 @@ def push(args):
             if origins not in ([url.encode()], [url.removesuffix('.git').encode()]):
                 _fail('configured HTTPS repository identity required')
             command = ['git', 'push', url, args.head + ':refs/heads/' + args.branch]
-            token_preconditions.check(command, env=dict(os.environ), cwd=str(repo))
-            # Git follows redirects by default; publication refuses that ambient setting.
-            unsafe = _git(repo, 'config', '--includes', '--get-regexp',
-                          r'^(http(\..*)?\.followredirects|push\..*|core\.hookspath|protocol\..*)$', codes=(0, 1))
-            allowed = {b'http.followredirects false', b'push.followtags false',
-                       b'push.recursesubmodules no', b'core.hookspath /dev/null'}
-            normalized = [key.lower() + b' ' + value for key, _, value in
-                          (line.partition(b' ') for line in unsafe.splitlines())]
-            if any(line not in allowed for line in normalized):
-                _fail('remove unsafe publication overrides before publication')
+            token_preconditions.check(command, env=token_run.sanitized_environment(os.environ),
+                                      cwd=str(repo))
+            _overrides(repo)
             return _push(args, repo, identity, url)
     except github_app.ConfigError:
         _fail('invalid App configuration; coordinator must repair private configuration', 3)

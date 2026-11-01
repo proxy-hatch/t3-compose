@@ -1,7 +1,7 @@
 # Reviewed-head push
 
 PB-1a adds `t3c publish push --repo-path P --work ID --head SHA --branch NAME`.
-Use stable CPython 3.15 through uv, with `-I -S -B`, as in the
+Use stable CPython 3.15 through uv with `-I -S`, as in the
 [CLI contract](../cli.md). Global `--local-dir` and `--text` precede `publish`.
 This command publishes the configured repository as its App. The assigned
 Feature lead runs it for its Task; Workers never publish. No merge command is
@@ -25,22 +25,30 @@ lead check under the current evidence convention before invoking publication.
 
 Read-only Git runs through `process` with a controlled PATH, temporary HOME,
 no inherited credentials, replacement objects, lazy fetch or user configuration.
-The preflight reuses [GA-3 refusals](token_run.md). Stored credentials and SSH
-cannot perform writes. Redirects, extra publication settings and unsafe hook
-path overrides are refused; a private temporary Git configuration disables
-redirects, hooks, following tags and recursive submodule publication.
+Its own inspection settings reset credential helpers, refuse SSH and disable
+redirects and hooks. The preflight reuses [GA-3 refusals](token_run.md) on the
+same sanitized base as `publish run`, so stored credentials and SSH cannot
+perform writes. A private temporary HOME configuration gives the push child
+`http.followRedirects=false`, `push.followTags=false`,
+`push.recurseSubmodules=no` and `core.hooksPath=/dev/null`. The configuration
+that child will see (system, that file, the repository and every include, read
+without the inspection settings) may hold no `http.*followRedirects`, `push.*`,
+`core.hooksPath` or `protocol.*` entry other than those exact values. Any other
+entry exits 2, naming no value, until the coordinator removes it.
 
 All advertised refs, including tags and HEAD, exclude reachable objects from
 the publication set. Every advertised object must already exist locally;
 shallow or incomplete history, malformed remote facts and read errors stop.
-The command never fetches or writes tracking refs. A bounded adapter composes
-PV-1 object readers and the existing identifier-list grep matcher to screen
-exactly the selected commit messages, full trees, paths, UTF-8 blob contents
-and branch. PV-1 byte bounds, unsupported-entry refusal and `.lock` screening
-exception apply. Changes to workflows in selected commits stop with exit 5:
-Shawn must push them. Privacy stops name safe next actions without matched text:
-Corrections for unpublished history, coordinator branch correction, or report
-to Shawn for published history. Rewriting published history is never authorized.
+The command never fetches or writes tracking refs, so fetch beforehand, outside
+it: an advertised object this checkout lacks stops the push. A bounded adapter
+composes PV-1 object readers and the existing identifier-list grep matcher to
+screen exactly the selected commit messages, full trees, paths, UTF-8 blob
+contents and branch. PV-1 byte bounds, unsupported-entry refusal and `.lock`
+screening exception apply. Changes to workflows in selected commits stop with
+exit 5: Shawn must push them. Privacy stops name safe next actions without
+matched text: Corrections for unpublished history, coordinator branch
+correction, or report to Shawn for published history. Rewriting published
+history is never authorized.
 
 ## Intent, lease and result
 
@@ -67,17 +75,20 @@ before launch. `token_run.run_command` owns token lifecycle and CD-2 writes.
 Actual success requires a valid returned `RunResult`, agreement with durable
 status, child started with status zero, and exact remote-head confirmation.
 Refusal, nonzero, malformed or missing status never count as success. Failed
-revocation retains a confirmed child-zero success and truthfully records
-`revocation:failed`. Results join their own intent; writer/effective work are
-loaded fresh through RC-1, without a second success store.
+revocation retains a confirmed child-zero success, truthfully records
+`revocation:failed` and adds a warning to the returned reason (CD-2's stderr
+warning, which containment discards). Results join their own intent;
+writer/effective work are loaded fresh through RC-1, without a second success
+store.
 
-Interrupted attempts first reconcile the latest same-target intent, retained
-status and remote. Completed child-zero status plus current equality can resolve
-an interrupted result without another push. Missing status resolves as no-start;
-true/null and malformed status remain unknown, even if the remote equals HEAD,
-until the coordinator resolves the retained uncertainty. Another branch, an
-older intent, or a late result cannot resolve the current attempt. Record-write
-failure leaves uncertainty; preserve files and reconcile before retrying.
+Before any new push, an unresolved attempt is reconciled from the latest
+same-target intent, retained status and remote. Completed child-zero status plus
+current equality can resolve an interrupted result without another push.
+Missing status resolves as no-start; true/null and malformed status remain
+unknown, even if the remote equals HEAD, until the coordinator resolves the
+retained uncertainty. Another branch, an older intent, or a late result cannot
+resolve the current attempt. Record-write failure leaves uncertainty; preserve
+files and reconcile before retrying.
 See the [CD-6 consumer contract](evidence.md#pr-ready-convention-for-pb-1).
 
 ## API, exits and live procedure
@@ -95,7 +106,7 @@ required checks and review evidence, then makes the first live push:
 
 ```sh
 PY="$(uv python find 3.15)"
-"$PY" -I -S -B <helper>/bin/t3c --local-dir <private-state> publish push --repo-path <checkout> --work <work> --head <reviewed-sha> --branch <branch>
+"$PY" -I -S <helper>/bin/t3c --local-dir <private-state> publish push --repo-path <checkout> --work <work> --head <reviewed-sha> --branch <branch>
 ```
 
 Check exit 0, exact remote equality and the joined intent/result/status. If this
