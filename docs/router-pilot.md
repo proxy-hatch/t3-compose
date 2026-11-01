@@ -35,8 +35,9 @@ key. The runner adds no machine prerequisite, capture command, credential
 mechanism or agent harness. Never put a key in arguments. Supply the saved
 catalog using the [routing catalog contract](cli/routing.md): a valid UTC
 timestamp ending in `Z`, neither future nor more than 15 minutes old at
-invocation. Expiry during the run remains a refusal; the runner never captures
-catalogs.
+invocation. Freshness is checked only at invocation: later expiry does not
+stop this classification-only run. The catalog is metadata, not a dispatch
+permission; the runner never captures catalogs or selects executable targets.
 
 The default dataset expects **14 Jev HTTP calls**, one per example, with
 `decline=True` (`--decline-retry`). It retries nothing, dispatches no child,
@@ -81,6 +82,12 @@ Stdout is one JSON object, labeled `synthetic`, with `version`, `repository`,
 `failure`, `results` and `summary`. Every example result has its ID/label,
 expected labels, work ID, event `recordRefs`, `classification`, `judgment`,
 `derived`, `outcome` and sanitized `reason`.
+
+The run pins its initial routing-policy digest. A change before an example or
+during its call interrupts the run and preserves partial evidence without deriving
+from mismatched floors. Only successful, schema-valid completed version-3 decisions
+are derived; defaulted and confident MIXED classifications require their judgment.
+Missing answers never create local defaults.
 
 Local derivation follows CD-8 §3:
 - Effective decisions take returned judgments (or accepted answers).

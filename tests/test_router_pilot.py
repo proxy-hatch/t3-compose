@@ -124,7 +124,7 @@ class OfflineRouterPilot(OfflineTestCase):
         entries = self.dataset["examples"]
         self.assertEqual(len(entries), 14)
         self.assertEqual(self.dataset.get("label"), "synthetic")
-        self.assertIn(self.dataset.get("version"), (1, 2))
+        self.assertEqual(self.dataset.get("version"), 2)
         covered_floors = set()
         lanes = set()
         criticalities = set()
@@ -190,6 +190,19 @@ class OfflineRouterPilot(OfflineTestCase):
             self.assertIn("routing-input", kinds)
             self.assertIn("routing-classification", kinds)
             self.assertNotIn("routing-selection", kinds)
+            by_ref = {e["seq"]: e for e in w_events}
+            stored = by_ref[res["recordRefs"]["classification"]]["data"]
+            for key, value in res["classification"].items():
+                if key != "classificationRef":
+                    self.assertEqual(value, stored[key])
+            for kind in ("input", "judgment"):
+                if kind in res["recordRefs"]:
+                    data = by_ref[res["recordRefs"][kind]]["data"]
+                    for key in ("inputDigest", "policyDigest"):
+                        self.assertEqual(data[key], stored[key])
+            raw = jsonio.canonical_json(w_events)
+            self.assertNotIn(KEY.encode(), raw)
+            self.assertNotIn(str(self.keyfile).encode(), raw)
             self.assertIsNotNone(res["derived"])
             self.assertIn(res["derived"]["startingStage"], (1, 2))
             self.assertIn(res["derived"]["lane"], ("backend-logic", "ui-frontend"))
@@ -300,23 +313,22 @@ class OfflineRouterPilot(OfflineTestCase):
         self.assertGreater(summary["mistakenCheapRoutes"]["criticality"], 0)
 
     def test_mixed_direction_row(self):
-        # Single row: cheap in scope, expensive in criticality
-        # Example 0: gold scope STANDARD, gold crit NON_CRITICAL
-        # If derived scope is STANDARD (matches), but if gold scope was COMPLEX and gold crit was NON_CRITICAL:
-        # Example 12: architecture-choice gold: scope COMPLEX, crit CORE.
-        # Let's override example 12 answers to be scope STANDARD (cheap!), crit CORE (match)
-        # And override example 0 to be scope COMPLEX (expensive), crit NON_CRITICAL (match)
-        def answers(n, task):
-            if n == 3:  # unit-test-suite: gold scope STANDARD, crit NON_CRITICAL
-                # Make scope COMPLEX (expensive) and crit NON_CRITICAL (match)
-                return response(lane="BACKEND_LOGIC", criticality="NON_CRITICAL", scope="COMPLEX")
-            return None
-
-        code, report, _, _ = self.invoke(answers)
-        self.assertEqual(code, 0)
-        res3 = report["results"][3]
-        self.assertEqual(res3["scopeComparison"], "expensive")
-        self.assertEqual(res3["criticalityComparison"], "match")
+        from live.router_pilot import summarize
+        rows = []
+        for ident, gold_scope, gold_crit, scope, crit in (
+                ("a", "COMPLEX", "NON_CRITICAL", "STANDARD", "CORE"),
+                ("b", "STANDARD", "CORE", "COMPLEX", "NON_CRITICAL")):
+            rows.append({"id": ident, "judgment": None,
+                "expected": {"lane": "BACKEND_LOGIC", "scope": gold_scope,
+                             "criticality": gold_crit, "floors": []},
+                "derived": {"lane": "backend-logic", "scope": scope,
+                            "criticality": crit, "appliedFloors": []}})
+        summary = summarize(rows)
+        self.assertEqual([(r["scopeComparison"], r["criticalityComparison"]) for r in rows],
+                         [("cheap", "expensive"), ("expensive", "cheap")])
+        for key in ("mistakenCheapRoutes", "unnecessaryExpensiveRoutes"):
+            self.assertEqual(summary[key], {"scope": 1, "criticality": 1})
+        self.assertEqual(summary["matchingRoutes"], {"scope": 0, "criticality": 0})
 
     def test_floor_corrected_raw_answers_not_counted_as_mistake(self):
         # When raw was STANDARD/NON_CRITICAL for credential-field, floor raises to COMPLEX/CORE.
@@ -353,6 +365,106 @@ class OfflineRouterPilot(OfflineTestCase):
         code, _, err, _ = self.invoke()
         self.assertEqual(code, 3)
         self.assertIn("refused", err)
+
+    def test_corrections_policy_changes_refuse_mismatched_floors(self):
+        import live.router_pilot as pilot
+        original = copy.deepcopy(self.cfg)
+        real_derive = pilot.derive_route
+        for mode in ("during-remove", "during-raise", "between"):
+            self.cfg = copy.deepcopy(original)
+            self.write(self.cfgpath, self.cfg)
+
+            def edit():
+                if mode == "during-raise":
+                    self.cfg["riskFacts"]["document-change"]["scope"] = "COMPLEX"
+                else:
+                    self.cfg["riskFacts"]["shared-interface"].pop("criticality", None)
+                self.write(self.cfgpath, self.cfg)
+
+            def during(n, calls, body):
+                if n == 0 and mode != "between":
+                    edit()
+
+            def derive(*args):
+                value = real_derive(*args)
+                if mode == "between":
+                    edit()
+                return value
+
+            with self.subTest(mode=mode), patch.object(pilot, "derive_route", side_effect=derive):
+                code, report, _, calls = self.invoke(during=during)
+                self.assertEqual((code, report["complete"], len(calls)), (2, False, 1))
+                self.assertIsNone(report["results"][1]["derived"])
+                if mode != "between":
+                    self.assertIsNone(report["results"][0]["derived"])
+
+    def test_corrections_incomplete_decisions_never_derive(self):
+        from t3compose import cli, jev
+        real_classify = jev.classify
+        for mode in ("refused", "missing-judgment", "unknown-answers", "mixed-without-judgment"):
+            def classify(*args, **kwargs):
+                result = real_classify(*args, **kwargs)
+                data = copy.deepcopy(result.data)
+                if mode in ("missing-judgment", "mixed-without-judgment"):
+                    data.pop("judgment", None)
+                if mode == "unknown-answers":
+                    data["answers"] = {"unknown": "synthetic unavailable"}
+                return cli.Outcome(data, 4 if mode == "refused" else 0)
+
+            def answer(n, task):
+                return response(lane="MIXED" if mode == "mixed-without-judgment" else "BACKEND_LOGIC",
+                                scope_conf=.45 if mode == "missing-judgment" else .9)
+
+            with self.subTest(mode=mode), patch.object(jev, "classify", side_effect=classify):
+                code, report, _, calls = self.invoke(answer)
+                self.assertEqual((code, report["complete"], len(calls)), (2, False, 1))
+                self.assertIsNone(report["results"][0]["derived"])
+                self.assertIn("classification", report["results"][0]["recordRefs"])
+
+    def test_corrections_catalog_expiry_after_preflight_is_metadata_only(self):
+        import live.router_pilot as pilot
+        current = [datetime.now(timezone.utc)]
+        clock = type("Clock", (), {"now": staticmethod(lambda zone: current[0])})
+
+        def advance(n, calls, body):
+            if n == 0:
+                current[0] += timedelta(seconds=1000)
+
+        with patch.object(pilot, "datetime", clock):
+            code, report, _, calls = self.invoke(during=advance)
+        self.assertEqual((code, report["complete"], len(calls)), (0, True, 14))
+
+    def test_corrections_example_version_is_exact(self):
+        from live.router_pilot import load_examples
+        self.dataset["version"] = 1
+        self.write(self.examples, self.dataset)
+        with self.assertRaises(ValueError):
+            load_examples(self.examples, self.cfg)
+
+    def test_corrections_lane_and_criticality_defaults_are_attributed(self):
+        for question, changes in (("lane", {"lane_conf": .45}),
+                                  ("criticality", {"crit_conf": .45})):
+            def answer(n, task):
+                return response(lane="UI_FRONTEND", criticality="NON_CRITICAL", **changes) if n == 0 else None
+            with self.subTest(question=question):
+                code, report, _, _ = self.invoke(answer)
+                row = report["results"][0]
+                self.assertEqual(code, 0)
+                self.assertEqual(row["judgment"]["defaulted"], [question])
+                self.assertEqual(report["summary"]["defaultedAnswers"]["counts"][question], 1)
+
+    def test_corrections_partial_judgment_append_preserves_refs(self):
+        real_append = records.append_event
+        def append(local, repo, work, kind, data, **kwargs):
+            if kind == "routing-judgment":
+                raise records.RecordError("synthetic interrupted append")
+            return real_append(local, repo, work, kind, data, **kwargs)
+        with patch.object(records, "append_event", side_effect=append):
+            code, report, _, calls = self.invoke(lambda n, task: response(scope_conf=.45))
+        self.assertEqual((code, report["complete"], len(calls)), (2, False, 1))
+        row = report["results"][0]
+        self.assertEqual(set(row["recordRefs"]), {"input", "classification"})
+        self.assertIsNone(row["derived"])
 
     def test_storage_failure_preserves_partial_evidence(self):
         from t3compose import cli

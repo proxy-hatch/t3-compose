@@ -25,7 +25,7 @@ def load_examples(path, cfg):
 
     value, digest = jsonio.read_json_with_digest(path, max_bytes=EXAMPLES_LIMIT)
     shape(value, ("version", "label", "examples"))
-    require(type(value["version"]) is int and value["version"] in (1, 2))
+    require(type(value["version"]) is int and value["version"] == 2)
     require(value["label"] == "synthetic")
     entries = value["examples"]
     require(isinstance(entries, list) and 12 <= len(entries) <= 32)
@@ -54,18 +54,30 @@ def load_examples(path, cfg):
 
 def derive_route(task, classification_data, cfg_risk_facts):
     """Derive routing class locally from decision and CD-8 §3 risk floors."""
+    from t3compose import schema
+
+    record = {k: v for k, v in classification_data.items()
+              if k not in ("classificationRef", "judgment")}
+    schema.validate_event_data("routing-classification", record)
+    reference = classification_data.get("classificationRef")
+    if (record.get("configVersion") != 3 or type(reference) is not int or
+            reference <= record["inputRef"] or record["outcome"] not in ("accepted", "defaulted")):
+        raise ValueError("incomplete classification")
     judgment = classification_data.get("judgment")
-    if judgment:
-        eff_lane = judgment["lane"]
-        eff_criticality = judgment["criticality"]
-        eff_scope = judgment["scope"]
+    if judgment is not None:
+        schema.validate_event_data("routing-judgment", {
+            k: v for k, v in judgment.items() if k != "judgmentRef"})
+        if (judgment.get("configVersion") != 3 or
+                any(judgment[k] != record[k] for k in ("inputRef", "inputDigest", "policyDigest")) or
+                type(judgment.get("judgmentRef")) is not int or judgment["judgmentRef"] <= reference):
+            raise ValueError("incomplete judgment")
+        eff_lane, eff_criticality, eff_scope = (judgment[k] for k in ("lane", "criticality", "scope"))
     else:
-        answers = classification_data.get("answers", {})
-        eff_lane = answers.get("lane", {}).get("choice", "BACKEND_LOGIC")
-        if eff_lane == "MIXED":
-            eff_lane = "BACKEND_LOGIC"
-        eff_criticality = answers.get("criticality", {}).get("choice", "CORE")
-        eff_scope = answers.get("scope", {}).get("choice", "COMPLEX")
+        answers = record["answers"]
+        if (record["outcome"] != "accepted" or set(answers) != {"lane", "criticality", "scope"} or
+                answers["lane"]["choice"] == "MIXED"):
+            raise ValueError("classification owes judgment")
+        eff_lane, eff_criticality, eff_scope = (answers[k]["choice"] for k in ("lane", "criticality", "scope"))
 
     applied_floors = list(task.get("riskFacts", []))
     for fact in applied_floors:
@@ -187,7 +199,7 @@ def summarize(rows):
 
 def run(args, local, entries, examples_digest, catalog_digest, cfg):
     """Execute classification and local derivation for all examples."""
-    from t3compose import cli, jev, records
+    from t3compose import cli, config, jev, records
 
     run_id = "RP-" + uuid.uuid4().hex
     report = {
@@ -208,6 +220,9 @@ def run(args, local, entries, examples_digest, catalog_digest, cfg):
     try:
         commit = cli.helper_info()["commit"]
         for entry, row in zip(entries, report["results"]):
+            stage = "policy"
+            if config.load_matrix_config(local=local).policy_digest != cfg.policy_digest:
+                raise ValueError("routing policy changed")
             stage = "create-work"
             row.update(outcome="incomplete", reason="work not completed")
             work = {
@@ -231,6 +246,11 @@ def run(args, local, entries, examples_digest, catalog_digest, cfg):
                 row["recordRefs"]["judgment"] = data["judgment"]["judgmentRef"]
 
             stage = "derive"
+            if result.code != cli.ExitCode.SUCCESS:
+                raise ValueError("classification refused")
+            if (data["policyDigest"] != cfg.policy_digest or
+                    config.load_matrix_config(local=local).policy_digest != cfg.policy_digest):
+                raise ValueError("routing policy changed")
             row["derived"] = derive_route(entry["task"], data, cfg.data["riskFacts"])
             row.update(outcome="derived", reason="locally derived routing outcome")
         report["complete"] = True
