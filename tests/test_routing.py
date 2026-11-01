@@ -122,8 +122,24 @@ class OfflineRouting(OfflineRoutingFixture):
                       policy_digest=self.current['policyDigest'], catalog=self.catalog_path,
                       catalog_read_at=stamp(datetime.now(timezone.utc)))
         values.update(changes)
-        return self.invoke('select', *[p for k, v in values.items() for p in ('--' + k.replace('_', '-'), v)],
+        return self.invoke('select', *[p for k, v in values.items() if v is not None for p in ('--' + k.replace('_', '-'), v)],
                            child=child, code=code)
+
+    def escalate(self, role='worker', from_stage=1, reason='finding-unresolved',
+                 evidence='Synthetic trigger', code=0, child=False, **changes):
+        path = self.temp / 'evidence.txt'
+        path.write_text(evidence, encoding='utf-8')
+        values = dict(role=role, from_stage=from_stage, reason=reason, evidence_file=path,
+                      input_ref=self.current['inputRef'], policy_digest=self.current['policyDigest'])
+        values.update(changes)
+        return self.invoke('escalate', *[p for k, v in values.items() if v is not None
+                           for p in ('--' + k.replace('_', '-'), v)], child=child, code=code)
+
+    def authorize(self, role, stage, start=1):
+        for level in range(start, int(stage)):
+            reason = {'worker': 'finding-unresolved', 'reviewer': 'reviewer-failure',
+                      'feature-lead': 'lead-stalled'}[role]
+            self.escalate(role, level, reason)
 
     def test_real_cli_three_successes_and_refusal(self):
         self.current = self.input(child=True)
@@ -143,6 +159,7 @@ class OfflineRouting(OfflineRoutingFixture):
                     with self.subTest(role=role, lane=lane, stage=stage):
                         self.judge(lane='UI_FRONTEND' if lane == 'ui-frontend' else 'BACKEND_LOGIC',
                                    criticality='CORE' if lane == 'core' else 'NON_CRITICAL')
+                        self.authorize(role, stage)
                         result = self.select(role, stage)
                         self.assertEqual(result['selection'], cell['primary'])
                         self.assertEqual((result['chosenIndex'], result['lane'], result['stage'],
@@ -219,7 +236,7 @@ class OfflineRouting(OfflineRoutingFixture):
 
     def test_catalog_read_failure_and_freshness_boundary(self):
         from t3compose.routing import CatalogError, load_catalog
-        for age, valid in [(900, True), (901, False), (-1, False)]:
+        for age, valid in [(86400, True), (86400.001, False), (-1, False)]:
             if valid:
                 self.assertEqual(load_catalog(self.catalog_path, stamp(NOW - timedelta(seconds=age)), NOW)[1],
                                  digest(self.catalog_path))
@@ -258,7 +275,7 @@ class OfflineRouting(OfflineRoutingFixture):
         return entry
 
     def test_refusal_skip_expiry_and_latest_expiry(self):
-        self.judge()
+        self.judge(scope='COMPLEX')
         cell = self.cfg['matrix']['worker']['backend-logic']['2']
         primary = cell['primary']
         self.refuse(primary['providerInstanceId'], primary['model'], 20)
@@ -275,7 +292,7 @@ class OfflineRouting(OfflineRoutingFixture):
         self.assertEqual(self.select(stage=2)['chosenIndex'], 0)
 
     def test_fresh_refusal_published_during_state_read_is_accepted(self):
-        self.judge()
+        self.judge(scope='COMPLEX')
         primary = self.cfg['matrix']['worker']['backend-logic']['2']['primary']
         load = routing.load_quota_state
         def publish_then_load(*args, **kwargs):
@@ -429,6 +446,7 @@ class OfflineRouting(OfflineRoutingFixture):
                          ('core', 'CORE', 'COMPLEX', ['credentials-or-guardrail']))
         self.task['riskFacts'] = ['shared-interface', 'document-change']
         self.judge(scope='COMPLEX')
+        self.authorize('reviewer', 3, start=2)
         self.assertEqual(self.select('reviewer', stage=3)['lane'], 'core')
         self.task['riskFacts'] = ['document-change']
         self.judge()
@@ -439,12 +457,13 @@ class OfflineRouting(OfflineRoutingFixture):
 
     def test_catalog_failures_and_ordered_unavailability_checks(self):
         self.judge()
-        for changes in ({'catalog_read_at': stamp(datetime.now(timezone.utc) - timedelta(minutes=16))},
+        for changes in ({'catalog_read_at': stamp(datetime.now(timezone.utc) - timedelta(hours=25))},
                         {'catalog_read_at': '2999-01-01T00:00:00Z'}, {'catalog': self.temp / 'missing'}):
             self.select(code=4, **changes)
         self.catalog_path.write_text('{')
         self.select(code=4)
         self.save()
+        self.authorize('worker', 2)
         primary = next(p for p in self.catalog['providers'] if p['providerInstanceId'] == DIRECT)
         original = copy.deepcopy(primary)
         for changes, reason in [
@@ -535,3 +554,245 @@ class OfflineRouting(OfflineRoutingFixture):
             self.assertIn(('route', 'input'), names)
             self.assertIn(('route', 'judge'), names)
             self.assertIn(('route', 'select'), names)
+
+
+    def test_escalation_chains_and_epoch_reset(self):
+        self.judge()
+        before = self.events()
+        self.select(stage=2, code=4)
+        self.escalate(from_stage=2, code=4)
+        self.assertEqual(self.events(), before)
+        event = self.escalate(child=True)
+        self.assertEqual(event['data']['toStage'], 2)
+        self.assertNotIn('configVersion', event['data'])
+        self.select(stage=2)
+        self.escalate(code=4, child=True)
+        self.select(stage=3, code=4)
+        self.escalate(from_stage=2)
+        self.select(stage=3)
+        self.select(stage=1)
+        self.judge()
+        self.select(stage=2, code=4)
+        self.select()
+        self.judge(scope='COMPLEX')
+        self.escalate(code=4)
+        self.escalate(from_stage=2)
+        self.select(stage=3)
+
+    def test_disconnected_wrong_lane_and_role_events(self):
+        self.judge()
+        def append(role, lane, stage):
+            return records.append_event(self.local, REPO, WORK, 'routing-escalation',
+                dict(role=role, lane=lane, fromStage=stage, toStage=stage+1,
+                     reason='finding-unresolved' if role == 'worker' else 'reviewer-failure',
+                     evidence='Synthetic', wipCommit=None), writer=self.events()[-1]['writer'])
+        append('worker', 'backend-logic', 2)
+        append('worker', 'ui-frontend', 1)
+        append('reviewer', 'core', 1)
+        self.select(stage=2, code=4)
+        self.escalate()
+        self.select(stage=2)
+        self.select(stage=3, code=4)
+        self.escalate(from_stage=2)
+        self.select(stage=3)
+
+    def hard_stop(self):
+        return ('<ESCALATION_REQUEST>\n'
+                '- Status: ESCALATE_TO_NEXT_STAGE\n- Model and options: synthetic high\n'
+                '- Branch: synthetic-worker\n- WIP commit: ' + '2' * 40 + '\n'
+                '- Review base: ' + '1' * 40 + '\n- Modified files: t3compose/routing.py\n'
+                '- What was attempted (at most 150 words):\n'
+                '  1. Attempt 1: Synthetic first repair failed.\n'
+                '  2. Attempt 2: Synthetic second repair failed.\n'
+                '- Failing command and output: synthetic-check\n' + '  synthetic failure\n' * 15 +
+                '- Suspected root cause: Synthetic failure.\n</ESCALATION_REQUEST>')
+
+    def test_all_escalation_reasons_roles_and_bad_pairs(self):
+        pairs = [('worker-hard-stop', 'worker'), ('finding-unresolved', 'worker'),
+                 ('review-deadlock', 'reviewer'), ('reviewer-failure', 'reviewer'),
+                 ('lead-stalled', 'feature-lead')]
+        for reason, role in pairs:
+            self.judge()
+            extra = dict(wip_commit='2' * 40) if reason == 'worker-hard-stop' else {}
+            evidence = self.hard_stop() if extra else 'Synthetic trigger'
+            for wrong in {'worker', 'reviewer', 'feature-lead'} - {role}:
+                before = self.events()
+                self.escalate(wrong, reason=reason, evidence=evidence, code=2, **extra)
+                self.assertEqual(self.events(), before)
+            result = self.escalate(role, reason=reason, evidence=evidence, **extra)
+            self.assertEqual(result['data']['role'], role)
+            self.assertEqual(result['data']['evidence'], evidence)
+
+    def test_evidence_limits_and_hard_stop_validation(self):
+        self.judge()
+        for evidence in ('', '  ', 'é' * 4096 + 'a', self.hard_stop()):
+            before = self.events()
+            self.escalate(evidence=evidence, reason='worker-hard-stop' if '<ESCALATION' in evidence
+                          else 'finding-unresolved', code=2)
+            self.assertEqual(self.events(), before)
+        for evidence in ('missing block', self.hard_stop().replace('Attempt 2:', 'Attempt X:'),
+                         self.hard_stop().replace('1' * 40, '3' * 40)):
+            self.escalate(reason='worker-hard-stop', evidence=evidence, wip_commit='2' * 40, code=2)
+        self.escalate(reason='worker-hard-stop', evidence=self.hard_stop(), wip_commit='3' * 40, code=2)
+        self.escalate(evidence='é' * 4096)
+        self.judge()
+        block = self.hard_stop()
+        result = self.escalate(reason='worker-hard-stop', evidence='before\n' + block + '\nafter',
+                               wip_commit='2' * 40)
+        self.assertEqual(result['data']['evidence'], block)
+
+    def test_escalation_errors_never_append(self):
+        self.judge()
+        for changes, code in [(dict(input_ref=999), 4), (dict(policy_digest='bad'), 2),
+                              (dict(policy_digest='sha256:' + 'a' * 64), 4),
+                              (dict(from_stage=3), 2), (dict(wip_commit='bad'), 2),
+                              (dict(evidence_file=self.temp / 'missing-private'), 2)]:
+            before = self.events()
+            self.escalate(code=code, **changes)
+            self.assertEqual(self.events(), before)
+        with patch.object(records, 'append_event', side_effect=records.RecordError('synthetic-secret')):
+            self.escalate(code=2)
+        self.current = self.input()
+        self.escalate(code=4)
+
+    def test_pre_pass_direct_pool_missing_and_skips(self):
+        self.judge(criticality='CORE')
+        result = self.select('reviewer', **{'pass': 'pre'})
+        self.assertEqual((result['pass'], result['chosenIndex']), ('pre', 0))
+        cell = self.cfg['matrix']['reviewer']['core']['1']
+        target = cell['prePass']
+        self.refuse(target['providerInstanceId'], target['model'])
+        self.save()
+        before = self.events()
+        skip = self.select('reviewer', child=True, **{'pass': 'pre'})
+        self.assertTrue(skip['skipped'])
+        self.assertEqual(len(skip['targetsTried']), 1)
+        self.assertIsNotNone(skip['retryAfter'])
+        self.assertEqual(self.events(), before)
+        self.select('reviewer')
+        cell['prePass'] = copy.deepcopy(self.cfg['helpers']['text']['primary'])
+        self.state['refusals'] = []
+        self.refuse(ACCOUNTS[0], cell['prePass']['model'])
+        self.save()
+        result = self.select('reviewer', **{'pass': 'pre'})
+        self.assertEqual(result['chosenPoolAccount'], ACCOUNTS[1])
+        self.assertTrue(all(t['index'] == 0 for t in result['targetsTried']))
+        del cell['prePass']
+        self.save()
+        before = self.events()
+        self.assertTrue(self.select('reviewer', **{'pass': 'pre'})['skipped'])
+        self.assertEqual(self.events(), before)
+        # The schema permits prePass on any reviewer cell.
+        self.cfg['matrix']['reviewer']['non-critical']['2']['prePass'] = copy.deepcopy(target)
+        self.save()
+        self.judge(scope='COMPLEX')
+        self.assertEqual(self.select('reviewer', 2, **{'pass': 'pre'})['pass'], 'pre')
+
+    def test_pre_pass_invalid_inputs_are_not_skips(self):
+        self.judge(criticality='CORE')
+        self.select(**{'pass': 'pre'}, code=2)
+        self.select('feature-lead', **{'pass': 'record'}, code=2)
+        self.catalog_path.write_text('{')
+        self.select('reviewer', **{'pass': 'pre'}, code=4)
+        self.save()
+        self.cfg['version'] = 1
+        self.save()
+        self.select('reviewer', **{'pass': 'pre'}, code=3)
+
+    def test_helpers_null_fields_no_classification_and_no_fallback(self):
+        self.current = self.input()
+        for role in ('verifier', 'text'):
+            result = self.select(role, stage=None, child=(role == 'verifier'))
+            for field in ('classificationRef', 'lane', 'stage', 'pass', 'round', 'criticality', 'scope'):
+                self.assertIsNone(result[field])
+            self.assertEqual(result['floorsApplied'], [])
+            self.assertEqual(result['chosenIndex'], 0)
+            for changes in (dict(stage=1), dict(round='first'), {'pass': 'pre'}):
+                options = dict(stage=None)
+                options.update(changes)
+                self.select(role, code=2, **options)
+            target = self.cfg['helpers'][role]['primary']
+            self.cfg['helpers'][role]['quotaFallback'] = [copy.deepcopy(
+                self.cfg['matrix']['worker']['backend-logic']['2']['primary'])]
+            for instance in ACCOUNTS if 'providerPool' in target else [target['providerInstanceId']]:
+                self.refuse(instance, target['model'])
+            self.save()
+            before = self.events()
+            dry = self.select(role, stage=None, code=5)
+            self.assertIsNotNone(dry['retryAfter'])
+            self.assertTrue(all(t['index'] == 0 for t in dry['targetsTried']))
+            self.assertEqual(self.events(), before)
+        self.select(stage=None, code=2)
+        self.select('search', stage=None, code=2)
+        self.cfg['helpers']['verifier']['primary'] = copy.deepcopy(
+            self.cfg['matrix']['feature-lead']['default']['1']['primary'])
+        self.save()
+        self.assertEqual(self.select('verifier', stage=None)['billing'], 'per-token')
+
+    def test_bounded_evidence_read_and_bad_utf8(self):
+        self.judge()
+        before = self.events()
+        path = self.temp / 'evidence.txt'
+        path.write_bytes(b'\xff')
+        self.invoke('escalate', '--role', 'worker', '--from-stage', 1,
+                    '--reason', 'finding-unresolved', '--evidence-file', path,
+                    '--input-ref', self.current['inputRef'], '--policy-digest',
+                    self.current['policyDigest'], code=2)
+        self.assertEqual(self.events(), before)
+        stream = io.BytesIO(b'x' * 8193)
+        with patch('builtins.open', return_value=contextlib.nullcontext(stream)) as opened:
+            with self.assertRaises(cli.CommandError):
+                routing._evidence(path)
+            self.assertEqual(stream.tell(), 8193)
+            opened.assert_called_once_with(path, 'rb')
+
+    def test_pre_pass_unavailable_pool_no_fallback_or_append(self):
+        self.judge(criticality='CORE')
+        cell = self.cfg['matrix']['reviewer']['core']['1']
+        cell['prePass'] = copy.deepcopy(self.cfg['helpers']['text']['primary'])
+        for provider in self.catalog['providers']:
+            if provider['providerInstanceId'] in ACCOUNTS:
+                provider['canRunChildTask'] = False
+        self.save()
+        before = self.events()
+        skip = self.select('reviewer', **{'pass': 'pre'})
+        self.assertTrue(skip['skipped'])
+        self.assertEqual([t['account'] for t in skip['targetsTried']], ACCOUNTS)
+        self.assertTrue(all(t['index'] == 0 for t in skip['targetsTried']))
+        self.assertIsNone(skip['retryAfter'])
+        self.assertEqual(self.events(), before)
+        self.assertEqual(self.select('reviewer')['chosenIndex'], 0)
+
+    def test_helper_blocks_availability_and_append_failures(self):
+        self.current = self.input()
+        self.cfg['roleBlocks'].append(dict(driverKind='codex', role='verifier',
+                                          reason='Synthetic block', evidence='Synthetic probe'))
+        self.save()
+        before = self.events()
+        dry = self.select('verifier', stage=None, code=5)
+        self.assertEqual(dry['targetsTried'][0]['reason'], 'role block: Synthetic block')
+        self.assertEqual(self.events(), before)
+        self.cfg['roleBlocks'].pop()
+        self.save()
+        for role, changes in [('verifier', dict(stage=None)), ('reviewer', {'pass': 'pre'})]:
+            if role == 'reviewer':
+                self.judge(criticality='CORE')
+            before = self.events()
+            with patch.object(records, 'append_event', side_effect=records.RecordError('Synthetic')):
+                self.select(role, code=2, **changes)
+            self.assertEqual(self.events(), before)
+
+    def test_floor_start_and_new_input_ignore_old_chain(self):
+        self.task['riskFacts'] = ['recovery-or-concurrency']
+        self.judge()
+        before = self.events()
+        self.escalate(code=4)
+        self.select(stage=1, code=4)
+        self.assertEqual(self.events(), before)
+        event = self.escalate(from_stage=2)
+        self.assertEqual(event['data']['lane'], 'backend-logic')
+        self.select(stage=3)
+        self.escalate(from_stage=2, code=4)
+        self.judge()
+        self.select(stage=3, code=4)
+        self.select(stage=2)
