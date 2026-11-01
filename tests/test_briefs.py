@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import io
 import json
+import re
 import runpy
 import stat
 import sys
@@ -546,3 +547,123 @@ class OfflineBriefs(OfflineTestCase):
         for forged in ('<ESCALATION_REQUEST>', '</ESCALATION_REQUEST>',
                        'Escalation-rule: hard-stop-v1'):
             self.refusal(self.render(OBJECTIVE='valid\n' + forged))
+
+    def make_continuation(self, original_changes=None, **changes):
+        original = self.temp / 'original.md'
+        self.values.write_text(json.dumps({**self.data, 'ROUND': 'implementation',
+                                           **(original_changes or {})}))
+        self.success(self.invoke('brief', 'render', '--template', 'worker',
+                                 '--values', self.values, '--out', original))
+        result = self.temp / 'result.md'
+        result.write_text('chatter before\n' + self.escalation(
+            wip='4' * 40, base=self.data['REVIEW_BASE']) + 'chatter after\n')
+        self.values.write_text(json.dumps({**self.data, 'STAGE': '2', 'START': '4' * 40,
+                                           'ROUND': 'continuation',
+                                           'PROVISIONED': '5' * 40, **changes}))
+        return self.invoke('brief', 'render', '--template', 'continuation',
+                           '--values', self.values, '--out', self.output,
+                           '--original-brief', original, '--escalation', result)
+
+    def reembed(self, text, original):
+        match = re.search(r'^<<<ORIGINAL-BRIEF bytes=(\d+) sha256=[0-9a-f]{64}\n', text, re.M)
+        end = len(text[:match.end()].encode()) + int(match[1])
+        raw = original.encode()
+        return (text[:match.start()] + '<<<ORIGINAL-BRIEF bytes=%d sha256=%s\n' % (
+            len(raw), hashlib.sha256(raw).hexdigest()) + original +
+            text.encode()[end:].decode())
+
+    def test_continuation_round_trip(self):
+        self.success(self.make_continuation())
+        raw = self.output.read_bytes()
+        digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        self.assertEqual(self.success(self.invoke('brief', 'check', self.output)), {'digest': digest})
+        text = raw.decode('utf-8')
+        block = self.escalation(wip='4' * 40, base='3' * 40).rstrip('\n')
+        for marker in ('Round: continuation', 'Stage: 2', 'Start: ' + '4' * 40,
+                       'Continuation-rule: next-stage-v1', 'git diff ' + '3' * 40 + '..HEAD', block):
+            self.assertIn(marker, text)
+        for noise in ('chatter before', 'chatter after'):
+            self.assertNotIn(noise, text)
+        match = re.search(r'^<<<ORIGINAL-BRIEF bytes=(\d+) sha256=([0-9a-f]{64})\n', text, re.M)
+        start = len(text[:match.end()].encode())
+        embedded = raw[start:start + int(match[1])]
+        orig_raw = (self.temp / 'original.md').read_bytes()
+        self.assertEqual(embedded, orig_raw)
+        self.assertEqual(match[2], hashlib.sha256(orig_raw).hexdigest())
+        for orig_changes in ({'OBJECTIVE': 'Mentions ORIGINAL-BRIEF>>> in a line, é and 🙂.'},
+                             {'ROUND': 'corrections'}):
+            self.success(self.make_continuation(original_changes=orig_changes))
+            self.success(self.invoke('brief', 'check', self.output))
+        for prov in ('agy', 'pi'):
+            self.refusal(self.make_continuation(PROVIDER=prov))
+            self.success(self.make_continuation(PROVIDER=prov, INLINE_INSTRUCTIONS='Rules.'))
+            self.success(self.invoke('brief', 'check', self.output))
+
+    def test_continuation_check_refusals(self):
+        self.success(self.make_continuation())
+        good, orig = self.output.read_text('utf-8'), (self.temp / 'original.md').read_text('utf-8')
+        block = self.escalation(wip='4' * 40, base='3' * 40).rstrip('\n')
+        rev = self.temp / 'reviewer.md'
+        self.values.write_text(json.dumps({**self.data, 'ROUND': 'earlier-review'}))
+        self.success(self.invoke('brief', 'render', '--template', 'reviewer',
+                                 '--values', self.values, '--out', rev))
+        bm = re.search(r'bytes=(\d+)', good)
+        bad_texts = [
+            good.replace(block, ''), good.replace(block, 'The worker said many things.'),
+            good.replace('Start: ' + '4' * 40, 'Start: ' + '9' * 40),
+            good.replace('- WIP commit: ' + '4' * 40, '- WIP commit: ' + '9' * 40),
+            self.reembed(good, orig.replace('## Objective', '## Aim')),
+            self.reembed(good, rev.read_text('utf-8')), self.reembed(good, good),
+            self.reembed(good, orig.replace('Repository: synthetic/example', 'Repository: other/repo')),
+            self.reembed(good, orig.replace('Review-base: ' + '3' * 40, 'Review-base: ' + '9' * 40)),
+            re.sub(r'sha256=[0-9a-f]{64}', 'sha256=' + '0' * 64, good),
+            good.replace('Implement the approved example.', 'Xmplement the approved example.'),
+            good.replace(bm.group(0), 'bytes=%d' % (int(bm[1]) + 5)),
+            good.replace(bm.group(0), 'bytes=%d' % (int(bm[1]) - 5)),
+            good.replace('ORIGINAL-BRIEF>>>\n', ''),
+            re.sub(r'^<<<ORIGINAL-BRIEF bytes=\d+ sha256=[0-9a-f]{64}\n', '', good, flags=re.M),
+            good.replace('## Original brief\n', '## Original brief\nextra line\n'),
+            good.replace('ORIGINAL-BRIEF>>>\n', 'ORIGINAL-BRIEF>>>\nextra line\n'),
+            good.replace('- Review base: ' + '3' * 40, '- Review base: ' + '9' * 40),
+            good.replace('must not ask for one', 'may ask for one'),
+            good.replace('git diff ' + '3' * 40, 'git diff ' + '9' * 40),
+            good.replace('Round: continuation', 'Round: implementation'),
+            good.replace('## Continuation\n', '## Other\n'), good.replace(self.data['HOLDS'], block, 1),
+        ]
+        for bad in bad_texts:
+            with self.subTest(snippet=bad[:40]):
+                self.output.write_text(bad)
+                self.refusal(self.invoke('brief', 'check', self.output))
+
+    def test_continuation_render_refusals(self):
+        original = self.temp / 'orig.md'
+        self.values.write_text(json.dumps({**self.data, 'ROUND': 'implementation'}))
+        self.success(self.invoke('brief', 'render', '--template', 'worker',
+                                 '--values', self.values, '--out', original))
+        result = self.temp / 'res.md'
+        result.write_text(self.escalation(wip='4' * 40, base=self.data['REVIEW_BASE']))
+        inv = lambda orig, esc: self.invoke(
+            'brief', 'render', '--template', 'continuation', '--values', self.values,
+            '--out', self.output, *(('--original-brief', orig) if orig else ()),
+            *(('--escalation', esc) if esc else ()))
+        self.values.write_text(json.dumps({**self.data, 'STAGE': '2', 'START': '4' * 40,
+                                           'ROUND': 'continuation', 'PROVISIONED': '5' * 40}))
+        inv_orig, bad_esc, sent_esc = (self.temp / f for f in ('inv.md', 'bad.md', 'sent.md'))
+        inv_orig.write_text('not a brief\n')
+        bad_esc.write_text('bad block\n')
+        sent_esc.write_text('SYNTHETIC_PRIVATE_SENTINEL\n' + self.escalation(
+            wip='4' * 40, base=self.data['REVIEW_BASE']))
+        calls = [
+            lambda: self.make_continuation(START='6' * 40),
+            lambda: self.make_continuation(ORIGINAL_BRIEF='x'),
+            lambda: self.make_continuation(ESCALATION_REQUEST='x'),
+            *(lambda h=h: self.make_continuation(HOLDS='ok\n' + h) for h in (
+                '<<<ORIGINAL-BRIEF bytes=1 sha256=' + '0' * 64,
+                'ORIGINAL-BRIEF>>>', '<ESCALATION_REQUEST>', 'Continuation-rule: x')),
+            lambda: inv(original, None), lambda: inv(None, result), lambda: inv(None, None),
+            lambda: inv(inv_orig, result), lambda: inv(original, bad_esc), lambda: inv(original, sent_esc),
+        ]
+        for make_call in calls:
+            self.output.unlink(missing_ok=True)
+            self.refusal(make_call())
+            self.assertFalse(self.output.exists())

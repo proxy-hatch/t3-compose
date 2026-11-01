@@ -15,9 +15,9 @@ TOKEN = re.compile(r'\{\{([A-Z][A-Z0-9_]*)\}\}')
 FIELDS = ('Role', 'Stage', 'Provider', 'Model', 'Reason', 'Repository', 'Provisioned',
           'Start', 'Review-base', 'Review-head', 'Round', 'Mode', 'Privacy-findings',
           'Unpublished-range')
-STRUCTURE = re.compile(r'^\s*(?:#|</?ESCALATION_REQUEST>|(?:' + '|'.join(FIELDS) +
-                       r'|Move-rule|Review-pass|Escalation-rule|Inline-instructions):)',
-                       re.I | re.M)
+STRUCTURE = re.compile(r'^\s*(?:#|</?ESCALATION_REQUEST>|<<<ORIGINAL-BRIEF|ORIGINAL-BRIEF>>>|(?:' +
+                       '|'.join(FIELDS) + r'|Move-rule|Review-pass|Escalation-rule|'
+                       r'Continuation-rule|Inline-instructions):)', re.I | re.M)
 MOVE = ('Move-rule: three-case-v1\n'
         '1. HEAD=start => continue.\n'
         '2. HEAD=provisioned AND clean AND start exists AND fresh own branch => move own branch to start only.\n'
@@ -32,7 +32,7 @@ SECTIONS = {
                  'Read first', 'Review mode', 'Review questions', 'Checks',
                  'Findings format', 'Verdict', 'Return'),
 }
-TEMPLATES = ('worker', 'reviewer', 'reviewer-prepass')
+TEMPLATES = ('worker', 'reviewer', 'reviewer-prepass', 'continuation')
 REVIEW_MODES = {
     'record': (
         'Review-pass: record-v1\n'
@@ -87,6 +87,23 @@ HARD_STOP_BLOCK = re.compile('^' + re.escape(HARD_STOP) + '$', re.M)
 ESCALATION_BLOCK = re.compile('^' + re.escape(ESCALATION) + '$', re.M)
 ESCALATION_LIMIT, ESCALATION_WORDS, ESCALATION_OUTPUT = 8192, 150, (15, 30)
 BRANCH = re.compile(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,199}')
+CONTINUATION_SECTIONS = ('Role and routing', 'Worktree and holds', 'Repository and commits',
+                         'Continuation', 'Escalation request', 'Original brief', 'Return')
+CONTINUATION = (
+    'Continuation-rule: next-stage-v1\n'
+    '1. The earlier Worker stopped at its hard stop and committed its work in progress. '
+    "That WIP commit is this brief's Start.\n"
+    "2. Inspect `git diff %s..HEAD`, evaluate the previous Worker's attempts in the "
+    'escalation block, either fix the root cause or revert the broken changes, and get '
+    'the validation passing.\n'
+    '3. You have no transcript of the earlier Worker and must not ask for one. Treat the '
+    'escalation block as a claim to test, not as fact.\n'
+    '4. The original brief below binds you in full, except for its routing fields, '
+    'commits, move rule and Round, which this brief replaces. You have your own budget '
+    'of 2 repair attempts and your own hard stop.')
+EMBED_BEGIN = re.compile(r'^<<<ORIGINAL-BRIEF bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})$', re.M)
+EMBED_END = 'ORIGINAL-BRIEF>>>'
+EMBEDDED = '[the original brief is embedded here]'
 
 
 def _fail(message='invalid brief input'):
@@ -146,7 +163,7 @@ def _metadata(meta):
         _fail('invalid brief stage')
     if meta['Provider'] not in ('agy', 'pi', 'claude', 'codex'):
         _fail('invalid brief provider family')
-    rounds = ('implementation', 'corrections') if role == 'worker' else (
+    rounds = ('implementation', 'corrections', 'continuation') if role == 'worker' else (
         'earlier-review', 'corrections-review', 'final-review')
     if meta['Round'] not in rounds:
         _fail('invalid brief round')
@@ -157,6 +174,29 @@ def _metadata(meta):
         if not re.fullmatch(r'[0-9a-fA-F]{40}', meta[name]):
             _fail('brief commits must be full 40-hex values')
     return _privacy_section(meta)
+
+
+def _embed(original):
+    """Embed the original brief byte for byte behind a length and digest marker."""
+    raw = original.encode('utf-8')
+    return '<<<ORIGINAL-BRIEF bytes=%d sha256=%s\n%s\n%s' % (
+        len(raw), hashlib.sha256(raw).hexdigest(), original, EMBED_END)
+
+
+def _split_embed(body):
+    """Return the embedded original brief and the body with the embed masked."""
+    match = EMBED_BEGIN.search(body)
+    if not match or body[match.end():match.end() + 1] != '\n':
+        _fail('missing original brief')
+    rest = body[match.end() + 1:].encode('utf-8')
+    size, tail = int(match[1]), ('\n' + EMBED_END).encode('utf-8')
+    if rest[size:size + len(tail)] != tail or hashlib.sha256(rest[:size]).hexdigest() != match[2]:
+        _fail('invalid original brief embed')
+    try:
+        original = rest[:size].decode('utf-8')
+    except UnicodeError:
+        _fail('invalid original brief embed')
+    return original, body[:match.start()] + EMBEDDED + rest[size + len(tail):].decode('utf-8')
 
 
 def _validate(text):
@@ -176,9 +216,12 @@ def _validate(text):
         pos += 1
     privacy = _metadata(meta)
     body = '\n'.join(lines[pos:])
+    continuation = meta['Round'] == 'continuation'
+    if continuation:
+        original, body = _split_embed(body)
     headings = list(re.finditer(r'^## (.+)$', body, re.M))
     names = [match[1] for match in headings]
-    expected = list(SECTIONS[meta['Role']])
+    expected = list(CONTINUATION_SECTIONS if continuation else SECTIONS[meta['Role']])
     if privacy:
         expected.insert(-1, 'Privacy Corrections')
     if names != expected or body[:headings[0].start()].strip():
@@ -200,11 +243,33 @@ def _validate(text):
         content = block.sub('', content, count=1)
         if meta['Mode'] == 'record' and PRE_PASS_ID.search(text):
             _fail('a review of record cannot carry pre-pass findings')
-    if meta['Role'] == 'worker':
+    if meta['Role'] == 'worker' and not continuation:
         for block in (HARD_STOP_BLOCK, ESCALATION_BLOCK):
             if not block.search(sections['Budget and escalation']):
                 _fail('invalid hard stop rules')
             content = block.sub('', content, count=1)
+    if continuation:
+        rule = re.compile('^' + re.escape(CONTINUATION % meta['Review-base']) + '$', re.M)
+        if sections['Original brief'] != EMBEDDED or not rule.search(sections['Continuation']):
+            _fail('invalid continuation sections')
+        content = rule.sub('', content, count=1)
+        request = sections['Escalation request']
+        fields = parse_escalation(request)
+        if fields['block'] != request:
+            _fail('the escalation request section holds only the escalation block')
+        content = content.replace(request, '', 1)
+        if fields['wipCommit'] != meta['Start'].lower():
+            _fail('the escalation WIP commit differs from the start commit')
+        if fields['reviewBase'] != meta['Review-base'].lower():
+            _fail('the escalation review base differs from this brief')
+        try:
+            inner = _validate(original)
+        except cli.CommandError:
+            _fail('the original brief fails its own check')
+        if (inner['Role'] != 'worker' or inner['Round'] == 'continuation' or
+                inner['Repository'] != meta['Repository'] or
+                inner['Review-base'].lower() != meta['Review-base'].lower()):
+            _fail('the original brief does not match this continuation')
     routing = sections['Role and routing']
     if (routing.count('Inline-instructions:') != 1 or
             not re.search(r'^Inline-instructions:(?:\n|$)', routing, re.M)):
@@ -219,6 +284,7 @@ def _validate(text):
         _fail('invalid three-case move rule')
     if privacy and ('## Privacy Corrections\n' + sections['Privacy Corrections'] + '\n') != privacy:
         _fail('invalid privacy Corrections authorization')
+    return meta
 
 
 def _write_raw(path, text):
@@ -267,14 +333,22 @@ def render(args):
         _fail('invalid brief values encoding')
     structured = builtin or template.startswith('# t3c brief v1\n')
     if structured:
-        if 'PRIVACY_CORRECTIONS' in values:
-            _fail('privacy authorization is generated from structured scope only')
+        if {'PRIVACY_CORRECTIONS', 'ORIGINAL_BRIEF', 'ESCALATION_REQUEST'} & set(values):
+            _fail('generated brief parts cannot be supplied as values')
         if any(STRUCTURE.search(value) for value in values.values()):
             _fail('values contain reserved brief structure')
         values.setdefault('INLINE_INSTRUCTIONS', '')
         values.setdefault('PRIVACY_FINDINGS', 'none')
         values.setdefault('UNPUBLISHED_RANGE', 'none')
         values['PRIVACY_CORRECTIONS'] = ''
+        if (args.original_brief is None) != (args.escalation is None):
+            _fail('--original-brief and --escalation are used together')
+        if args.original_brief is not None:
+            original, request = _read_text(args.original_brief), _read_text(args.escalation)
+            _screen(patterns, original)
+            _screen(patterns, request)
+            values['ORIGINAL_BRIEF'] = _embed(original)
+            values['ESCALATION_REQUEST'] = parse_escalation(request)['block']
     def substitute(match):
         if match[1] not in values:
             _fail('missing brief value')
@@ -403,6 +477,8 @@ def register(registry):
     parser.add_argument('--template', required=True)
     parser.add_argument('--values', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--original-brief', type=Path)
+    parser.add_argument('--escalation', type=Path)
     parser.set_defaults(handler=render)
     parser = group.add_parser('check')
     parser.add_argument('file', type=Path)

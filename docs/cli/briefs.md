@@ -5,7 +5,7 @@ safe diagnostics. Resolve final CPython 3.15 with `PY="$(uv python find 3.15)"`.
 Here `t3c` means `"$PY" -I -S <root>/bin/t3c`.
 
 ```text
-t3c brief render --template worker|reviewer|reviewer-prepass|PATH --values VALUES.json --out FILE
+t3c brief render --template worker|reviewer|reviewer-prepass|continuation|PATH --values VALUES.json --out FILE [--original-brief FILE --escalation FILE]
 t3c brief check FILE
 t3c brief check-escalation --result FILE
 ```
@@ -17,7 +17,7 @@ changes Git state, evaluates code, reads credentials or selects a route.
 
 ## Rendering and values
 
-`worker`, `reviewer` and `reviewer-prepass` select files under `<root>/skill/templates/`.
+`worker`, `reviewer`, `reviewer-prepass` and `continuation` select files under `<root>/skill/templates/`.
 Any other `--template` value is a file path, relative to the caller's current
 working directory or absolute. Values and output paths follow the same rule.
 Parents of `--out` must already exist. Output is raw Markdown, never JSON
@@ -63,10 +63,11 @@ meaning. Any provider family may review; the routing records, not this command,
 decide who is eligible.
 
 External templates can use any named string slots and any layout. Plain
-external templates are rendered without imposing Worker/Reviewer sections.
-They cannot be passed to `check`. An external template beginning exactly
-`# t3c brief v1` followed by LF opts into the structured contract below,
-including the generated privacy section and structural-injection restrictions.
+external templates are rendered without imposing Worker, Reviewer or
+continuation sections. External templates cannot be passed to `check`.
+An external template beginning exactly `# t3c brief v1` followed by LF opts
+into the structured contract below, including the generated privacy section
+and structural-injection restrictions.
 
 ## Structured check contract
 
@@ -78,11 +79,11 @@ one `Field: value` per metadata field and a blank line. Required fields are
 `Review-head` and `Mode` for Reviewer only. `Stage` values are `1`, `2` or `3`.
 Unknown/duplicate fields fail. Values are nonempty single lines of at most 512
 characters. Commit values are exactly 40 hexadecimal characters; this is format
-validation, not object existence. Worker rounds are `implementation` or
-`corrections`; Reviewer rounds are `earlier-review`, `corrections-review` or
-`final-review`. A non-critical Task's lead reviews its own final head, so no
-Reviewer brief exists for it, while a core Task's final head, and any Task
-without a lead, gets a `final-review` brief.
+validation, not object existence. Worker rounds are `implementation`,
+`corrections` or `continuation`; Reviewer rounds are `earlier-review`,
+`corrections-review` or `final-review`. A non-critical Task's lead reviews its
+own final head, so no Reviewer brief exists for it, while a core Task's final
+head, and any Task without a lead, gets a `final-review` brief.
 
 Required `##` sections must be nonempty and appear exactly once, in the order
 in the corresponding [Worker](../../skill/templates/worker.md),
@@ -133,13 +134,17 @@ The Worker template carries a `Budget and escalation` section with the fixed
 both verified by `check` as exact text. Exactly one escalation block may
 appear; surrounding text is ignored. The block holds the required fields in
 exact order: `Status` (`ESCALATE_TO_NEXT_STAGE`), `Model and options` (at most
-200 characters), `Branch`, 40-hex lowercase `WIP commit` and `Review base`,
-comma-separated repo-relative `Modified files`, two numbered attempts within
-150 words total, a failing command with 15 to 30 indented lines of output (not
-all blank), and `Suspected root cause`. Branch names must be valid Git branch
-refs without traversal or lock suffixes. Modified files cannot start with a
-slash or hyphen, nor contain commas, backslashes or `..`. The block is at most
-8 KiB, with no doubled braces or control characters.
+200 characters), `Branch`, `WIP commit` and `Review base` (40 hexadecimal
+characters, any case, returned lowercase), `Modified files` (repository-relative
+paths separated by `, `), two numbered attempts within 150 words in total
+(counted after their labels), a failing command with 15 to 30 lines of output
+(each empty or indented by two spaces, not all blank), and `Suspected root
+cause`. A branch name has at most 200 characters from letters, digits, `.`, `_`,
+`/` and `-`, starts with a letter or digit, and has no `..`, no `//` and no
+trailing `/`, `.` or `.lock`. A path is not empty, does not start with `/` or
+`-`, holds no comma or backslash and has no `..` component. The block is at most
+8 KiB, with no doubled braces or control characters, and each tag stands alone
+on its line.
 
 Other modules call `briefs.parse_escalation(text)` to validate the block and
 return its twelve fields (`status`, `model`, `branch`, `wipCommit`, `reviewBase`,
@@ -151,6 +156,33 @@ identifier list, calls `parse_escalation`, and prints one JSON object with
 `attemptWords`, `branch`, `digest` (sha256 of the block text without trailing
 newline), `modifiedFiles`, `outputLines`, `reviewBase` and `wipCommit`. Any
 failure exits 2 with empty stdout and a safe message echoing nothing from FILE.
+
+## Continuation briefs
+
+A continuation brief is a Worker brief (`Role: worker`) for the next stage
+after a Worker's hard stop, with `Round: continuation` and `Start` set to the
+earlier Worker's WIP commit. Its sections are `Role and routing`, `Worktree and
+holds`, `Repository and commits`, `Continuation`, `Escalation request`,
+`Original brief` and `Return`.
+
+The `Continuation` section holds the fixed `Continuation-rule: next-stage-v1`
+rule block instructing the worker to inspect `git diff <review base>..HEAD`,
+evaluate the previous attempts in the escalation block, fix the root cause or
+revert broken changes, and get validation passing. The original brief is
+embedded byte for byte behind `<<<ORIGINAL-BRIEF bytes=N sha256=HEX` and an
+`ORIGINAL-BRIEF>>>` end marker. File inputs are supplied via `--original-brief`
+and `--escalation` (both or neither) and are never taken from values JSON.
+Only the validated escalation block is embedded; surrounding text is ignored
+and no transcript of the earlier Worker is ever carried.
+
+`check` refuses a continuation brief: without the escalation block; when the
+block's WIP commit differs from `Start`; when the embedded original brief fails
+its own check; when the embed's length or digest is wrong; when the embedded
+brief is not a Worker brief of another round (refusing Reviewer briefs or
+continuations); when the original brief differs in repository or review base;
+when the escalation block's review base differs; when the rule block is
+altered; or when the escalation request and original brief sections hold
+anything other than the validated block and the exact embed.
 
 ## Bounded privacy Corrections
 
