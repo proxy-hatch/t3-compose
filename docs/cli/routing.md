@@ -9,106 +9,43 @@ no writer option: appends use `load_work(...).effectiveWork.writer` and the
 
 ```text
 t3c route input --repo REPO --work ID --input TASK.json
-t3c route judge --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST \
-  --domain SOFTWARE_ENGINEERING|OTHER --difficulty EASY|MEDIUM|CHALLENGING --reason TEXT
-t3c route select --repo REPO --work ID --role worker|reviewer|feature-lead|text-helper \
-  --input-ref SEQ --policy-digest DIGEST --catalog FILE --catalog-read-at UTC \
-  [--round first|corrections] [--review-scope code|document|corrections-delta] [--escalate]
 ```
 
 `input` reads a task object with exactly `intent`, `acceptance`, `interfaces`,
 `scope`, `riskFacts`, `dependencies`. It records canonical `{task, context:null}`
 through the common 16 KiB input recorder and returns
 `{inputRef, inputDigest, policyDigest}`. The supplied JSON file is bounded to
-1 MiB before canonical validation. `judge` records basis `manual` and returns
-the appended `routing-judgment` envelope. Domain and difficulty use the exact
-uppercase choices above. Reason must be nonempty text.
+1 MiB before canonical validation.
 
-Both `judge` and `select` require the latest input sequence and its current
-policy digest. Changed input, criteria, instructions, floors or confidence
-threshold require a new input and classification or judgment. Selection uses
-the latest decision matching that input, its digest and current policy; an
-unaccepted or low-confidence classification needs judgment. A fixed text helper
-needs the current bounded input but no classification. Unknown declared facts
-block tier calculation. Model preferences and round tiers reload next command
-without invalidating an otherwise current decision.
+Exits: 0 recorded; 2 invalid input or records; 3 invalid config. Exits 2/3
+have a sanitized message only and append nothing.
 
-First-round Workers take the maximum difficulty and declared fact floors.
-Corrections use `roundTiers.corrections` in place of first-round floors; use
-this round only for enumerated findings. `--escalate` is Worker-only, default
-false: take the maximum of the configured round base and one tier above the
-highest prior Worker selection of that same round. No such history, or a
-prior challenging tier, requires judgment. `--round` defaults to `first`.
+The version-2 `route judge` and `route select` commands are retired. Their
+version-3 replacements, a manual judgment and a selection from the routing
+matrix, arrive with MX-3a1.
 
-Reviewer `--review-scope` defaults to `code`: code review takes at least medium
-and follows the highest prior Worker tier, including escalation. `document`
-and `corrections-delta` use `roundTiers.documentReview` and
-`roundTiers.correctionsReview`. Those overrides apply no first-round floors.
-Feature leads take the maximum of the current difficulty/floor tier and the
-Task's highest prior Worker tier, at least medium. Worker history includes
-escalation and survives fresh inputs on the same Task, for leads and code review.
-Non-Reviewer scope is ignored and stored as null. The fixed text helper uses
-`textHelper`, recorded at easy with no applied floors or decision reference.
+## Saved catalog API
 
-`--catalog` is a saved capabilities object with `providers[]`; no service is
-called. Capture time must be UTC ending in `Z`, not future, and at most 15
-minutes old (inclusive). Needed provider fields are `providerInstanceId`,
+`routing.load_catalog(path, read_at, now)` reads a saved capabilities object
+with `providers[]` from a file of at most 1 MiB; no service is called. Capture
+time must be UTC ending in `Z`, not future, and at most 15 minutes old
+(inclusive). `routing.parse_catalog(raw)` returns providers by ID, including
+unavailable ones. Needed provider fields are `providerInstanceId`,
 `driverKind`, strict boolean `canRunChildTask` and
 `canRunCrossProviderChildTask`, string-list `constraints`, and `models[]`.
 Each model has `id` and optional `options[]` with `id` and `values` (strings or
-booleans). Duplicate IDs, missing or malformed needed fields fail closed.
-Extra metadata is ignored. Disabled/unsupported entries can have valid shape.
-Availability requires both flags true, no constraints, exact model and requested
-option values including their types. Omitted options are empty; model defaults
-are not substituted for requested options.
+booleans). Duplicate IDs, missing or malformed needed fields fail closed with
+`CatalogError`. Extra metadata is ignored. Disabled/unsupported entries can
+have valid shape. `live/catalog_shape.py` checks a saved real catalog with the
+same parser.
 
-Direct selections are classified exclusively by catalog `driverKind`, never
-instance or model spelling. Subscription drivers are `claudeAgent`, `codex`,
-`antigravity`. Direct `pi` is metered and serves only medium Workers; every
-other role or tier treats it as unavailable and may use its one eligible
-same-tier fallback. All other drivers remain unavailable. A master catalog
-entry resolving to any non-subscription driver, including `pi`, makes config
-invalid. Pools remain subscription-only, including the easy Worker and fixed
-text helper. Antigravity never serves Reviewers. Configured role limits apply
-to preferences and fallback targets; medium pool selections serve Workers only.
-
-Before a pool walk, a missing active account, false capability or constraints
-requires judgment without walking. An active account outside the selected pool
-also requires judgment. Otherwise start at active and wrap once in configured
-order. Skip unavailable accounts, missing model/options and confirmed exhausted
-accounts; unknown quota is usable. Every skip records its reason. Missing
-models/options are never exhaustion evidence. The same walk serves `easyWorker`
-and the fixed helper. Selection changes neither quota evidence nor active account.
-
-A failed preference may use its one same-tier configured fallback. Role limits
-and catalog availability are checked again. A pool target walks normally but
-cannot follow another chain. No applicable fallback or an unavailable target
-requires reporting; direct fallback retains all pool skips and has null chosen
-account. Pool records retain the pool selection and `chosenPoolAccount`.
-
-Successful `select` appends only a `routing-selection` and returns its data plus
-`selectionRef`, resolved `providerInstanceId`, `model`, `options`. Stored data
-includes input/policy/decision references, role/round/scope/tier/floors/escalation,
-selection/account/skips, availability/fallback reasons, exact config/catalog/
-quota-state digests and catalog read time. Every final direct `pi` selection,
-whether preference or fallback, stores and returns `billing: "per-token"`.
-Subscription selections omit billing. The [record schema](../records.md)
-allows only that exact value or absence. A durable append failure returns no
-selection. Selection is catalog-based; it needs no Pi executable or credential.
-
-Exits: 0 recorded; 2 invalid input/records/options; 3 invalid config/quota times
-or non-subscription master; 4 current input/decision, escalation or catalog/pool
-preflight needs judgment; 5 no eligible selection after at most one fallback.
-Exits 4/5 return `reason`, plus `skippedPoolAccounts` for availability failures
-and `fallbackReason` when a tried fallback fails. Reasons are bounded to 512
-characters. Failures never append a fabricated selection. Exits 2/3 have a
-sanitized message only.
+## Quota evaluation API
 
 Reusable `routing.evaluate_quota(observations, now)` accepts validated account
 observations and an aware UTC datetime; it returns `unknown`, `exhausted` or
 `available` without mutation. Latest observation time wins, with the last list
 entry breaking ties. Reset strictly before now clears exhaustion to unknown;
 later available evidence clears it immediately. Invalid/future observation times
-or reset before observation raise `ValueError` (selection exits 3). Quota applies
+or reset before observation raise `ValueError`. Quota applies
 across all models on an account. The [quota commands](quota.md) record evidence
-and activate accounts explicitly; route selection never mutates that state.
+and activate accounts explicitly.
