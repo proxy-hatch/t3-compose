@@ -322,6 +322,18 @@ class OfflineRecordSchema(OfflineTestCase):
         with self.assertRaises(SchemaError):
             validate_event_data("routing-selection", {**copy.deepcopy(payloads["routing-selection"]), "classificationRef": None})
 
+    def test_routing_billing_is_optional_exact_enum_without_name_heuristics(self):
+        from t3compose.schema import SchemaError, validate_event_data
+        data = _valid_event_payloads()['routing-selection']
+        data.update(selection={'providerInstanceId': 'codex-synth-metered',
+                               'model': 'synthetic-subscription-name', 'options': {}},
+                    chosenPoolAccount=None)
+        self.assertIsNone(validate_event_data('routing-selection', data))
+        self.assertIsNone(validate_event_data('routing-selection', {**data, 'billing': 'per-token'}))
+        for invalid in (None, '', 'subscription', 'per-request', True, 1, [], {}):
+            with self.subTest(billing=invalid), self.assertRaises(SchemaError):
+                validate_event_data('routing-selection', {**data, 'billing': invalid})
+
     def test_review_lead_assignment_and_disposition_cd4_rules(self):
         from t3compose.schema import SchemaError, validate_event_data
         payloads = _valid_event_payloads()

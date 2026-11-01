@@ -493,7 +493,7 @@ EVENT_SCHEMAS = MappingProxyType({
         "skippedPoolAccounts": _list_of(_object_schema({"providerInstanceId": _check_text, "reason": _check_text})),
         "availabilityReason": _check_text, "fallbackReason": _nullable(_check_text), "configDigest": _check_digest,
         "catalogReadAt": _check_utc_timestamp, "catalogDigest": _check_digest, "quotaStateDigest": _check_digest,
-    }, post=_post_routing_selection),
+    }, {"billing": _check_enum("per-token")}, post=_post_routing_selection),
     "dispatch-intent": _spec({
         "role": _check_enum(*_ROLES), "round": _check_pos_int, "clientRequestId": _check_work_id,
         "briefPath": _check_text, "briefDigest": _check_digest, "selection": _check_selection,

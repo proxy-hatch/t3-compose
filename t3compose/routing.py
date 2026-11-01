@@ -1,4 +1,4 @@
-"""Recorded routing decisions, subscription availability and read-only quota walks."""
+"""Recorded routing decisions, metered billing and read-only quota walks."""
 from datetime import datetime, timezone
 import re
 
@@ -169,11 +169,15 @@ def provider_status(provider):
     return None
 
 
-def unavailable(provider, selection, role):
+def unavailable(provider, selection, role, tier):
     reason = provider_status(provider)
     if reason:
         return reason
-    if provider['driverKind'] not in SUBSCRIPTIONS:
+    driver = provider['driverKind']
+    if driver == 'pi' and 'providerPool' not in selection:
+        if role != 'worker' or tier != 'medium':
+            return 'metered driver requires medium Worker'
+    elif driver not in SUBSCRIPTIONS:
         return 'non-subscription driver unavailable'
     if role == 'reviewer' and provider['driverKind'] == 'antigravity':
         return 'role limit: antigravity never Reviewer'
@@ -187,12 +191,12 @@ def unavailable(provider, selection, role):
     return None
 
 
-def resolve(selection, role, cfg, state, catalog, quotas, skips):
+def resolve(selection, role, tier, cfg, state, catalog, quotas, skips):
     if 'roles' in selection and role not in selection['roles']:
         return None, 'role limit on selection'
     if 'providerPool' not in selection:
         instance = selection['providerInstanceId']
-        return instance, unavailable(catalog.get(instance), selection, role)
+        return instance, unavailable(catalog.get(instance), selection, role, tier)
     if role not in ('worker', 'text-helper'):
         return None, 'role limit on pool selection'
     members = cfg['providerPools'][selection['providerPool']]['providerInstanceIds']
@@ -202,7 +206,7 @@ def resolve(selection, role, cfg, state, catalog, quotas, skips):
         raise RoutingStop(reason or 'active account outside selected pool', skippedPoolAccounts=list(skips))
     start = members.index(active)
     for instance in [*members[start:], *members[:start]]:
-        reason = unavailable(catalog.get(instance), selection, role)
+        reason = unavailable(catalog.get(instance), selection, role, tier)
         if reason is None and quotas.get(instance, 'unknown') == 'exhausted':
             reason = 'confirmed exhausted account'
         if reason is None:
@@ -241,7 +245,7 @@ def select(args, loaded, cfg, source, task):
     except ValueError:
         raise CommandError('invalid quota observation time', ExitCode.INVALID_CONFIG) from None
     skips = []
-    chosen, reason = resolve(preferred, args.role, data, state.data, catalog, quotas, skips)
+    chosen, reason = resolve(preferred, args.role, tier, data, state.data, catalog, quotas, skips)
     selection, fallback = preferred, None
     if reason:
         fallback = reason
@@ -251,7 +255,7 @@ def select(args, loaded, cfg, source, task):
             raise RoutingStop(reason, ExitCode.REPORT, skippedPoolAccounts=skips)
         selection = chains[0]['to'][0]
         try:
-            chosen, reason = resolve(selection, args.role, data, state.data, catalog, quotas, skips)
+            chosen, reason = resolve(selection, args.role, tier, data, state.data, catalog, quotas, skips)
         except RoutingStop as stop:
             stop.outcome.data['fallbackReason'] = fallback
             raise
@@ -265,6 +269,8 @@ def select(args, loaded, cfg, source, task):
         'skippedPoolAccounts': skips, 'availabilityReason': 'catalog available; quota not exhausted',
         'fallbackReason': fallback, 'configDigest': cfg.digest, 'catalogReadAt': args.catalog_read_at,
         'catalogDigest': catalog_digest, 'quotaStateDigest': state.digest}
+    if 'providerPool' not in selection and catalog[chosen]['driverKind'] == 'pi':
+        payload['billing'] = 'per-token'
     event = records.append_event(args.local_dir, args.repo, args.work, 'routing-selection', payload,
                                  writer=loaded['effectiveWork']['writer'])
     return {**payload, 'selectionRef': event['seq'], 'providerInstanceId': chosen,

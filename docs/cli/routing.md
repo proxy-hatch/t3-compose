@@ -62,11 +62,15 @@ Availability requires both flags true, no constraints, exact model and requested
 option values including their types. Omitted options are empty; model defaults
 are not substituted for requested options.
 
-Only subscription drivers `claudeAgent`, `codex`, `antigravity` are authorized
-in this stage. Every other driver, including `pi`, is unavailable for every
-role. A master catalog entry resolving to any other driver makes config
-invalid. Antigravity never serves Reviewers. Configured role limits apply to
-preferences and fallback targets; medium pool selections serve Workers only.
+Direct selections are classified exclusively by catalog `driverKind`, never
+instance or model spelling. Subscription drivers are `claudeAgent`, `codex`,
+`antigravity`. Direct `pi` is metered and serves only medium Workers; every
+other role or tier treats it as unavailable and may use its one eligible
+same-tier fallback. All other drivers remain unavailable. A master catalog
+entry resolving to any non-subscription driver, including `pi`, makes config
+invalid. Pools remain subscription-only, including the easy Worker and fixed
+text helper. Antigravity never serves Reviewers. Configured role limits apply
+to preferences and fallback targets; medium pool selections serve Workers only.
 
 Before a pool walk, a missing active account, false capability or constraints
 requires judgment without walking. An active account outside the selected pool
@@ -86,7 +90,11 @@ Successful `select` appends only a `routing-selection` and returns its data plus
 `selectionRef`, resolved `providerInstanceId`, `model`, `options`. Stored data
 includes input/policy/decision references, role/round/scope/tier/floors/escalation,
 selection/account/skips, availability/fallback reasons, exact config/catalog/
-quota-state digests and catalog read time. No billing field is written.
+quota-state digests and catalog read time. Every final direct `pi` selection,
+whether preference or fallback, stores and returns `billing: "per-token"`.
+Subscription selections omit billing. The [record schema](../records.md)
+allows only that exact value or absence. A durable append failure returns no
+selection. Selection is catalog-based; it needs no Pi executable or credential.
 
 Exits: 0 recorded; 2 invalid input/records/options; 3 invalid config/quota times
 or non-subscription master; 4 current input/decision, escalation or catalog/pool
@@ -102,5 +110,5 @@ observations and an aware UTC datetime; it returns `unknown`, `exhausted` or
 entry breaking ties. Reset strictly before now clears exhaustion to unknown;
 later available evidence clears it immediately. Invalid/future observation times
 or reset before observation raise `ValueError` (selection exits 3). Quota applies
-across all models on an account. Quota commands, mutations and metered billing
-are deferred to RT-1b.
+across all models on an account. The [quota commands](quota.md) record evidence
+and activate accounts explicitly; route selection never mutates that state.
