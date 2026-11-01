@@ -760,7 +760,7 @@ class OfflinePublishPR(OfflineTestCase):
         return {'number': 7, 'head': {'sha': self.head, 'ref': self.args.branch,
                 'repo': {'full_name': 'fixture-org/publish-fixture'}},
                 'base': {'ref': 'main', 'repo': {'full_name': 'fixture-org/publish-fixture'}},
-                'state': 'open', 'user': {'login': 'fixture-worker[bot]'}}
+                'state': 'open', 'draft': False, 'user': {'login': 'fixture-worker[bot]'}}
 
     def read(self, argv, **kw):
         if argv[0] != 'gh':
@@ -860,6 +860,51 @@ class OfflinePublishPR(OfflineTestCase):
         self.assertNotIn('statusSummary', self.events()[-1]['data'])
         self.assertEqual(self.launches, [])
         self.assertTrue(self.pair()['verified'])
+
+    def _draft_gate_matrix(self, mode):
+        self.push_pair()
+        for value in (True, None, 0, 1, 'false', {}, [], 'missing', False):
+            with self.subTest(mode=mode, draft=value):
+                row = self.row()
+                if value == 'missing':
+                    del row['draft']
+                else:
+                    row['draft'] = value
+                self.prs = [row] if mode == 'reuse' else []
+                self.launches.clear()
+                create = self.create
+                def child(*args, **kwargs):
+                    result = create(*args, **kwargs)
+                    self.prs = [row]
+                    if mode == 'recovery':
+                        raise InterruptedError('PRIVATE_SENTINEL')
+                    return result
+                with patch.object(token_run, 'run_command', side_effect=child):
+                    if mode == 'recovery':
+                        self.assertEqual(self.invoke().data['outcome'], 'unknown')
+                        self.assertFalse(self.pair()['verified'])
+                    code, output, error = self.entry()
+                expected = 'no-op' if mode == 'reuse' else 'succeeded'
+                self.assertEqual((code, error), (0 if value is False else 1, ''))
+                self.assertEqual(json.loads(output)['outcome'], expected if value is False else 'failed')
+                self.assertEqual(self.pair()['verified'], value is False)
+                result = self.events()[-1]['data']
+                self.assertEqual(result['outcome'], expected if value is False else 'failed')
+                if mode == 'reuse':
+                    self.assertNotIn('statusSummary', result)
+                else:
+                    self.assertEqual(result['statusSummary'],
+                                     {'childStarted': True, 'childStatus': 0, 'revocation': 'ok'})
+                self.assertEqual(len(self.launches), 0 if mode == 'reuse' else 1)
+
+    def test_draft_gate_reuse_entry(self):
+        self._draft_gate_matrix('reuse')
+
+    def test_draft_gate_creation_entry(self):
+        self._draft_gate_matrix('create')
+
+    def test_draft_gate_recovery_entry(self):
+        self._draft_gate_matrix('recovery')
 
     def test_privacy_text_and_branch_before_intent_entry(self):
         for field in ('title_file', 'body_file', 'branch'):

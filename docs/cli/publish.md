@@ -168,8 +168,11 @@ read-only GitHub authentication with pinned host and executable PATH, captured
 responses and no token mint. This narrow reader context restores the private
 publication environment before any write. Verification calls the existing API
 with exact head, base and configured `config.bot_login`; only its complete
-passing dictionary counts. Exceptions, skipped calls, malformed returns and
-head/base/state/author mismatches record failure and a safe verification gap.
+passing dictionary counts. A second bounded GET through the same reader
+context must explicitly report Boolean `draft: false` and independently match
+that exact head, base, open state and author. Draft, missing or malformed draft
+facts cannot clear creation, reuse or recovery. Exceptions, skipped calls,
+malformed returns and mismatches record failure and a safe verification gap.
 The temporary publication HOME therefore cannot hide the reader's authentication.
 
 After creation, discovery supplies the PR number independently of child output.

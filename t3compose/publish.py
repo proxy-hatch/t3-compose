@@ -435,8 +435,12 @@ def _verified_pr(args, config, number, env):
             result = pullrequest.verify(SimpleNamespace(local_dir=args.local_dir,
                 repo=config.full_name, number=number, head=args.head,
                 base=args.base, author=config.bot_login))
+            data = pullrequest.read_pull_request(config.full_name, number)
+            facts = pullrequest._shape(data)
         return (type(result) is dict and result.get('ok') is True and
-                result == {'ok': True, 'mismatches': [], 'action': None})
+                result == {'ok': True, 'mismatches': [], 'action': None} and
+                data.get('draft') is False and
+                facts == (args.head.lower(), args.base, 'open', config.bot_login))
     except Exception:
         return False
 
