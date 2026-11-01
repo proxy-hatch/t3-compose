@@ -650,3 +650,59 @@ class OfflineTokenRun(OfflineTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"transport 'ssh' not allowed", result.stderr)
         self.assertFalse(marker.exists())
+
+
+class OfflinePrivateMint(OfflineTestCase):
+    def test_real_run_mints_with_account_home_and_keeps_private_child(self):
+        import pwd
+        from types import SimpleNamespace
+        from t3compose import publish, token_run
+        from tests.test_github_app import FakeHTTP, config_data, TOKEN as APP_TOKEN
+        local = self.temp / 'state'
+        local.mkdir()
+        jsonio.atomic_replace(local / 'github-app.json', config_data())
+        home = str(self.temp / 'account-home')
+        key = b'-----BEGIN PRIVATE KEY-----\nYWJjZA==\n-----END PRIVATE KEY-----\n'
+        http, calls = FakeHTTP(), []
+        original_run = process.run
+        def run(argv, **kw):
+            if argv[0] != '/usr/bin/security':
+                return original_run(argv, **kw)
+            calls.append(kw.get('env', dict(os.environ)))
+            return subprocess.CompletedProcess(argv, 0 if calls[-1]['HOME'] == home else 44,
+                                               key, b'private-backend')
+        def start(argv, **kw):
+            self.assertEqual(kw['env']['HOME'], private['HOME'])
+            self.assertNotEqual(kw['env']['HOME'], home)
+            self.assertEqual(kw['env']['GH_TOKEN'], APP_TOKEN)
+            self.assertNotIn('GITHUB_TOKEN', kw['env'])
+            self.assertNotIn('GH_HOST', kw['env'])
+            for name, value in kw['env'].items():
+                if name != 'GH_TOKEN':
+                    self.assertNotIn(APP_TOKEN, value)
+                self.assertNotIn('synthetic-personal-token', value)
+                self.assertNotIn('synthetic-other-token', value)
+                self.assertNotIn(key.decode(), value)
+            self.assertEqual(kw['env']['GIT_CONFIG_VALUE_0'], '')
+            self.assertEqual(dict(os.environ), private)
+            self.assertNotIn('personal-helper', Path(private['HOME'], '.gitconfig').read_text())
+            return SimpleNamespace(wait=lambda **kw: 0)
+        Path(home).mkdir()
+        Path(home, '.gitconfig').write_text('[credential]\n helper = personal-helper\n')
+        os.environ.update(HOME=home, GH_TOKEN='synthetic-personal-token',
+                          GITHUB_TOKEN='synthetic-other-token', GH_HOST='synthetic-host')
+        before = dict(os.environ)
+        with publish._environment(self.temp):
+            private = dict(os.environ)
+            with patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=home)), \
+                    patch.object(process, 'run', run), patch.object(process, 'start', start), \
+                    patch.object(ga, 'openssl_sign', return_value=b'dummy-signature'), \
+                    patch.object(ga, 'default_runtime', return_value=ga.Runtime(http)):
+                result = token_run.run_command(['gh', 'pr', 'create'], self.temp / 'status',
+                                               local_dir=local)
+            self.assertEqual(dict(os.environ), private)
+        self.assertEqual(dict(os.environ), before)
+        self.assertEqual(result.record(), {'childStarted': True, 'childStatus': 0, 'revocation': 'ok'})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], dict(private, HOME=home))
+        self.assertEqual(http.calls[-1][:2], ('DELETE', '/installation/token'))

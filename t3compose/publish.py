@@ -52,7 +52,7 @@ def _environment(repo):
             os.environ.update(before)
 
 
-def _git(repo, *args, input=None, codes=(0,), as_child=False):
+def _git(repo, *args, input=None, codes=(0,), as_child=False, with_status=False):
     """Read-only Git. as_child shows the configuration a push child will see."""
     env = dict(os.environ)
     if as_child:
@@ -71,7 +71,7 @@ def _git(repo, *args, input=None, codes=(0,), as_child=False):
     if (type(result.returncode) is not int or result.returncode not in codes or
             not isinstance(result.stdout, bytes) or len(result.stdout) > _LIMIT):
         _fail('Git inspection incomplete; report to coordinator')
-    return result.stdout
+    return (result.returncode, result.stdout) if with_status else result.stdout
 
 
 def _overrides(repo):
@@ -113,7 +113,10 @@ def _publication_set(repo, head, refs):
         _fail('complete history required; report to coordinator')
     # Require every advertised object locally; never fetch or guess exclusions.
     for sha in set(refs.values()) | {head}:
-        _git(repo, 'cat-file', '-e', sha)
+        try:
+            _git(repo, 'cat-file', '-e', sha)
+        except cli.CommandError:
+            _fail('advertised object unavailable; coordinator must prepare all refs and tag objects locally, then retry')
     raw = _git(repo, 'rev-list', '--stdin', '--',
                input=('\n'.join([head, *('^' + s for s in sorted(set(refs.values())))]) + '\n').encode())
     selected = raw.decode('ascii').splitlines()
@@ -207,6 +210,9 @@ def _finish(local, repo, work, intent, outcome, summary=None, confirmation=None)
         data['statusSummary'] = summary
     _append(local, repo, work, 'op-result', data)
     reason = data['confirmation']
+    kind = (summary or {}).get('refusal')
+    if outcome == 'refused' and kind in {'missing-status', *token_run._CODES, *token_preconditions.KINDS}:
+        reason += '; refusal ' + kind + '; coordinator must repair the named condition and use fresh exact-head evidence before retry'
     if (summary or {}).get('revocation') == 'failed':  # CD-2's warning, which _quiet discards
         reason += '; token revocation failed, so the token expires on its own'
     return _out(outcome, reason, 0 if outcome in {'succeeded', 'no-op'} else 1)
@@ -283,7 +289,10 @@ def _push(args, repo, identity, url):
     if current not in {'absent', head, prior}:
         return _out('refused', 'unexpected remote movement; report to Shawn')
     if current not in {'absent', head}:
-        _git(repo, 'merge-base', '--is-ancestor', current, head)
+        code, _ = _git(repo, 'merge-base', '--is-ancestor', current, head,
+                       codes=(0, 1), with_status=True)
+        if code == 1:
+            return _out('refused', 'non-fast-forward update; coordinator must preserve the confirmed prior head in reviewed history')
     intent = _append(local, identity, work, 'op-intent', {
         'opId': uuid.uuid4().hex, 'operation': 'push', 'target': target,
         'commit': head, 'expectedPriorHead': current})
@@ -294,6 +303,11 @@ def _push(args, repo, identity, url):
     path = _status_path(local, identity, work, intent)
     command = ['git', 'push', '--force-with-lease=' + ref + ':' +
                ('' if current == 'absent' else current), url, head + ':' + ref]
+    try:
+        _overrides(repo)
+    except cli.CommandError:
+        return _finish(local, identity, work, intent, 'refused',
+                       confirmation='Publication configuration changed; no child launched; coordinator must repair overrides')
     try:
         with _quiet():
             result = token_run.run_command(command, path, local_dir=local)
@@ -496,6 +510,10 @@ def _pr(args, repo, identity, config, reader_env):
             stream.write(body)
         command = ['gh', 'pr', 'create', '--repo', config.full_name, '--head', args.branch,
                    '--base', args.base, '--title=' + title, '--body-file', str(body_path)]
+        try:
+            _overrides(repo)
+        except cli.CommandError:
+            return finish('refused', gap='Publication configuration changed; no child launched; coordinator must repair overrides')
         try:
             with _quiet():
                 actual = token_run.run_command(command, path, local_dir=local)

@@ -102,20 +102,15 @@ reads or persistence raise sanitized `CommandError` (2); invalid App config
 uses 3. No secret, backend stream or private path appears in the result.
 Imports and registration perform no I/O. There are no new dependencies.
 
-After PB-1a merges, the assigned PB-1b lead prepares valid exact-head records,
-required checks and review evidence, then makes the first live push:
-
-```sh
-PY="$(uv python find 3.15)"
-"$PY" -I -S <helper>/bin/t3c --local-dir <private-state> publish push --repo-path <checkout> --work <work> --head <reviewed-sha> --branch <branch>
-```
-
-Check exit 0, exact remote equality and the joined intent/result/status. If this
-live push fails, report to the Engineering manager and use the interim tool.
-After PB-1b merges, L5 publishes the next Task with BOTH push and PR commands,
-using then-current evidence APIs. Only after L5 does the interim tool retire.
-These are planned live procedures; offline tests supply no live-pass claim.
-
+PB-1b uses the interim publication tool because the helper on main cannot
+mint with private HOME until this fix merges. After PB-1b merges, L5 is the
+next assigned pull request: its lead performs the first live helper push AND
+PR creation, with exact-head checks and independent review recorded first and
+the bounded current lead check last under the interim evidence convention.
+Verify exit 0, remote equality, App author/base/head/open state, joined durable
+intent/result/status and `evidence check --pr-ready`. Then link the PR and
+follow the repository merge procedure. Only after L5 does the interim tool
+retire. Offline tests supply no live-pass claim.
 
 ## Pull request command
 
@@ -202,3 +197,36 @@ performs no automatic T3 linking, watching, posting or merging. After both
 commands pass, the lead separately links the canonical PR URL and applies the
 repository's merge procedure. L5 verifies the pair with `evidence check
 --pr-ready`; only that live procedure retires the interim tool.
+
+## Preparing advertised objects
+
+The coordinator must prepare a complete local object graph before using push.
+Every advertised object remains an exclusion, including HEAD, branch tips,
+pull head/merge refs, annotated tag objects and peeled tag targets. A missing
+object refuses before intent; the helper never fetches or skips exclusions.
+Outside this helper, from the target repository root, the coordinator can fetch
+one bounded local snapshot namespace from the configured explicit HTTPS URL:
+
+```sh
+git fetch --no-tags --no-recurse-submodules https://github.com/OWNER/REPO.git '+refs/*:refs/t3c-publication-snapshot/*'
+```
+
+Replace OWNER/REPO with the configured repository. This obtains advertised
+refs/* (including refs/pull/* and tag objects) without changing origin
+configuration. Use a fresh snapshot namespace or clean up stale snapshot refs
+under coordinator control. HEAD's object must also be available locally; for
+an unusual symbolic HEAD outside refs/*, prepare its advertised object
+separately. Re-run preparation if refs move: a newly advertised ref can race
+the snapshot, and push still refuses any unavailable object. Complete history
+is required; this command alone does not repair a shallow repository.
+
+A legitimate negative ancestry check is exit 1/refused with a
+non-fast-forward reason; malformed inspection or read failures remain exit 2.
+Watched settings (including includes) are checked again before calling the
+in-process token runner. A refusal records no launch and invents no child
+status. This narrows the configuration window; arbitrary concurrent local
+mutation remains outside the guarantee.
+Refused child results show only a validated closed-vocabulary refusal kind
+and a coordinator repair action, never supplied summary text or backend
+diagnostics. Unknown outcomes still require reconciliation; failures stay
+failed. Durable operation/status truth is unchanged.

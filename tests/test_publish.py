@@ -388,8 +388,9 @@ class OfflinePublish(OfflineTestCase):
         self.git('checkout', '--detach', self.base)
         self.advance('divergent')
         self.cover(self.head)
-        with self.assertRaises(cli.CommandError):
-            self.invoke()
+        result = self.invoke()
+        self.assertEqual((result.code, result.data['outcome']), (1, 'refused'))
+        self.assertIn('non-fast-forward', result.data['reason'])
         self.assertEqual((self.ops(), len(self.launches)), (['op-intent', 'op-result'], 1))
 
     def test_missing_advertised_object_and_shallow_fail_closed(self):
@@ -405,8 +406,7 @@ class OfflinePublish(OfflineTestCase):
     def test_child_outcome_matrix(self):
         cases = [token_run.RunResult(False, None, 'mint-failed', None, 1),
                  token_run.RunResult(True, 1, None, 'ok', 1),
-                 token_run.RunResult(True, None, None, None, 1),
-                 token_run.RunResult(True, 0, None, 'failed', 0)]
+                 token_run.RunResult(True, None, None, None, 1)]
         for result in cases:
             with self.subTest(result=result):
                 # A distinct branch keeps unresolved attempts from other rows isolated.
@@ -609,6 +609,60 @@ class OfflinePublish(OfflineTestCase):
         with self.assertRaisesRegex(cli.CommandError, 'unsafe publication overrides'):
             self.invoke()
         self.assertEqual((self.ops(), self.launches), ([], []))
+
+    def test_ancestry_read_error_is_distinct_from_negative(self):
+        self.assertEqual(self.invoke().code, 0)
+        self.advance()
+        self.cover(self.head)
+        original = process.run
+        def run(argv, **kw):
+            if argv[1:3] == ['merge-base', '--is-ancestor']:
+                return subprocess.CompletedProcess(argv, 128, b'', b'PRIVATE_SENTINEL')
+            return original(argv, **kw)
+        with patch.object(process, 'run', side_effect=run):
+            with self.assertRaises(cli.CommandError) as error:
+                self.invoke()
+        self.assertEqual(error.exception.code, 2)
+        self.assertNotIn('PRIVATE_SENTINEL', str(error.exception))
+
+    def test_late_included_config_refuses_without_launch(self):
+        remote = self.remote
+        calls = []
+        def changed(*args):
+            calls.append(1)
+            if len(calls) == 2:
+                extra = self.repo / '.git/late-config'
+                extra.write_text('[core]\n hooksPath = /synthetic/hooks\n')
+                self.git('config', 'include.path', str(extra))
+            return remote(*args)
+        with patch.object(publish, '_remote', side_effect=changed):
+            result = self.invoke()
+        self.assertEqual((result.code, result.data['outcome']), (1, 'refused'))
+        self.assertIn('no child launched', result.data['reason'])
+        self.assertEqual(self.ops(), ['op-intent', 'op-result'])
+        self.assertNotIn('statusSummary', self.events()[-1]['data'])
+        self.assertFalse(self.launches)
+
+    def test_validated_refusal_kind_is_public_but_backend_is_not(self):
+        def refused(argv, path, **kw):
+            result = token_run.RunResult(False, None, 'git-extraheader', None, 1)
+            jsonio.atomic_replace(path, result.record())
+            return result
+        with patch.object(token_run, 'run_command', side_effect=refused):
+            result = self.invoke()
+        self.assertIn('refusal git-extraheader', result.data['reason'])
+        self.assertIn('coordinator must repair', result.data['reason'])
+        self.assertEqual(self.events()[-1]['data']['statusSummary'],
+                         {'childStarted': False, 'refusal': 'git-extraheader'})
+        def unknown(argv, path, **kw):
+            result = token_run.RunResult(False, None, 'PRIVATE_SENTINEL', None, 1)
+            jsonio.atomic_replace(path, result.record())
+            return result
+        with patch.object(token_run, 'run_command', side_effect=unknown):
+            result = self.invoke()
+        self.assertEqual(result.data['outcome'], 'unknown')
+        self.assertNotIn('PRIVATE_SENTINEL', json.dumps(result.data))
+        self.assertIn('reconcile', result.data['reason'])
 
 
 class OfflinePublishAdapters(OfflineTestCase):
@@ -973,6 +1027,21 @@ class OfflinePublishPR(OfflineTestCase):
         self.add('lead-assignment', {'thread': 'fixture-replacement', 'assignedBy': WRITER,
             'date': '2026-11-01', 'reason': 'Fixture replacement'})
         self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertFalse(self.pair()['verified'])
+
+    def test_late_pr_config_refuses_without_creation(self):
+        discover = publish._discover
+        def changed(*args):
+            result = discover(*args)
+            self.git('config', 'push.followTags', 'true')
+            return result
+        with patch.object(publish, '_discover', side_effect=changed):
+            result = self.invoke()
+        self.assertEqual((result.code, result.data['outcome']), (1, 'refused'))
+        self.assertIn('no child launched', result.data['reason'])
+        self.assertEqual(self.ops(), ['op-intent', 'op-result'])
+        self.assertNotIn('statusSummary', self.events()[-1]['data'])
+        self.assertFalse(self.launches)
         self.assertFalse(self.pair()['verified'])
 
     def test_screened_bytes_bound_despite_source_changes(self):

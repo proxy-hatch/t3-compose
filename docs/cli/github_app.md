@@ -46,7 +46,12 @@ Keychain/HTTP; diagnostics never echo supplied paths, keys or values.
 
 Only `process.run` launches the two exact executable paths above. Keychain uses
 `find-generic-password -s SERVICE -a ACCOUNT -w`, captures both streams and has
-a 120-second timeout. Raw/hex PEM and reflowed spaces/escaped newlines are
+a 120-second timeout. Only this security invocation receives an explicit
+environment whose HOME comes from `pwd.getpwuid(os.getuid()).pw_dir`, rather
+than ambient HOME. The caller environment is not mutated. Account lookup or
+invalid account-home metadata fails safely without displaying account/path
+values; security errors never display captured streams. Publication children
+retain their private HOME and App-only authentication. Raw/hex PEM and reflowed spaces/escaped newlines are
 accepted for unencrypted `RSA PRIVATE KEY`/`PRIVATE KEY`. OpenSSL receives the
 key only through an anonymous pipe at `/dev/fd/N`, never argv/env/file; stdin
 holds JWT input. A feeder avoids large-key deadlock. Constructor/start/launch/

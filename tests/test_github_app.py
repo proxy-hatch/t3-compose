@@ -106,6 +106,10 @@ class FakeHTTP:
 class OfflineAppBase(OfflineTestCase):
     def setUp(self):
         self.ga = importlib.import_module('t3compose.github_app')
+        import pwd
+        self.account_home = str(self.temp / 'account-home')
+        self.enterContext(patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(
+            pw_dir=self.account_home)))
         self.local = self.temp / 'synthetic-state'
         self.local.mkdir()
         self.path = self.local / 'github-app.json'
@@ -714,3 +718,41 @@ class OfflineHTTP(OfflineAppBase):
         self.assertEqual(response.limits, [65536])
         self.assertNotIn(TOKEN, repr(caught.exception))
         self.assertTrue(response.closed)
+
+
+class OfflineAccountKeychain(OfflineTestCase):
+    def test_lookup_uses_account_home_only_for_security(self):
+        import pwd
+        from t3compose import github_app as ga
+        home = str(self.temp / 'account')
+        before = dict(os.environ)
+        calls = []
+        def security(argv, **kw):
+            calls.append((argv, kw))
+            env = kw.get('env', os.environ)
+            return subprocess.CompletedProcess(argv, 0 if env['HOME'] == home else 44,
+                                               b'dummy-key', b'backend-secret')
+        with patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=home)) as lookup, \
+                patch.object(process, 'run', security):
+            self.assertEqual(security(['/usr/bin/security']).returncode, 44)
+            self.assertEqual(ga.read_keychain_secret('fixture', 'fixture'), b'dummy-key')
+        lookup.assert_called_once_with(os.getuid())
+        self.assertEqual(calls[-1][0][0], '/usr/bin/security')
+        self.assertEqual(calls[-1][1]['env'], dict(before, HOME=home))
+        self.assertEqual(dict(os.environ), before)
+
+    def test_account_resolution_fails_without_launch_or_values(self):
+        import pwd
+        from t3compose import github_app as ga
+        for value in ('', 'relative', '/bad\0home', None):
+            with self.subTest(value=value), \
+                    patch.object(pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=value)), \
+                    patch.object(process, 'run', side_effect=AssertionError('must not launch')):
+                with self.assertRaises(ga.CheckError) as error:
+                    ga.read_keychain_secret('fixture', 'fixture')
+                self.assertEqual(str(error.exception), 'cannot resolve account home for Keychain lookup')
+        for error in (KeyError('private-value'), OSError('private-value')):
+            with patch.object(pwd, 'getpwuid', side_effect=error), \
+                    patch.object(process, 'run', side_effect=AssertionError('must not launch')):
+                with self.assertRaisesRegex(ga.CheckError, '^cannot resolve account home'):
+                    ga.read_keychain_secret('fixture', 'fixture')
