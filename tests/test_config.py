@@ -11,12 +11,16 @@ from unittest.mock import patch
 from tests.support import OfflineTestCase, ROOT, guarded_helper_command
 
 
-def _valid_config_dict():
+def _old_config_dict():
     return json.loads((ROOT / "docs/examples/agent-routing.example.json").read_text(encoding="utf-8"))
 
 
 def _matrix_config_dict():
-    return json.loads((ROOT / "docs/examples/agent-routing.v3.example.json").read_text())
+    data = json.loads((ROOT / "docs/examples/agent-routing.v3.example.json").read_text())
+    # Exercise role-block validation independently of the example's empty list.
+    data["roleBlocks"] = [{"driverKind": "antigravity", "role": "worker",
+                           "reason": "Synthetic probe failed.", "evidence": "Synthetic evidence."}]
+    return data
 
 
 def _valid_state_dict():
@@ -55,22 +59,104 @@ class OfflineConfigValidation(OfflineTestCase):
         )
         return ctx.exception
 
+    def test_v3_only_versions_and_migration(self):
+        cfg = _cfg()
+        migration = "Migrate routing configuration to version 3; see docs/configuration.md."
+        for version in (1, 2, True, False, "3", "2", None, 4, 3.0, [], {}):
+            raw = _mut(_old_config_dict(), lambda d: d.__setitem__("version", version))
+            with self.subTest(version=version):
+                exc = self.assert_invalid(raw, "version", "expected-version-3")
+                self.assertEqual(exc.to_payload()["errors"],
+                                 [{"path": "version", "rule": "expected-version-3"}])
+                self.assertEqual(exc.to_payload()["migration"], migration)
+                self.assertIn(migration, str(exc))
+                self.write_json(self.config_path, raw)
+                for loader in (cfg.load_config, cfg.load_matrix_config):
+                    with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                        loader(self.config_path)
+                    self.assertEqual(ctx.exception.to_payload(), exc.to_payload())
+        self.write_json(self.state_path, _valid_state_dict())
+        self.write_json(self.config_path, _old_config_dict())
+        proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), "config", "check"),
+                              text=True, capture_output=True)
+        self.assertEqual((proc.returncode, proc.stderr), (3, ""))
+        self.assertEqual(json.loads(proc.stdout), {"valid": False, "errors":
+                         [{"path": "version", "rule": "expected-version-3"}], "migration": migration})
+
+    def test_missing_version_and_cli_invalid_version_shapes(self):
+        import contextlib
+        import io
+        from t3compose import cli
+        cfg = _cfg()
+        self.write_json(self.state_path, _valid_state_dict())
+        for version in (True, False, "3", 3.0, 99, None, [], {}):
+            data = _matrix_config_dict()
+            if version is None:
+                del data["version"]
+            else:
+                data["version"] = version
+            with self.subTest(version=version):
+                exc = self.assert_invalid(data, "version", "expected-version-3")
+                self.write_json(self.config_path, data)
+                for loader in (cfg.load_config, cfg.load_matrix_config):
+                    with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                        loader(self.config_path)
+                    self.assertEqual(ctx.exception.to_payload(), exc.to_payload())
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = cli.main(["--local-dir", str(self.local), "config", "check"])
+                self.assertEqual((code, err.getvalue()), (3, ""))
+                self.assertEqual(json.loads(out.getvalue()), exc.to_payload())
+
+    def test_utf8_byte_cap_and_single_bounded_read(self):
+        import io
+        cfg = _cfg()
+        data = _matrix_config_dict()
+        data["classification"]["lane"]["instructions"] = "界" * 100
+        encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        at_limit = encoded + b" " * (16384 - len(encoded))
+        self.assertEqual(len(at_limit), 16384)
+        self.assertLess(len(at_limit.decode("utf-8")), 16384)
+        for loader in (cfg.load_config, cfg.load_matrix_config):
+            for raw, valid in ((at_limit, True), (at_limit + b" ", False), (b"\xff", False)):
+                stream = io.BytesIO(raw)
+                with self.subTest(loader=loader.__name__, size=len(raw)):
+                    with patch("builtins.open", return_value=stream) as opened, patch.object(stream, "read", wraps=stream.read) as read:
+                        if valid:
+                            loaded = loader(self.config_path)
+                            self.assertEqual(loaded.digest, "sha256:" + hashlib.sha256(raw).hexdigest())
+                        else:
+                            with self.assertRaises(cfg.ConfigValidationError) as ctx:
+                                loader(self.config_path)
+                            rule = "size-limit-exceeded" if len(raw) > 16384 else "invalid-json"
+                            self.assertEqual(dict(ctx.exception.errors[0]), {"path": "config", "rule": rule})
+                        opened.assert_called_once_with(self.config_path, "rb")
+                        read.assert_called_once_with(16385)
+
+    def test_removed_search_is_rejected(self):
+        base = _matrix_config_dict()
+        _cfg().validate_config_data(base)
+        self.assert_invalid(_mut(base, lambda d: d["helpers"].__setitem__("search", d["helpers"]["text"])),
+                            "helpers.search", "unknown-key")
+        self.assert_invalid(_mut(base, lambda d: d["roleBlocks"][0].__setitem__("role", "search")),
+                            "roleBlocks[0].role", "invalid-role-block-role")
+
     def test_load_config_and_state_success_and_immutability(self):
         cfg_mod = _cfg()
-        self.write_json(self.config_path, _valid_config_dict())
+        self.write_json(self.config_path, _matrix_config_dict())
         self.write_json(self.state_path, _valid_state_dict())
 
         loaded = cfg_mod.load_config(self.config_path)
         self.assertTrue(loaded.digest.startswith("sha256:") and loaded.policy_digest.startswith("sha256:"))
-        self.assertEqual((loaded.notices, loaded.data["version"]), ((), 2))
+        self.assertEqual((loaded.notices, loaded.data["version"]), ((), 3))
         self.assertEqual(cfg_mod.load_config().digest, loaded.digest)
         self.assertEqual(cfg_mod.load_config(local=self.local).digest, loaded.digest)
 
-        for target, key, val in ((loaded.data, "version", 1), (loaded.data["modelPreferences"]["software-engineering"]["medium"]["options"], "x", "y")):
+        for target, key, val in ((loaded.data, "version", 1), (loaded.data["manager"]["primary"]["options"], "x", "y")):
             with self.assertRaises(TypeError):
                 target[key] = val
         self.assertIsInstance(loaded.data["providerPools"]["agy-synth-pool"]["providerInstanceIds"], tuple)
-        self.assertIsInstance(loaded.data["availabilityFallback"]["chains"], tuple)
+        self.assertIsInstance(loaded.data["manager"]["quotaFallback"], tuple)
 
         from t3compose import cli
         cli.build_parser()
@@ -86,7 +172,7 @@ class OfflineConfigValidation(OfflineTestCase):
 
     def test_exact_byte_digest_policy_digest_projection_and_no_caching(self):
         cfg_mod = _cfg()
-        cfg_data = _valid_config_dict()
+        cfg_data = _matrix_config_dict()
         compact_bytes = json.dumps(cfg_data, separators=(",", ":")).encode("utf-8")
         spaced_bytes = (json.dumps(cfg_data, indent=4) + "\n").encode("utf-8")
 
@@ -101,15 +187,12 @@ class OfflineConfigValidation(OfflineTestCase):
         self.assertEqual(loaded_compact.policy_digest, loaded_spaced.policy_digest)
 
         for label, fn in (
-            ("master.model", lambda d: d["master"].__setitem__("model", "claude-opus-other")),
-            ("modelPreferences", lambda d: d["modelPreferences"]["non-engineering"]["medium"].__setitem__("model", "other")),
-            ("easyWorker", lambda d: d["easyWorker"].__setitem__("model", "gemini-4-flash-lite")),
-            ("textHelper", lambda d: d["textHelper"].__setitem__("model", "gemini-4-flash-lite")),
+            ("manager.model", lambda d: d["manager"]["primary"].__setitem__("model", "other")),
+            ("worker.model", lambda d: d["matrix"]["worker"]["backend-logic"]["2"]["primary"].__setitem__("model", "other")),
+            ("helper.model", lambda d: d["helpers"]["text"]["primary"].__setitem__("model", "other")),
             ("providerPools", lambda d: d["providerPools"]["agy-synth-pool"]["providerInstanceIds"].append("agy-synth-delta")),
-            ("roundTiers", lambda d: d["roundTiers"].__setitem__("corrections", "medium")),
             ("jev.timeoutSeconds", lambda d: d["jev"].__setitem__("timeoutSeconds", 60)),
             ("jev.keyFile", lambda d: d["jev"]["keyFile"].update({"path": "/synthetic/other.json", "field": "k"})),
-            ("availabilityFallback", lambda d: d["availabilityFallback"].__setitem__("chains", [])),
         ):
             with self.subTest(excluded=label):
                 self.write_json(self.config_path, _mut(cfg_data, fn))
@@ -117,11 +200,11 @@ class OfflineConfigValidation(OfflineTestCase):
 
         for label, fn in (
             ("ruleVersion", lambda d: d["classification"].__setitem__("ruleVersion", "2026-10-28-v3")),
-            ("domain.instructions", lambda d: d["classification"]["domain"].__setitem__("instructions", "Updated.")),
-            ("domain.criteria", lambda d: d["classification"]["domain"]["criteria"].__setitem__("SOFTWARE_ENGINEERING", "Updated.")),
-            ("difficulty.instructions", lambda d: d["classification"]["difficulty"].__setitem__("instructions", "Updated.")),
-            ("difficulty.criteria", lambda d: d["classification"]["difficulty"]["criteria"].__setitem__("CHALLENGING", "Updated.")),
-            ("riskFacts.floor", lambda d: d["riskFacts"]["shared-interface"].__setitem__("floor", "challenging")),
+            ("lane.instructions", lambda d: d["classification"]["lane"].__setitem__("instructions", "Updated.")),
+            ("lane.criteria", lambda d: d["classification"]["lane"]["criteria"].__setitem__("BACKEND_LOGIC", "Updated.")),
+            ("scope.instructions", lambda d: d["classification"]["scope"].__setitem__("instructions", "Updated.")),
+            ("scope.criteria", lambda d: d["classification"]["scope"]["criteria"].__setitem__("COMPLEX", "Updated.")),
+            ("riskFacts.scope", lambda d: d["riskFacts"]["shared-interface"].__setitem__("scope", "COMPLEX")),
             ("riskFacts.description", lambda d: d["riskFacts"]["shared-interface"].__setitem__("description", "Changed.")),
             ("jev.model", lambda d: d["jev"].__setitem__("model", "~typesafe/jev-pinned")),
             ("jev.minConfidence", lambda d: d["jev"].__setitem__("minConfidence", 0.75)),
@@ -131,134 +214,15 @@ class OfflineConfigValidation(OfflineTestCase):
                 self.write_json(self.config_path, _mut(cfg_data, fn))
                 self.assertNotEqual(cfg_mod.load_config(self.config_path).policy_digest, loaded_compact.policy_digest)
 
-    def test_version_1_refusal_reports_missing_sections_and_nested_requirements(self):
-        cfg_mod = _cfg()
-        v1 = _valid_config_dict()
-        v1["version"] = 1
-        for k in ("classification", "riskFacts", "roundTiers", "availabilityFallback"):
-            del v1[k]
-        v1["jev"] = {"provider": "openrouter", "keyFile": {"path": "/synthetic/k"}}
-
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx:
-            cfg_mod.validate_config_data(v1)
-        for sec in ("classification", "riskFacts", "roundTiers", "availabilityFallback", "jev.model", "jev.minConfidence", "jev.keyFile.field"):
-            self.assertIn(sec, ctx.exception.missing_sections)
-        self.assertIn("classification", str(ctx.exception))
-
-        v1_partial = _valid_config_dict()
-        v1_partial.update({
-            "version": 1, "classification": {"domain": {"instructions": "only"}, "difficulty": {}},
-            "riskFacts": {}, "roundTiers": {"corrections": "easy"},
-            "availabilityFallback": {"roles": ["worker", "reviewer", "feature-lead"]},
-        })
-        with self.assertRaises(cfg_mod.ConfigValidationError) as ctx2:
-            cfg_mod.validate_config_data(v1_partial)
-        for sec in (
-            "classification.ruleVersion", "classification.domain.criteria", "classification.difficulty.instructions",
-            "classification.difficulty.criteria", "riskFacts", "roundTiers.correctionsReview",
-            "roundTiers.documentReview", "availabilityFallback.manager", "availabilityFallback.chains",
-        ):
-            self.assertIn(sec, ctx2.exception.missing_sections)
-
-    def test_selection_forms_pool_rules_roles_and_chains(self):
-        cfg_mod = _cfg()
-        base = _valid_config_dict()
-        cfg_direct = _mut(base, lambda d: d["modelPreferences"]["software-engineering"].__setitem__(
-            "medium", {"providerInstanceId": "pi-synth-openrouter", "model": "glm-5.3", "options": {}, "roles": ["worker"]}
-        ))
-        frozen, notices = cfg_mod.validate_config_data(cfg_direct)
-        self.assertEqual((frozen["modelPreferences"]["software-engineering"]["medium"]["roles"], notices), (("worker",), ()))
-
-        _, notices = cfg_mod.validate_config_data(_mut(base, lambda d: d["availabilityFallback"].__setitem__("chains", [d["availabilityFallback"]["chains"][0]])))
-        self.assertEqual((len(notices), notices[0]["kind"]), (1, "missing-reverse-chain"))
-
-        for roles in (["worker"], ["reviewer"], ["feature-lead"], ["worker", "reviewer"], ["reviewer", "feature-lead"], ["worker", "reviewer", "feature-lead"]):
-            cfg_mod.validate_config_data(_mut(base, lambda d: d["modelPreferences"]["non-engineering"]["medium"].__setitem__("roles", list(roles))))
-
-        for bad_roles, path_suffix, rule in (
-            ([], "roles", "empty-roles"), (["unknown-role"], "roles[0]", "invalid-role"),
-            (["worker", "worker"], "roles[1]", "duplicate-role"), ("worker", "roles", "expected-list"),
-        ):
-            self.assert_invalid(
-                _mut(base, lambda d: d["modelPreferences"]["non-engineering"]["medium"].__setitem__("roles", bad_roles)),
-                f"modelPreferences.non-engineering.medium.{path_suffix}", rule,
-            )
-
-        for bad_pool_roles in (None, [], ["reviewer"], ["feature-lead"], ["worker", "reviewer"]):
-            for path_str, getter in (
-                ("modelPreferences.software-engineering.medium", lambda d: d["modelPreferences"]["software-engineering"]["medium"]),
-                ("availabilityFallback.chains[0].from", lambda d: d["availabilityFallback"]["chains"][0]["from"]),
-                ("availabilityFallback.chains[1].to[0]", lambda d: d["availabilityFallback"]["chains"][1]["to"][0]),
-            ):
-                d = copy.deepcopy(base)
-                if bad_pool_roles is None:
-                    del getter(d)["roles"]
-                else:
-                    getter(d)["roles"] = bad_pool_roles
-                self.assert_invalid(d, f"{path_str}.roles", "pool-selection-requires-worker-only-role")
-
-        pool_sel = {"providerPool": "agy-synth-pool", "model": "gemini-4-argon-high", "options": {}, "roles": ["worker"]}
-        for path_str, fn in (
-            ("modelPreferences.software-engineering.challenging.providerPool", lambda d: d["modelPreferences"]["software-engineering"].__setitem__("challenging", dict(pool_sel))),
-            ("availabilityFallback.chains[4].from.providerPool", lambda d: d["availabilityFallback"]["chains"][4].__setitem__("from", dict(pool_sel))),
-            ("availabilityFallback.chains[4].to[0].providerPool", lambda d: d["availabilityFallback"]["chains"][4].__setitem__("to", [dict(pool_sel)])),
-        ):
-            self.assert_invalid(_mut(base, fn), path_str, "pool-selection-not-allowed-at-challenging-tier")
-
-        self.assert_invalid(_mut(base, lambda d: d.__setitem__("master", dict(pool_sel))), "master.providerPool", "expected-direct-selection")
-
-        for slot in ("easyWorker", "textHelper"):
-            self.assert_invalid(_mut(base, lambda d: d[slot].__setitem__("roles", ["worker"])), f"{slot}.roles", "roles-not-allowed")
-            self.assert_invalid(_mut(base, lambda d: d.__setitem__(slot, {"providerInstanceId": "claude-synth-primary", "model": "m", "options": {}})), f"{slot}.providerInstanceId", "expected-pool-selection")
-            self.assert_invalid(_mut(base, lambda d: d[slot].__setitem__("providerPool", "nonexistent-pool")), f"{slot}.providerPool", "unknown-provider-pool")
-
-        for path_prefix, getter in (
-            ("master", lambda d: d["master"]),
-            ("modelPreferences.software-engineering.challenging", lambda d: d["modelPreferences"]["software-engineering"]["challenging"]),
-            ("modelPreferences.non-engineering.medium", lambda d: d["modelPreferences"]["non-engineering"]["medium"]),
-            ("modelPreferences.non-engineering.challenging", lambda d: d["modelPreferences"]["non-engineering"]["challenging"]),
-            ("availabilityFallback.chains[1].from", lambda d: d["availabilityFallback"]["chains"][1]["from"]),
-            ("availabilityFallback.chains[0].to[0]", lambda d: d["availabilityFallback"]["chains"][0]["to"][0]),
-        ):
-            self.assert_invalid(_mut(base, lambda d: getter(d).__setitem__("providerInstanceId", "agy-synth-beta")), f"{path_prefix}.providerInstanceId", "direct-selection-names-pool-member")
-
-        self.assert_invalid(
-            _mut(base, lambda d: d["modelPreferences"]["software-engineering"].__setitem__("medium", {"providerInstanceId": "agy-synth-alpha", "model": "m", "options": {}})),
-            "modelPreferences.software-engineering.medium.providerInstanceId", "direct-selection-names-pool-member",
-        )
-        self.assert_invalid(_mut(base, lambda d: d["master"].__setitem__("providerPool", "agy-synth-pool")), "master", "disjoint-selection-keys")
-        self.assert_invalid(_mut(base, lambda d: d["master"].__delitem__("providerInstanceId")), "master", "missing-selection-target")
-        self.assert_invalid(_mut(base, lambda d: d["availabilityFallback"]["chains"][0].__delitem__("tier")), "availabilityFallback.chains[0].tier", "missing-key")
-        for bad_tier in ("easy", "invalid"):
-            self.assert_invalid(_mut(base, lambda d: d["availabilityFallback"]["chains"][0].__setitem__("tier", bad_tier)), "availabilityFallback.chains[0].tier", "invalid-chain-tier")
-
-        d_dup = copy.deepcopy(base)
-        dup_chain = copy.deepcopy(d_dup["availabilityFallback"]["chains"][2])
-        dup_chain["from"]["roles"] = ["worker"]
-        d_dup["availabilityFallback"]["chains"].append(dup_chain)
-        self.assert_invalid(d_dup, "availabilityFallback.chains[6].from", "duplicate-chain-source")
-
-        for bad_to in ([], [base["master"], base["master"]]):
-            self.assert_invalid(_mut(base, lambda d: d["availabilityFallback"]["chains"][2].__setitem__("to", bad_to)), "availabilityFallback.chains[2].to", "chain-requires-single-target")
-
-        d_same_dir = copy.deepcopy(base)
-        same_t = copy.deepcopy(d_same_dir["availabilityFallback"]["chains"][2]["from"])
-        same_t["roles"] = ["worker"]
-        d_same_dir["availabilityFallback"]["chains"][2]["to"] = [same_t]
-        self.assert_invalid(d_same_dir, "availabilityFallback.chains[2].to[0]", "chain-target-equals-source")
-        self.assert_invalid(
-            _mut(base, lambda d: d["availabilityFallback"]["chains"][0].__setitem__("to", [copy.deepcopy(d["availabilityFallback"]["chains"][0]["from"])])),
-            "availabilityFallback.chains[0].to[0]", "chain-target-equals-source",
-        )
 
     def test_boundaries_types_unknown_keys_and_keyfile_never_opened(self):
         cfg_mod = _cfg()
-        base = _valid_config_dict()
+        base = _matrix_config_dict()
         self.assert_invalid(_mut(base, lambda d: d.__setitem__("extraTop", 1)), "extraTop", "unknown-key")
         self.assert_invalid(_mut(base, lambda d: d["jev"].__setitem__("extraJev", "x")), "jev.extraJev", "unknown-key")
 
         for fn, path, rule in (
-            (lambda d: d.__setitem__("version", True), "version", "invalid-version"),
+            (lambda d: d.__setitem__("version", True), "version", "expected-version-3"),
             (lambda d: d["jev"].__setitem__("minConfidence", True), "jev.minConfidence", "invalid-min-confidence"),
             (lambda d: d["jev"].__setitem__("maxContextRetries", True), "jev.maxContextRetries", "invalid-max-context-retries"),
             (lambda d: d["jev"].__setitem__("timeoutSeconds", True), "jev.timeoutSeconds", "invalid-timeout-seconds"),
@@ -266,7 +230,7 @@ class OfflineConfigValidation(OfflineTestCase):
             self.assert_invalid(_mut(base, fn), path, rule)
 
         for bad_opt in (1, 1.5, None, ["a"], {"k": "v"}):
-            self.assert_invalid(_mut(base, lambda d: d["master"]["options"].__setitem__("bad", bad_opt)), "master.options.bad", "invalid-option-value")
+            self.assert_invalid(_mut(base, lambda d: d["manager"]["primary"]["options"].__setitem__("bad", bad_opt)), "manager.primary.options.bad", "invalid-option-value")
 
         for k, valid_vals, invalid_vals, rule in (
             ("minConfidence", (0.0001, 0.6, 1, 1.0), (0, 0.0, -0.1, 1.0001, "0.6", 10**400, -(10**400)), "invalid-min-confidence"),
@@ -279,26 +243,15 @@ class OfflineConfigValidation(OfflineTestCase):
                 self.assert_invalid(_mut(base, lambda d: d["jev"].__setitem__(k, v)), f"jev.{k}", rule)
 
         for bad_id in ("UPPER", "snake_case", "trailing-", "-leading", "a--b", "word1", "bad\n", "bad\t", "bad\r"):
-            self.assert_invalid(_mut(base, lambda d: d["riskFacts"].__setitem__(bad_id, {"description": "desc", "floor": "medium"})), f"riskFacts.{bad_id}", "invalid-fact-id")
-
-        self.assert_invalid(_mut(base, lambda d: d["riskFacts"]["shared-interface"].__setitem__("floor", "easy")), "riskFacts.shared-interface.floor", "invalid-floor")
-        for rev_field in ("correctionsReview", "documentReview"):
-            self.assert_invalid(_mut(base, lambda d: d["roundTiers"].__setitem__(rev_field, "easy")), f"roundTiers.{rev_field}", "invalid-reviewer-tier")
-        for valid_corr in ("easy", "medium", "challenging"):
-            cfg_mod.validate_config_data(_mut(base, lambda d: d["roundTiers"].__setitem__("corrections", valid_corr)))
+            self.assert_invalid(_mut(base, lambda d: d["riskFacts"].__setitem__(bad_id, {"description": "desc"})), f"riskFacts.{bad_id}", "invalid-fact-id")
 
         for fn, path, rule in (
             (lambda d: d.__setitem__("providerPools", {}), "providerPools", "empty-object"),
             (lambda d: d["providerPools"]["agy-synth-pool"].__setitem__("selection", "random"), "providerPools.agy-synth-pool.selection", "invalid-pool-selection-mode"),
             (lambda d: d["providerPools"]["agy-synth-pool"].__setitem__("providerInstanceIds", ["agy-synth-alpha", "agy-synth-alpha"]), "providerPools.agy-synth-pool.providerInstanceIds[1]", "duplicate-instance-id"),
             (lambda d: d["providerPools"].__setitem__("second-pool", {"selection": "exhaust-in-order", "providerInstanceIds": ["agy-synth-alpha"]}), "providerPools.second-pool.providerInstanceIds[0]", "duplicate-pool-member"),
-            (lambda d: d["classification"]["domain"]["criteria"].__delitem__("OTHER"), "classification.domain.criteria.OTHER", "missing-key"),
+            (lambda d: d["classification"]["lane"]["criteria"].__delitem__("MIXED"), "classification.lane.criteria.MIXED", "missing-key"),
             (lambda d: d["jev"].__setitem__("provider", "other"), "jev.provider", "invalid-jev-provider"),
-            (lambda d: d["jev"].__setitem__("uncertainResult", "guess"), "jev.uncertainResult", "invalid-uncertain-result"),
-            (lambda d: d["availabilityFallback"].__setitem__("roles", ["worker", "reviewer"]), "availabilityFallback.roles", "invalid-fallback-roles"),
-            (lambda d: d["availabilityFallback"].__setitem__("manager", "auto"), "availabilityFallback.manager", "invalid-manager-fallback"),
-            (lambda d: d["availabilityFallback"].__setitem__("recordReason", False), "availabilityFallback.recordReason", "expected-true"),
-            (lambda d: d["availabilityFallback"].__setitem__("reportReason", False), "availabilityFallback.reportReason", "expected-true"),
         ):
             self.assert_invalid(_mut(base, fn), path, rule)
 
@@ -318,7 +271,7 @@ class OfflineConfigValidation(OfflineTestCase):
         self.assertNotIn("relative/secret-path-token", str(exc))
         self.assertNotIn("SUPER-SECRET-TOKEN-999", str(exc))
 
-    def test_refusal_shapes_and_config_check_both_versions(self):
+    def test_refusal_shapes_and_config_check(self):
         import contextlib
         import io
         from t3compose import cli
@@ -327,7 +280,7 @@ class OfflineConfigValidation(OfflineTestCase):
                  "evidence": "synthetic evidence"}
         state = _valid_state_dict()
         state["refusals"] = [entry, entry]
-        for cfg in (_valid_config_dict(), _matrix_config_dict()):
+        for cfg in (_matrix_config_dict(),):
             self.write_json(self.config_path, cfg)
             self.write_json(self.state_path, state)
             out, err = io.StringIO(), io.StringIO()
@@ -357,7 +310,7 @@ class OfflineConfigValidation(OfflineTestCase):
 
     def test_quota_state_validation_and_sanitized_io_errors(self):
         cfg_mod = _cfg()
-        frozen_cfg, _ = cfg_mod.validate_config_data(_valid_config_dict())
+        frozen_cfg, _ = cfg_mod.validate_config_data(_matrix_config_dict())
 
         for fn, path, rule in (
             (lambda s: s["quotaObservations"].__setitem__("agy-synth-alpha", {"observedAt": "2026-10-28T00:00:00Z", "status": "available", "resetAt": None, "evidence": "legacy"}), "quotaObservations.agy-synth-alpha", "expected-list"),
@@ -387,58 +340,21 @@ class OfflineConfigValidation(OfflineTestCase):
             cfg_mod.load_config(self.config_path)
         self.assertEqual([dict(e) for e in ctx_size.exception.errors], [{"path": "config", "rule": "size-limit-exceeded"}])
 
-    def test_cli_config_check_and_example_fixtures(self):
-        def invoke(*args):
-            proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), *args),
-                                  cwd=self.temp, text=True, capture_output=True)
-            self.assertEqual(proc.stderr, "")
-            return proc.returncode, json.loads(proc.stdout)
-        ex_cfg = ROOT / "docs/examples/agent-routing.example.json"
-        ex_state = ROOT / "docs/examples/agent-routing-state.example.json"
-        code, data = invoke("config", "check", "--config", str(ex_cfg), "--state", str(ex_state))
-        self.assertEqual(code, 0)
-        for key, path in (("digest", ex_cfg), ("stateDigest", ex_state)):
-            self.assertEqual(data[key], "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest())
-        self.assertEqual(data["policyDigest"], _cfg().load_config(ex_cfg).policy_digest)
-        self.assertEqual(data["notices"], [])
-        self.write_json(self.config_path, _valid_config_dict())
-        code, data = invoke("config", "check")
-        self.assertEqual(code, 3)
-        self.assertIn({"path": "state", "rule": "unreadable-file"}, data["errors"])
-        self.write_json(self.state_path, _valid_state_dict())
-        cases = (
-            (("version",), 1, "version", "unsupported-version-1"),
-            (("availabilityFallback", "chains", 0, "from", "providerPool"), [], "availabilityFallback.chains[0].from.providerPool", "invalid-string"),
-            (("availabilityFallback", "chains", 0, "to", 0, "model"), [], "availabilityFallback.chains[0].to[0].model", "invalid-string"),
-            (("jev", "minConfidence"), 10**400, "jev.minConfidence", "invalid-min-confidence"),
-        )
-        for path, value, error_path, rule in cases:
-            config = _valid_config_dict()
-            target = config
-            for part in path[:-1]:
-                target = target[part]
-            target[path[-1]] = value
-            if path == ("version",):
-                del config["classification"]
-            self.write_json(self.config_path, config)
-            code, data = invoke("config", "check")
+    def test_cli_state_errors(self):
+        import contextlib
+        import io
+        from t3compose import cli
+        self.write_json(self.config_path, _matrix_config_dict())
+        for state, expected in ((None, {"path": "state", "rule": "unreadable-file"}),
+                                (_mut(_valid_state_dict(), lambda s: s.__setitem__("activeProviderInstanceId", "absent")),
+                                 {"path": "state.activeProviderInstanceId", "rule": "unknown-pool-member"})):
+            if state is not None:
+                self.write_json(self.state_path, state)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["--local-dir", str(self.local), "config", "check"])
             self.assertEqual(code, 3)
-            self.assertFalse(data["valid"])
-            self.assertTrue(any(e["path"] == error_path and e["rule"] == rule for e in data["errors"]))
-            if path == ("version",):
-                self.assertIn("classification", data["missingSections"])
-        config = _valid_config_dict()
-        config["version"] = 1
-        del config["classification"]["domain"]["criteria"]["OTHER"]
-        self.write_json(self.config_path, config)
-        code, data = invoke("config", "check")
-        self.assertEqual(code, 3)
-        self.assertIn("classification.domain.criteria.OTHER", data["missingSections"])
-        self.write_json(self.config_path, _valid_config_dict())
-        self.write_json(self.state_path, _mut(_valid_state_dict(), lambda s: s.__setitem__("activeProviderInstanceId", "not-a-member")))
-        code, data = invoke("config", "check")
-        self.assertEqual(code, 3)
-        self.assertIn({"path": "state.activeProviderInstanceId", "rule": "unknown-pool-member"}, data["errors"])
+            self.assertIn(expected, json.loads(out.getvalue())["errors"])
 
     def test_closed_objects_reject_unknown_missing_and_wrong_shapes(self):
         cfg = _cfg()
@@ -450,14 +366,13 @@ class OfflineConfigValidation(OfflineTestCase):
             elif isinstance(value, list):
                 for index, item in enumerate(value):
                     yield from objects(item, (*path, index))
-        for base, validate in ((_valid_config_dict(), cfg.validate_config_data),
-                               (_matrix_config_dict(), cfg.validate_config_data),
+        for base, validate in ((_matrix_config_dict(), cfg.validate_config_data),
                                (_valid_state_dict(), cfg.validate_quota_state_data)):
             for path, obj in objects(base):
                 if path and path[-1] in ("providerPools", "riskFacts", "options", "quotaObservations"):
                     continue  # These mappings have dynamic keys, not closed field sets.
                 changes = [("extra", "__unexpected__"), ("shape", None)]
-                changes += [("missing", key) for key in obj if not (base.get("version") == 3 and (key == "prePass" or (path and path[0] == "riskFacts" and key in ("scope", "criticality")))) and not (key == "roles" and "providerInstanceId" in obj)]
+                changes += [("missing", key) for key in obj if not (base.get("version") == 3 and (key == "prePass" or (path and path[0] == "riskFacts" and key in ("scope", "criticality"))))]
                 changes += [("type", key) for key, value in obj.items() if not isinstance(value, (dict, list))]
                 for kind, key in changes:
                     with self.subTest(path=path, kind=kind, key=key):
@@ -480,27 +395,15 @@ class OfflineConfigValidation(OfflineTestCase):
                             data = []
                         with self.assertRaises(cfg.ConfigValidationError):
                             validate(data)
-        base = _valid_config_dict()
-        for index, side in ((0, "from"), (1, "from"), (0, "to"), (1, "to")):
-            for key in ("model", "options", "providerPool" if (index, side) in ((0, "from"), (1, "to")) else "providerInstanceId"):
-                for value in ([], {}):
-                    data = copy.deepcopy(base)
-                    endpoint = data["availabilityFallback"]["chains"][index][side]
-                    if side == "to":
-                        endpoint = endpoint[0]
-                    endpoint[key] = value
-                    if key == "options" and value == {}:
-                        cfg.validate_config_data(data)
-                    else:
-                        with self.assertRaises(cfg.ConfigValidationError):
-                            cfg.validate_config_data(data)
 
 
 class OfflineMatrixConfigValidation(OfflineTestCase):
     def test_schema_vocabulary_matches_config(self):
         from t3compose import config, schema
         self.assertEqual(dict(config.MATRIX_LANES), schema._MATRIX_LANES)
-        self.assertEqual(config.ROLE_BLOCK_ROLES, schema._V3_ROLES)
+        self.assertEqual(set(config.ROLE_BLOCK_ROLES), set(schema._V3_ROLES) - {"search"})
+        self.assertEqual(config.HELPER_NAMES, ("verifier", "text"))
+        self.assertIn("search", schema._V3_ROLES)  # Historical selection records stay readable.
         classification = _matrix_config_dict()["classification"]
         for question, options in schema._V3_QUESTIONS.items():
             self.assertEqual(options, tuple(classification[question]["criteria"]))
@@ -531,16 +434,14 @@ class OfflineMatrixConfigValidation(OfflineTestCase):
                 obj["new"] = True
         self.assertIsInstance(loaded.data["manager"]["quotaFallback"], tuple)
         self.assertEqual(cfg.load_quota_state(config=loaded).digest, cfg.load_quota_state(config=loaded.data).digest)
-        for raw, accessor, path, rule in (
-            (base, cfg.load_config, "version", "expected-version-2"),
-            *[(raw, cfg.load_matrix_config, "version", "expected-version-3") for raw in
-              (_valid_config_dict(), {"version": 1}, {"version": "3"}, {"version": True}, {})],
-            ([], cfg.load_matrix_config, "$", "expected-object"),
-        ):
-            self.write_json(self.config_path, raw)
+        self.assertEqual(cfg.load_config(self.config_path), loaded)
+        self.assertEqual(cfg.load_config(local=self.local), loaded)
+        self.assertEqual(cfg.load_config(), loaded)
+        self.write_json(self.config_path, [])
+        for accessor in (cfg.load_config, cfg.load_matrix_config):
             with self.assertRaises(cfg.ConfigValidationError) as ctx:
                 accessor(self.config_path)
-            self.assertEqual(ctx.exception.to_payload(), {"valid": False, "errors": [{"path": path, "rule": rule}]})
+            self.assertEqual(ctx.exception.to_payload(), {"valid": False, "errors": [{"path": "$", "rule": "expected-object"}]})
         for content, rule in (("{", "invalid-json"), (" " * 16385, "size-limit-exceeded")):
             self.config_path.write_text(content)
             with self.assertRaises(cfg.ConfigValidationError) as ctx:
@@ -675,18 +576,27 @@ class OfflineMatrixConfigValidation(OfflineTestCase):
         base, cfg = _matrix_config_dict(), _cfg()
         self.write_json(self.state_path, _valid_state_dict())
         example = ROOT / "docs/examples/agent-routing.v3.example.json"
-        def invoke(path):
-            proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), "config", "check", "--config", str(path)), text=True, capture_output=True)
-            self.assertEqual(proc.stderr, "")
-            return proc.returncode, json.loads(proc.stdout)
-        code, output = invoke(example)
+        def invoke(path, *, child=False):
+            if child:
+                proc = subprocess.run(guarded_helper_command("--local-dir", str(self.local), "config", "check", "--config", str(path)), text=True, capture_output=True)
+                self.assertEqual(proc.stderr, "")
+                return proc.returncode, json.loads(proc.stdout)
+            import contextlib
+            import io
+            from t3compose import cli
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(["--local-dir", str(self.local), "config", "check", "--config", str(path)])
+            self.assertEqual(err.getvalue(), "")
+            return code, json.loads(out.getvalue())
+        code, output = invoke(example, child=True)
         self.assertEqual(code, 0)
         self.assertEqual(output, {"version": 3, "digest": "sha256:" + hashlib.sha256(example.read_bytes()).hexdigest(),
             "stateDigest": "sha256:" + hashlib.sha256(self.state_path.read_bytes()).hexdigest(),
             "policyDigest": cfg.load_matrix_config(example).policy_digest, "ruleVersion": base["classification"]["ruleVersion"],
             "riskFacts": {k: {key: val for key, val in v.items() if key != "description"} for k, v in base["riskFacts"].items()}, "notices": []})
         for path, value, error_path, rule in (
-            (("manager", "quotaFallback"), [base["helpers"]["search"]["primary"]] * 2, "manager.quotaFallback[1]", "duplicate-fallback"),
+            (("manager", "quotaFallback"), [base["helpers"]["verifier"]["primary"]] * 2, "manager.quotaFallback[1]", "duplicate-fallback"),
             (("manager", "prePass"), base["manager"]["primary"], "manager.prePass", "pre-pass-outside-reviewer-cell"),
             (("matrix", "worker", "backend-logic", "2"), None, "matrix.worker.backend-logic.2", "missing-key"),
             (("riskFacts", "shared-interface", "criticality"), "OTHER", "riskFacts.shared-interface.criticality", "invalid-floor"),

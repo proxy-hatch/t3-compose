@@ -36,11 +36,10 @@
   },
   "helpers": {
     "verifier": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}, "quotaFallback": []},
-    "search": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "low"}}, "quotaFallback": []},
     "text": {"primary": {"providerPool": "agy-synth-pool", "model": "gemini-3.8-flash-high", "options": {}}, "quotaFallback": []}
   },
   "providerPools": {"agy-synth-pool": {"selection": "exhaust-in-order", "providerInstanceIds": ["agy-synth-alpha", "agy-synth-beta", "agy-synth-gamma"]}},
-  "roleBlocks": [{"driverKind": "antigravity", "role": "search", "reason": "Synthetic example: a capability probe failed for this role.", "evidence": "Synthetic probe summary; no real transcript."}],
+  "roleBlocks": [],
   "quota": {"refusalRetryMinutes": 30},
   "classification": {
     "ruleVersion": "2026-11-01-v3-example",
