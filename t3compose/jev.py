@@ -1,11 +1,13 @@
 """Bounded Decisions API classification; no route or execution-model selection."""
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+import fcntl
 import hashlib
 import json
 import os
 import re
 import ssl
 import stat
+import time
 import urllib.error
 import urllib.request
 
@@ -17,6 +19,7 @@ RESPONSE_LIMIT = 256 * 1024
 KEY_LIMIT = 4096
 QUESTIONS = ("lane", "criticality", "scope")
 FIXED_DEFAULTS = {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "COMPLEX"}
+LOCK_GRACE_SECONDS = 10  # A second invocation for a work waits this long beyond the request timeout.
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -122,8 +125,33 @@ def _is_unknown_obj(value):
     return isinstance(value, dict) and set(value) == {"unknown"}
 
 
+@contextmanager
+def _work_lock(local, repo, work_id, wait):
+    """Serialize route classify per work: reload, eligibility, request and publication share one lock.
+
+    The record store has no lock of its own, so this advisory lock on the work's directory only orders
+    classify invocations. It is released when the directory descriptor closes, even if the process dies.
+    """
+    _, path = records.location(local, repo, work_id)
+    with records.directory(path) as descriptor:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise cli.CommandError("another classification holds this work; retry later") from None
+                time.sleep(0.05)
+        yield
+
+
 def _retry(events, task, context, policy, maximum, decline=False):
-    """Consume attempts by persisted input, not by a caller-supplied retry counter."""
+    """Consume attempts by persisted input, not by a caller-supplied retry counter.
+
+    Returns False for a first request, True for an eligible context retry, ("publish", classification) when
+    a rerun must write the judgment that stored classification owes (no request), or a refusal Outcome.
+    """
     inputs = [e for e in events if e["kind"] == "routing-input" and
               e["data"]["policyDigest"] == policy and
               jsonio.canonical_json(e["data"]["task"]) == jsonio.canonical_json(task)]
@@ -139,22 +167,27 @@ def _retry(events, task, context, policy, maximum, decline=False):
     prior = classifications[-1]
     judgments = [e for e in events if e["kind"] == "routing-judgment" and
                  e["data"]["inputRef"] == latest["seq"]]
-    decided = prior["data"]["outcome"] in ("accepted", "defaulted") or bool(judgments)
+    outcome = prior["data"]["outcome"]
+    decided = outcome in ("accepted", "defaulted") or bool(judgments)
+    pending = outcome == "retry-with-context" and not judgments
+    # A defaulted classification, and an accepted one with a MIXED lane, are followed by their judgment in
+    # the same invocation. If that append failed the decision is incomplete, and a rerun completes it.
+    incomplete = not judgments and (
+        outcome == "defaulted" or (outcome == "accepted" and prior["data"]["answers"]["lane"]["choice"] == "MIXED"))
 
-    if decline:
-        if not decided and prior["data"]["outcome"] == "retry-with-context":
-            return ("decline_pending", prior)
-        return cli.Outcome({**prior["data"], "classificationRef": prior["seq"],
-                            "reason": "identical input already classified/decided; reuse its evidence"},
-                           cli.ExitCode.JUDGMENT_NEEDED)
-
+    if context is None and (incomplete or (pending and decline)):
+        return ("publish", prior)
     if (context is not None and len(inputs) == 1 and maximum >= 1 and not decided and
-            prior["data"]["outcome"] == "retry-with-context" and
+            outcome == "retry-with-context" and
             context.get("priorClassificationRef") == prior["seq"] and
             _information({k: v for k, v in context.items() if k != "priorClassificationRef"})):
         return True
-    reason = ("identical input already classified/decided; reuse its evidence" if decided
-              else "retry refused; use eligible context once or rerun with --decline-retry")
+    if incomplete:
+        reason = "decision incomplete; rerun without --context to write its judgment"
+    elif decided:
+        reason = "identical input already classified/decided; reuse its evidence"
+    else:
+        reason = "retry refused; use eligible context once or rerun with --decline-retry"
     return cli.Outcome({**prior["data"], "classificationRef": prior["seq"], "reason": reason},
                        cli.ExitCode.JUDGMENT_NEEDED)
 
@@ -214,6 +247,14 @@ def _make_judgment(answers, min_confidence, input_ref, input_digest, policy_dige
             "defaulted": [],
         }
     return None
+
+
+def _owed(data, min_confidence):
+    """The judgment a classification record owes, or None when the record is itself the decision."""
+    refs = (data["inputRef"], data["inputDigest"], data["policyDigest"])
+    if _is_unknown_obj(data["answers"]):
+        return _make_judgment(None, min_confidence, *refs, failure_reason=data["reason"])
+    return _make_judgment(data["answers"], min_confidence, *refs)
 
 
 def _request(body, key, timeout):
@@ -294,6 +335,16 @@ def _classify(local, repo, work_id, task, context, decline):
         raise cli.CommandError("unconfigured task risk fact")
     key = _key(cfg["jev"])
     secrets = (key, cfg["jev"]["keyFile"]["path"])
+    with _work_lock(local, repo, work_id, _lock_wait(cfg["jev"])):
+        return _decide(local, repo, work_id, task, context, decline, loaded, cfg, key, secrets)
+
+
+def _lock_wait(settings):
+    return settings["timeoutSeconds"] + LOCK_GRACE_SECONDS
+
+
+def _decide(local, repo, work_id, task, context, decline, loaded, cfg, key, secrets):
+    """Reload the history, decide, request and publish while the work lock is held."""
     work = records.load_work(local, repo, work_id)
     writer = work["effectiveWork"]["writer"]
     questions = {q: {"type": "choice", **cfg["classification"][q]} for q in QUESTIONS}
@@ -319,21 +370,16 @@ def _classify(local, repo, work_id, task, context, decline):
                                cli.ExitCode.INVALID_CONFIG) from None
     _screen(local, body, {"record": data, "writer": writer, "repo": repo, "work": work_id}, secrets)
     retried = _retry(work["events"], task, context, loaded.policy_digest, cfg["jev"]["maxContextRetries"], decline=decline)
-    if isinstance(retried, tuple) and retried[0] == "decline_pending":
+    if isinstance(retried, tuple):  # Write the judgment a stored classification owes; no request.
         prior = retried[1]
         prior_data = prior["data"]
-        judgment_data = _make_judgment(
-            prior_data["answers"], cfg["jev"]["minConfidence"],
-            prior_data["inputRef"], prior_data["inputDigest"], prior_data["policyDigest"],
-        )
+        judgment_data = _owed(prior_data, cfg["jev"]["minConfidence"])
         schema.validate_event_data("routing-judgment", judgment_data)
         j_event = records.append_event(local, repo, work_id, "routing-judgment", judgment_data, writer=writer)
-        result_data = {
-            **prior_data,
-            "classificationRef": prior["seq"],
-            "outcome": "defaulted",
-            "judgment": {**judgment_data, "judgmentRef": j_event["seq"]},
-        }
+        result_data = {**prior_data, "classificationRef": prior["seq"],
+                       "judgment": {**judgment_data, "judgmentRef": j_event["seq"]}}
+        if prior_data["outcome"] == "retry-with-context":
+            result_data["outcome"] = "defaulted"
         if _sensitive(result_data, secrets):
             raise cli.CommandError("credential found in prior classification")
         return cli.Outcome(result_data, cli.ExitCode.SUCCESS)
@@ -357,19 +403,7 @@ def _classify(local, repo, work_id, task, context, decline):
     if data["outcome"] == "retry-with-context":
         return cli.Outcome({**data, "classificationRef": event["seq"]}, cli.ExitCode.JUDGMENT_NEEDED)
 
-    judgment_data = None
-    if _is_unknown_obj(data["answers"]):
-        judgment_data = _make_judgment(
-            None, cfg["jev"]["minConfidence"],
-            data["inputRef"], data["inputDigest"], data["policyDigest"],
-            failure_reason=data["reason"],
-        )
-    else:
-        judgment_data = _make_judgment(
-            data["answers"], cfg["jev"]["minConfidence"],
-            data["inputRef"], data["inputDigest"], data["policyDigest"],
-        )
-
+    judgment_data = _owed(data, cfg["jev"]["minConfidence"])
     result_data = {**data, "classificationRef": event["seq"]}
     if judgment_data is not None:
         schema.validate_event_data("routing-judgment", judgment_data)

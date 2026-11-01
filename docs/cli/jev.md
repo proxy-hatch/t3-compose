@@ -27,9 +27,9 @@ Malformed JSON, duplicate keys, nonfinite numbers and invalid UTF-8 fail.
 
 | Exit | Result |
 | --- | --- |
-| 0 | Accepted or defaulted classification: full classification data plus `classificationRef`, and `judgment` with `judgmentRef` whenever a judgment is written. |
-| 4 | `outcome: retry-with-context` or refused attempt (bare re-run or ineligible context/decline) with a public `reason`. Always includes `inputRef`, `inputDigest`, `policyDigest`. |
-| 2 | Invalid input, identifier screen, history or record write; empty stdout, safe stderr. |
+| 0 | Accepted or defaulted classification, or the completion of an incomplete decision: full classification data plus `classificationRef`, and `judgment` with `judgmentRef` whenever a judgment is written. |
+| 4 | `outcome: retry-with-context` or refused attempt (bare re-run, ineligible context/decline, or a context re-run of an incomplete decision) with a public `reason`. Always includes `inputRef`, `inputDigest`, `policyDigest`. |
+| 2 | Invalid input, identifier screen, history or record write, or a work that another classification holds; empty stdout, safe stderr. |
 | 3 | Invalid config or credential setup; empty stdout, safe stderr. |
 
 Config-derived classification metadata is validated against the record schema
@@ -112,18 +112,21 @@ With `maxContextRetries: 1`, only one such retry is allowed. With zero, no
 retry is offered and defaults apply at once. Every persisted matching input
 consumes an attempt, even when its classification is missing; incomplete history
 requires reconciliation. A classification whose judgment append failed (exit 2) is
-also incomplete history: a re-run is refused (exit 4) and does not write the
-judgment, so the manager records the decision with `t3c route judge`. Changing
-only context, omitting it, or pointing to an older result cannot restart the
-budget. A context without matching history is invalid (exit 2).
+different: its decision is incomplete, and a re-run without `--context` writes the
+missing judgment from the stored classification, makes no request and exits 0.
+Until then a reader must treat a `defaulted` classification, and an `accepted` one
+with a `MIXED` lane, as having no decision. Changing only context, omitting it, or
+pointing to an older result cannot restart the budget. A context without matching
+history is invalid (exit 2).
 
 ### Declining the retry
 
 The `--decline-retry` CLI flag controls declining the retry:
 - On a fresh first request (no matching input): proceeds with the request; if any answer is uncertain, skips the retry offer and applies defaults immediately (classification outcome `defaulted` + judgment, exit 0).
 - On a re-run with a matching input whose latest classification outcome is `retry-with-context` and no judgment yet references that input: does not POST; writes only a `routing-judgment` referencing that classification's input with per-answer defaults, returning the prior classification data with `outcome: "defaulted"` and `"judgment"`, exit 0.
-- Decline with no matching input behaves as a fresh call. Decline when the latest matching classification is `accepted` or `defaulted`, or a judgment already references the input, is refused (exit 4, `"identical input already classified/decided; reuse its evidence"`).
-- A bare re-run (no `--context`, no `--decline-retry`) with a matching input is refused (exit 4), naming both options when outcome is `retry-with-context` or saying to reuse evidence when `accepted` or `defaulted`.
+- Decline with no matching input behaves as a fresh call. Decline when the latest matching classification is `accepted` or `defaulted`, or a judgment already references the input, is refused (exit 4, `"identical input already classified/decided; reuse its evidence"`), unless the decision is incomplete (below).
+- A bare re-run (no `--context`, no `--decline-retry`) with a matching input is refused (exit 4), naming both options when outcome is `retry-with-context` or saying to reuse evidence when `accepted` or `defaulted`, unless the decision is incomplete (below).
+- **Incomplete decision.** A `defaulted` classification, and an `accepted` one with a `MIXED` lane, are followed by their judgment in the same invocation. If that append failed (exit 2), a bare or `--decline-retry` re-run writes the missing judgment from the stored classification, makes no request and exits 0, returning the classification data and the judgment. A `--context` re-run is refused (exit 4, `"decision incomplete; rerun without --context to write its judgment"`).
 - `--decline-retry` with `maxContextRetries: 0` is harmless (defaults apply at once).
 
 ## Request, validation and privacy
@@ -136,7 +139,13 @@ malformed replies produce a recorded defaulted classification and a
 `default-jev-failure` judgment, exiting 0.
 
 The body is `{model,state,questions}`; state is the original `{task,context}`.
-Each question has `type: choice` and the configured instructions/criteria.
+Each question has `type: choice` and the configured instructions/criteria. The
+body is canonical JSON, so its members, including the three question names, go
+out in sorted order; their order carries no meaning.
+Invocations for one work are serialized: the command holds an exclusive advisory
+lock on the work's directory from the history read to the last append. A second
+invocation waits up to the request timeout plus 10 seconds, then exits 2 (`another
+classification holds this work; retry later`). Other commands do not take the lock.
 Answers require all three question names, exact choice-answer fields and option
 keys, a configured choice, non-boolean finite probabilities/confidence in
 `[0,1]`, and probabilities summing within 0.01 of 1. Snapshot model and ID
