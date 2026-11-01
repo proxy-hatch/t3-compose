@@ -756,6 +756,7 @@ class OfflineBriefs(OfflineTestCase):
             'A dry cell never escalates to another stage.',
             't3c brief check-escalation --result FILE',
             'Record the escalation before you select or dispatch at the next stage.',
+            "Run `t3c route escalate` (see Routing records) with the role `worker`, the reason `worker-hard-stop`, `--wip-commit` set to the block's WIP commit",
             'ORIGINAL is the first Worker brief of the round, the one that is not itself a continuation',
             'never the continuation brief it received',
             'Append the `dispatch-intent` for BRIEF, then dispatch it with `delegate_task`',
@@ -766,13 +767,27 @@ class OfflineBriefs(OfflineTestCase):
             'Tell the manager, who replaces the lead thread at the next stage.',
             'The new lead resumes from the Task log and the records',
             'a failure at stage 3: the item goes to the manager, then to the owner.',
-            'A new issue or round starts with a fresh `t3c route input`',
-            '`t3c route classify`, or `t3c route judge` with a reason',
+            "A new issue or round starts a new epoch at the Task's starting stage.",
+            '(a) `t3c route input`, then `t3c route judge` with that `inputRef`, its `policyDigest`, the lane, criticality and scope, and a reason',
+            '(b) `t3c route classify` alone. It records its own input, so use the `inputRef` and `policyDigest` it returns.',
+            'Never run `t3c route classify` after `t3c route input` for the same task: it exits 2 and appends no second input.',
+            "Every later `t3c route select` and `t3c route escalate` of the epoch passes that epoch's `inputRef` and `policyDigest`.",
+            'the escalations of an earlier epoch authorize nothing in it',
+            'After `t3c quota record`, select again: the live refusal makes the command skip that target and return the next one of the cell.',
+            'Exit 5 means that no target of the cell can serve now: wait as described under Refusal memory, and never escalate for it.',
+            "A higher stage needs `t3c route escalate` records made after the epoch's input, for the same role and lane, chained one stage at a time",
+            '`--from-stage N` records the move to N + 1',
+            '`worker` with `worker-hard-stop` or `finding-unresolved`, `reviewer` with `review-deadlock` or `reviewer-failure`, `feature-lead` with `lead-stalled`',
+            'Without the chain, `t3c route select` exits 4 and names the stage reached.',
+            "`t3c route select --role reviewer --pass pre` selects only the cell's advisory pre-pass.",
+            'it exits 0 with `skipped: true` and appends nothing',
+            'A pre-pass is never the review of record.',
+            '`t3c route select --role verifier` or `--role text`',
+            'A helper takes no `--stage`, `--round` or `--pass`',
             'orchestrator_capabilities',
-            'its true UTC capture time',
-            'a catalog may be up to 24 hours old',
+            'with its true UTC capture time',
+            'a catalog is valid for 24 hours',
             'Capture again only after a dispatch error that suggests a provider change',
-            'the target and its position in the task log',
         ):
             with self.subTest(statement=statement):
                 self.assertIn(statement, text)
@@ -780,6 +795,14 @@ class OfflineBriefs(OfflineTestCase):
     def test_lead_protocol_names_no_model_account_or_decision(self):
         text = (ROOT / 'skill/templates/lead-protocol.md').read_text()
         self.assertNotRegex(text, r'(?i)CD-\d|gemini|gpt-|claude|sonnet|opus|argon|astra|flash|glm|openrouter')
+
+    def test_lead_protocol_has_no_stale_conditionals(self):
+        self.success(self.render('lead-protocol', LEAD_LOG='the task log'))
+        text = ' '.join(self.output.read_text().split())
+        for stale in ('Until then', 'when the helper has that command', 'Once `docs/cli/routing.md`',
+                      'then `t3c route classify`', 'a fresh `t3c route input`, and so restarts'):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, text)
 
     def test_lead_protocol_orders_the_escalation_steps(self):
         self.success(self.render('lead-protocol', LEAD_LOG='the task log'))

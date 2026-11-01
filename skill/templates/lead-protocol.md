@@ -79,9 +79,10 @@ an `<ESCALATION_REQUEST>` block. Then:
    the branch's head and has the subject `wip(escalation): ...`, and that the
    tree is clean.
 3. Record the escalation before you select or dispatch at the next stage. Run
-   `t3c route escalate` when the helper has that command. Until then append an
-   entry to {{LEAD_LOG}} with the role, the stages, the reason
-   `worker-hard-stop`, a short evidence text and the WIP commit.
+   `t3c route escalate` (see Routing records) with the role `worker`, the
+   reason `worker-hard-stop`, `--wip-commit` set to the block's WIP commit, and
+   as evidence a text file of at most 8,192 bytes that holds the checked block.
+   The command dispatches nothing.
 4. Render the continuation brief with `t3c brief render --template
    continuation --original-brief ORIGINAL --escalation FILE --values VALUES
    --out BRIEF`. ORIGINAL is the first Worker brief of the round, the one that
@@ -116,18 +117,49 @@ Other triggers move work to the next stage, and each is recorded:
 
 ## Routing records
 These rules apply to a Task whose routing is kept in the store.
-1. A new issue or round starts with a fresh `t3c route input`, and so restarts
-   at the Task's starting stage. Record a decision on it before any selection:
-   `t3c route classify`, or `t3c route judge` with a reason such as "carries
-   the Task's class into round N". Move above the starting stage only after you
-   record the escalation, one stage at a time.
-2. Capture the capabilities catalog once per thread with
+1. A new issue or round starts a new epoch at the Task's starting stage. Start
+   it in exactly one of two ways:
+   (a) `t3c route input`, then `t3c route judge` with that `inputRef`, its
+       `policyDigest`, the lane, criticality and scope, and a reason such as
+       "carries the Task's class into round N"; or
+   (b) `t3c route classify` alone. It records its own input, so use the
+       `inputRef` and `policyDigest` it returns.
+   Never run `t3c route classify` after `t3c route input` for the same task: it
+   exits 2 and appends no second input.
+2. Every later `t3c route select` and `t3c route escalate` of the epoch passes
+   that epoch's `inputRef` and `policyDigest`. A fresh input starts a new epoch,
+   and the escalations of an earlier epoch authorize nothing in it.
+3. Select each target with `t3c route select --role ROLE --stage N --input-ref
+   REF --policy-digest DIGEST --catalog FILE --catalog-read-at UTC`. ROLE is
+   `worker`, `reviewer` or `feature-lead`. Add `--round corrections` for a
+   Worker's Corrections round and `--round re-review` for a Reviewer's
+   re-review. The answer names the provider instance, model and options to
+   dispatch. After `t3c quota record`, select again: the live refusal makes the
+   command skip that target and return the next one of the cell. Exit 4 means
+   that a current input, a decision, a catalog or a stage prerequisite is
+   missing. Exit 5 means that no target of the cell can serve now: wait as
+   described under Refusal memory, and never escalate for it.
+4. Select at the Task's starting stage. A higher stage needs `t3c route
+   escalate` records made after the epoch's input, for the same role and lane,
+   chained one stage at a time: `--from-stage N` records the move to N + 1, and
+   N must be the stage reached now. A record has a role and a reason: `worker`
+   with `worker-hard-stop` or `finding-unresolved`, `reviewer` with
+   `review-deadlock` or `reviewer-failure`, `feature-lead` with `lead-stalled`.
+   Its evidence is a text file of at most 8,192 bytes. Without the chain,
+   `t3c route select` exits 4 and names the stage reached.
+5. For a Reviewer, `t3c route select --role reviewer --pass pre` selects only
+   the cell's advisory pre-pass. When none is configured or none can serve, it
+   exits 0 with `skipped: true` and appends nothing: go on to the review of
+   record, `--pass record`, which is the default. A pre-pass is never the
+   review of record.
+6. For a helper, run `t3c route select --role verifier` or `--role text` with
+   the input, digest, catalog and time only. A helper takes no `--stage`,
+   `--round` or `--pass`, and needs no decision on the input.
+7. Capture the capabilities catalog once per thread with
    `orchestrator_capabilities`, and save the exact output with its true UTC
-   capture time. Never label a file with another capture's time. Once
-   `docs/cli/routing.md` says that selection enforces the escalation chain,
-   reuse that file for the whole Task: a catalog may be up to 24 hours old.
-   Capture again only after a dispatch error that suggests a provider change: a
-   missing provider or model, a disabled instance or a changed option.
-3. Until then, choose each target from the matrix's cell, and record the cell,
-   the target and its position in {{LEAD_LOG}}. Once it says so, select with
-   `t3c route select` against the saved file.
+   capture time, ending in `Z`. Never label a file with another capture's time.
+   Pass the file and that time as `--catalog` and `--catalog-read-at`: a
+   catalog is valid for 24 hours, and `t3c route select` refuses an older one.
+   Reuse the file for the whole Task. Capture again only after a dispatch error
+   that suggests a provider change: a missing provider or model, a disabled
+   instance or a changed option.
