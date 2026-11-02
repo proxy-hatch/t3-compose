@@ -63,9 +63,10 @@ CLAUSES = {
         "work epoch (`<ID>-main-<short sha>`).",
         "A Task with an assigned Feature lead starts with the manager's `lead-assignment` as its "
         "first event",
-        "A Task without a lead (a managed repository before Feature leads are enabled) has no such "
-        "event: the manager coordinates it and records its events, and an independent Reviewer "
-        "reviews its final head.",
+        "A Task without a lead (a managed repository before Feature leads are enabled) has no "
+        "`lead-assignment`: the records hold no lead until one is assigned, so its first event is "
+        "the manager's own. The manager coordinates it, and an independent Reviewer reviews its "
+        "final head.",
         "`dispatch-intent` before the call, `dispatch-confirmed` with the `taskId`, then the "
         "genuine `result`.",
         "Never backdate or rewrite an event.",
@@ -283,6 +284,11 @@ class OfflineSkillDocument(OfflineTestCase):
         plan = text("docs/superpowers/plans/2026-10-27-t3-compose-implementation.md")
         self.assertIn("clear the refused dispatch with a stopped-and-preserved reconciliation", plan)
         self.assertNotIn("continuing at the refused child's last commit", plan)
+        self.assertIn("captured once per thread and at most 24 hours old", plan)
+        notice = "a stage-3 cell with no target that can serve (never ordinary usage-limit refusals)"
+        for path in ("docs/superpowers/specs/2026-10-27-t3-compose-design.md",
+                     "docs/superpowers/plans/2026-10-27-t3-compose-implementation.md"):
+            self.assertIn(notice, text(path))
         for clause in (EPOCH_RULE, "in exactly one of two ways"):
             self.assertIn(clause, text("docs/cli/routing.md"))
             self.assertIn(clause, text("skill/SKILL.md"))

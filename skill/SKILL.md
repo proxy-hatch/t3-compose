@@ -140,9 +140,10 @@ Every Task runs in t3c records from its first dispatch. Details are in
    `lead-assignment` as its first event, from the launch message: the real date,
    the lead's thread, the Task line as the reason. A lead never invents it. A
    Task without a lead (a managed repository before Feature leads are enabled)
-   has no such event: the manager coordinates it and records its events, and
-   an independent Reviewer reviews its final head. Never record an assignment
-   that did not happen.
+   has no `lead-assignment`: the records hold no lead until one is assigned, so
+   its first event is the manager's own. The manager coordinates it, and an
+   independent Reviewer reviews its final head. Never record an assignment that
+   did not happen.
 3. Append events with `t3c event add --repo REPO --work ID --kind KIND --file
    DATA.json --writer W`. For each dispatch: `dispatch-intent` before the
    call, `dispatch-confirmed` with the `taskId`, then the genuine `result`.

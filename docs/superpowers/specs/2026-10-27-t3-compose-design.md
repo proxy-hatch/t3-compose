@@ -137,7 +137,7 @@ exact-final-head review and passed required checks under plan decision 19). It
 tells Shawn in its own thread that the pull request is ready, never reports pull
 request readiness to the manager, and sends no progress reports; it sends the
 manager one line when its pull request merges, plus blockers, cross-Task or
-shared-interface changes, new machine prerequisites, owner rule changes and agy exhaustion. Because a lead makes no
+shared-interface changes, new machine prerequisites, owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals). Because a lead makes no
 project edits, its final-head review does not approve its own implementation
 (plan decisions 13, 17 and 19). Use direct children for bounded independent
 tasks in managed repositories; in t3-compose every Task has an assigned Feature
@@ -204,7 +204,7 @@ tells Shawn in its own thread when the pull request is ready; a feature lead
 never reports to the manager that a pull request is ready and sends no progress
 reports. A lead sends the manager one line when its pull request merges, plus
 blockers, cross-Task or shared-interface changes, new machine prerequisites,
-owner rule changes and agy exhaustion, without turning that into a status-report channel. The manager uses the lead's verified
+owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals), without turning that into a status-report channel. The manager uses the lead's verified
 Task evidence and pull request body without adding a manager pre-merge readiness
 approval or routinely repeating the same final-head review. A Verified Task or
 PR-ready Task is distinct from integrated delivery readiness; the package
@@ -656,7 +656,7 @@ the takeover exception under
    thread that the pull request is ready; it never reports pull request
    readiness to the manager and sends no progress reports. The lead sends the
    manager one line when its pull request merges, plus blockers, cross-Task or shared-interface changes, new machine
-   prerequisites, owner rule changes and agy exhaustion. The manager publishes
+   prerequisites, owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals). The manager publishes
    for Tasks without a lead and tells Shawn when such a pull request is ready.
    The manager retains overall delivery accountability across features—cross-feature
    integration, integration tests in place and their evidence on the intended
@@ -981,7 +981,7 @@ A Task is the work of one pull request, as defined in rapid-ship's GLOSSARY.md.
    and sends no progress reports. The lead sends the manager one line when its
    pull request merges, plus blockers,
    cross-Task or shared-interface changes, new machine prerequisites, owner rule
-   changes and agy exhaustion. The manager
+   changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals). The manager
    sets the expected integration tests and machine prerequisites when a Task
    starts and checks `main` and the machine after a merge, using the lead's
    verified Task evidence and pull request body without adding a manager
