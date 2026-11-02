@@ -163,7 +163,8 @@ work cycle uses. Brief templates carry the rules into each Assignment.
   request readiness to the manager, and sends no progress reports; it sends the
   manager one line when its pull request merges, plus blockers, cross-Task or
   shared-interface changes, new machine prerequisites, owner rule changes and
-  agy exhaustion. The manager owns cross-feature integration, operational
+  a stage-3 cell with no target that can serve (never ordinary usage-limit
+  refusals). The manager owns cross-feature integration, operational
   readiness, integration tests and final delivery readiness to Shawn—setting the
   expected integration tests and machine prerequisites at Task start and
   checking `main` and the machine after a merge—without adding a manager
@@ -565,7 +566,8 @@ catalog checks in the RT-1 contract below.
   same lead, both challenging, each with fresh pre-edit and actual measures
   at most 1,200 lines; RT-1 is an aggregate anchor, not a third PR. Initial
   estimates were about 1,165 lines for RT-1a and 255 plus billing for RT-1b.
-  Catalog availability requires a parsed catalog no older than 15 minutes,
+  Catalog availability requires a parsed catalog no older than 24 hours (captured
+  once per thread; the limit was 15 minutes until 2026-11-02),
   an existing provider, both child-task flags true, an empty constraints list,
   and advertised model/options. There is no separate catalog status field.
   The Tasks below specify driver classification and billing ownership.
@@ -1255,7 +1257,7 @@ metered split. All six commands and the combined acceptance below are retained.
   - Feature lead: the preference at the Task's tier, at least medium. Text
     helper: the fixed `textHelper` route, with no classification.
   - A catalog has no separate status field. Availability requires a parsed
-    catalog read no more than 15 minutes earlier, an existing provider,
+    catalog read no more than 24 hours earlier (one capture per thread), an existing provider,
     `canRunChildTask: true` AND `canRunCrossProviderChildTask: true`, an empty
     `constraints` list, and the requested model and options advertised.
     Otherwise the selection is unavailable, with the reason recorded:
@@ -2589,12 +2591,14 @@ Tasks.
     head; a non-critical Task keeps the lead's own review
     ([decision 20](#decisions)).
   - The lead protocol from [decision 20](#decisions): on a quota refusal,
-    record it, dispatch the same cell's next target with the same brief and a
-    new `clientRequestId`, continuing at the refused child's last commit when
-    it made commits; on an `<ESCALATION_REQUEST>`, dispatch the next stage's
-    primary with the original brief plus the block plus a start commit equal
-    to the WIP commit, never the failed Worker's transcript; record every
-    escalation.
+    record it, clear the refused dispatch with a stopped-and-preserved
+    reconciliation, and dispatch the same cell's next target with the same
+    brief and a new `clientRequestId`, starting at the round's previous start
+    commit or the latest completed result's commit (the refused child's
+    commits stay on its branch); on an `<ESCALATION_REQUEST>`, dispatch the
+    next stage's primary with the original brief plus the block plus a start
+    commit equal to the WIP commit, never the failed Worker's transcript;
+    record every escalation.
   - Heavy checks through `t3c heavy run`, owned by the lead when assigned or
     otherwise the manager, machine-wide serialization after writer completion
     in a clean exact-head linked worktree. Verification through
@@ -2604,7 +2608,7 @@ Tasks.
     pull request is ready, never reports pull request readiness to the manager,
     and sends no progress reports; it sends the manager one line when its pull
     request merges, plus blockers, cross-Task or shared-interface changes, new machine
-    prerequisites, owner rule changes and agy exhaustion. Manager delivery
+    prerequisites, owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals). Manager delivery
     readiness covers cross-feature integration, operational readiness and
     integration tests—setting the expected integration tests and machine
     prerequisites at Task start and checking `main` and the machine after a
@@ -2757,7 +2761,7 @@ Tasks.
   within it, the lead's own Worker and Reviewer dispatches, its own records as
   their single writer, and upward reports to the manager when its pull
   request merges (one line) or on blockers, cross-Task or shared-interface
-  changes, new machine prerequisites, owner rule changes and agy exhaustion. A lead makes no project edits and creates no
+  changes, new machine prerequisites, owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals). A lead makes no project edits and creates no
   leads. It cannot approve its own implementation because it implements
   nothing; it personally reviews its Task's exact final head with requirements,
   design, interfaces, diff, callers, tests and evidence in context. No separate
@@ -2835,7 +2839,7 @@ Tasks.
   A lead tells Shawn in its own thread when the PR is ready, never reports PR
   readiness to the manager, and sends no progress reports; it sends the manager
   one line when its pull request merges, plus blockers, cross-Task or
-  shared-interface changes, new machine prerequisites, owner rule changes and agy exhaustion.
+  shared-interface changes, new machine prerequisites, owner rule changes and a stage-3 cell with no target that can serve (never ordinary usage-limit refusals).
   Record CD-4 lead assignments, review provenance and evidence. At Task start
   the manager sets expected integration tests and machine prerequisites, and
   after a merge it checks `main` and the machine, without an extra pre-merge
@@ -2902,7 +2906,7 @@ Reviewers where configured; Argon's lead fallback applies only while
 unblocked. The manager never resolves to Pi. Preserve the catalog checks and
 the metered-billing evidence. L11 is independent of the handoff gate.
 
-The manager saves a parsed live catalog no older than 15 minutes, with no
+The manager saves one parsed live catalog, captured once per thread and at most 24 hours old, with no
 separate status field. For GLM it confirms `driverKind: pi`, GLM 5.3 and the
 requested options. For Argon it confirms which subscription pool accounts offer
 `gemini-4-argon-high` with the requested options. Each provider must report BOTH

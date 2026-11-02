@@ -54,8 +54,9 @@ a Task without a Feature lead also uses an independent Reviewer on its final
 head. The Engineering manager owns priorities across Tasks, shared interfaces,
 and delivery, operational and integration readiness. Workers edit project files
 and commit on their branch only. Workers and Reviewers do not push, open, edit
-or merge pull requests, or post to GitHub. Implementation and live pilots are
-pending.
+or merge pull requests, or post to GitHub. The `t3c` helper and the manager
+skill (`skill/SKILL.md`) are built; installing the skill and the live pilots wait
+for Shawn's request.
 
 Shawn decided how t3-compose is published on 2026-10-27 and updated t3-compose
 merge authority on 2026-10-28; see the

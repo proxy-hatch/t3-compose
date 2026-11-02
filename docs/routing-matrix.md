@@ -201,11 +201,13 @@ The owner's lead prompt, revised 2026-11-01.
 
 On a quota refusal:
 
-1. Record it: `t3c quota record` once MX-3a ships, and the log until then.
-2. Dispatch again on the next target of the same cell, with the same brief
-   and a new `clientRequestId`.
-3. If the refused child made commits, the new child starts at its last
-   commit.
+1. Record the refusal with `t3c quota record`.
+2. Clear the refused dispatch with a stopped-and-preserved `reconciliation`.
+3. Dispatch the cell's next target with the same brief and a new
+   `clientRequestId`. Start at the round's previous start commit, or at the
+   latest completed result's commit.
+4. The refused child's commits, if any, stay on its branch. The new brief
+   may name that branch for read-only reference.
 
 On an `<ESCALATION_REQUEST>`:
 
