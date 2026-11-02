@@ -139,10 +139,12 @@ possible later experiment.
 | `worker` / `docs`, stage 2 | GPT-6.1 Terra (xhigh) | Claude Sonnet 5.5 (xhigh) |
 | `worker` / `docs`, stage 3 | Claude Opus 5.5 (high) | none |
 
-Caveats, accepted: the claim is the vendor's own and hedged; Terra shares
-Codex's usage limit with Sol and Astra, so every fallback after Terra crosses
-provider; and the outcome is measured on the next docs Tasks, by Worker rounds
-and review findings.
+Caveats, accepted: the claim is the vendor's own and hedged. Terra shares
+Codex's usage limit with Sol and Astra. The text helper's and the docs lane's
+fallbacks go to other providers, but the verifier's fallback, Astra, shares the
+limit: when it is reached the verifier stays dry, and the caller does the work
+itself. The outcome is measured on the next docs Tasks, by Worker rounds and
+review findings.
 
 ### The docs lane
 
