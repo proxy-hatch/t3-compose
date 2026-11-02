@@ -104,7 +104,13 @@ CLAUSES = {
         "lead, a pre-pass or a helper, and its thinking is low or high, never max.",
         "Record `billing: per-token` for each use and list every GLM use in the merge line.",
         "about $20 a month",
-        "advisory, no fallback, skipped when unavailable, never the review of record",
+        "Where GLM is a cell's last fallback, a GLM refusal leaves the cell dry: exit 5, and the "
+        "work waits for the earliest remembered refusal to expire.",
+        "Pi may never be the manager, and a driver kind other than `claudeAgent`, `codex`, "
+        "`antigravity` and `pi` is unavailable.",
+        "skipped when unavailable (record the skip and its reason in the lead's log)",
+        "advisory, no fallback, skipped when unavailable",
+        "never the review of record",
         "When none is configured or eligible, the command exits 0 with `{skipped: true, reason, "
         "retryAfter, targetsTried}` and writes nothing; go on to the review of record.",
         "`route select --role verifier|text` needs a current input but no decision",
@@ -143,6 +149,8 @@ CLAUSES = {
         "next-stage reviewer decides); two non-quota failures of a reviewer (`reviewer-failure`, "
         "a Reviewer); a stalled lead (`lead-stalled`, a Feature lead",
         "Quota exhaustion never authorizes escalation.",
+        "The manager replaces a stalled lead's thread at the next stage; the new lead resumes from "
+        "the Task log and the records, so keep both current.",
         "Record a trigger before selecting the next stage: `t3c route escalate --repo REPO --work "
         "ID --input-ref SEQ --policy-digest DIGEST --role worker|reviewer|feature-lead "
         "--from-stage 1|2 --reason REASON --evidence-file FILE [--wip-commit SHA]`",

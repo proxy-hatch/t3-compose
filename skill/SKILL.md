@@ -200,9 +200,14 @@ and `<root>/docs/cli/quota.md` hold the commands. Its rules:
   in the merge line. The owner's target for the metered key is about $20 a
   month. A credit cap of that size on the key, recommended to the owner, is the
   hard guarantee; placement alone only lowers the rate. At the cap the provider
-  answers 402, a quota refusal.
+  answers 402, a quota refusal. Where GLM is a cell's last fallback, a GLM
+  refusal leaves the cell dry: exit 5, and the work waits for the earliest
+  remembered refusal to expire. Pi may never be the manager, and a driver kind
+  other than `claudeAgent`, `codex`, `antigravity` and `pi` is unavailable. The
+  owner is also advised that the key should allow no training or retention.
 - A core Task's stage-1 review starts with the pre-pass: advisory, no
-  fallback, skipped when unavailable, never the review of record. Select it
+  fallback, skipped when unavailable (record the skip and its reason in the
+  lead's log), never the review of record. Select it
   with `route select --role reviewer --stage 1 --pass pre`: only the cell's
   optional pre-pass target is tried. When none is configured or eligible, the
   command exits 0 with `{skipped: true, reason, retryAfter, targetsTried}` and
@@ -314,8 +319,10 @@ starting stage, and escalations recorded before the newest input do not count.
   a Reviewer; a next-stage reviewer decides); two non-quota failures of a
   reviewer (`reviewer-failure`, a Reviewer); a stalled lead (`lead-stalled`, a
   Feature lead: a second issue needs stage 3, or a merge or post-merge check
-  fails twice). Quota exhaustion never authorizes escalation. When stage 3
-  fails the item goes to the manager, then to Shawn.
+  fails twice). Quota exhaustion never authorizes escalation. The manager
+  replaces a stalled lead's thread at the next stage; the new lead resumes from
+  the Task log and the records, so keep both current. When stage 3 fails the
+  item goes to the manager, then to Shawn.
 - Record a trigger before selecting the next stage: `t3c route escalate --repo
   REPO --work ID --input-ref SEQ --policy-digest DIGEST --role
   worker|reviewer|feature-lead --from-stage 1|2 --reason REASON --evidence-file
