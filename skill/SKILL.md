@@ -43,7 +43,8 @@ this skill and a spec disagree, the spec wins; report the gap.
    clean `main` after a merge only when T3 has not already fast-forwarded it,
    and what Shawn explicitly asks for.
 2. Workers commit on their branch only. Workers and Reviewers never push, open,
-   edit or merge pull requests, and never post to GitHub.
+   edit or merge pull requests, never post to GitHub and never run `gh`. Tests
+   never start an agent harness (`claude`, `codex`, `agy` or `pi`).
 3. In t3-compose every Task has an assigned Feature lead. That lead alone
    publishes its Task's pull request as the Worker App and, after its own
    exact-final-head review and passed required checks, squash-merges it (plan
@@ -54,8 +55,10 @@ this skill and a spec disagree, the spec wins; report the gap.
    owner's configuration directories, provider-instance or account names, T3 or
    session IDs, or rapid-ship's task list. Write "recorded in `.local/`"
    instead. Screen everything before it is published.
-5. Never read, print or pass a secret in argv. A Keychain prompt gets Allow,
-   never Always Allow.
+5. Never read, print or pass a secret in argv. Pi's OpenRouter key stays in
+   Pi's own configuration (plan decision 9): the helper never reads, passes or
+   logs it, and briefs, source, logs and argv never hold it. A Keychain prompt
+   gets Allow, never Always Allow.
 6. rapid-ship work waits for the pilot. t3-compose agents do none: plan
    decision 16's temporary private setup runs in a separate rapid-ship-bound
    manager thread, and the formal pilot keeps its `t3c` and handoff gates. For
@@ -150,7 +153,8 @@ Every Task runs in t3c records from its first dispatch. Details are in
    Then `check`, `criterion-evidence`, `review`, `finding-disposition` and
    `reconciliation` as the work needs them. The publish commands write
    `op-intent` and `op-result`.
-4. Never backdate or rewrite an event. Earlier manual notes stay as artifacts.
+4. Never backdate or rewrite an event. Earlier manual notes stay as artifacts,
+   and dated history stays as written: add a correction beside it.
    A reviewer's result needs its own confirmed reviewer dispatch with its exact
    base and head.
 5. `t3c work show` returns the validated history. `t3c work snapshot` returns
@@ -256,7 +260,10 @@ starting stage, and escalations recorded before the newest input do not count.
 
 1. Read the checkout's actual HEAD at every dispatch, even after T3
    fast-forwards it. Fetch with a plain `git fetch` before writing a brief
-   when the base is not local.
+   when the base is not local. Keep the Task current with `main`: when `main`
+   has gained merges since the review base, start the next round from the new
+   `main` (a new work epoch) and carry the unmerged commits over, before taking
+   final evidence.
 2. A brief names three commits: the provisioned commit (the dispatching
    checkout's HEAD), the start commit and the review base. Its exact
    `Move-rule: three-case-v1` block tells a Worker to continue when HEAD equals
@@ -272,8 +279,9 @@ starting stage, and escalations recorded before the newest input do not count.
    a `Round` (Worker: implementation, corrections or continuation; Reviewer:
    earlier-review, corrections-review or final-review) and, for a Reviewer, a
    `Mode` (record or pre-pass). `PROVIDER` names the harness family (agy, pi,
-   claude or codex), never an account. A brief for an agy or Pi child carries
-   every rule inline.
+   claude or codex), never an account. A brief for an agy child, and for a Pi
+   child until Pi's instruction-file handling is verified (plan decision 9),
+   carries every rule inline.
 4. Record `dispatch-intent` with `--checkout PATH` (the dispatching checkout:
    the store checks that its HEAD equals the provisioned commit and that the
    start commit exists) and the instance, model and options `route select`
@@ -288,8 +296,9 @@ starting stage, and escalations recorded before the newest input do not count.
    wakes the dispatching thread. Only the parent that created a child manages it.
 7. On completion read the result with `task_status` and check it in the
    child's worktree: HEAD and parent, a clean status, a diff that names only
-   the owned paths, and the expected hashes and message. A completed turn does
-   not prove the brief was met. Record the `result`.
+   the owned paths, and the expected hashes and message; `git diff --check` prints
+   nothing and no `__pycache__` remains. A completed turn does not prove the
+   brief was met. Record the `result`.
 8. Exact-text rounds: prepare the edit in a scratch copy, give the expected
    SHA-256 and tree, and compare after the round.
 
@@ -361,16 +370,18 @@ starting stage, and escalations recorded before the newest input do not count.
 - The final head. On a core Task the review of record reviews the exact final
   head, and the lead then checks its result and records its own review last.
   On a non-critical Task the lead's own review stands. A Task with no recorded
-  routing decision counts as core. An unled Task needs an independent final
+  routing decision counts as core; never invent a decision to skip the
+  independent review. An unled Task needs an independent final
   review. That review's brief has Round `final-review`. The lead never edits
   project files, so its review does not approve its own implementation.
 - Evidence order for a core Task, at the exact final head: the required checks
   and a `criterion-evidence` event for each acceptance criterion; the
   independent `review` event (reviewer kind `task`); then the lead's `review`
-  event (kind `lead`) at the same base and head. The lead's review covers the
-  final diff, the review's verdict, a disposition for every finding of every
+  event (kind `lead`) at the same base and head. Before it reviews, the lead
+  holds the requirements, design, interfaces, diff, callers, tests and evidence.
+  The lead's review covers the final diff, the review's verdict, a disposition for every finding of every
   review and the required checks, and says so. It never claims more than the
-  lead checked.
+  lead checked. A newer task `review` needs another lead check afterward.
 - A task `review` names the confirmed native Reviewer task; a lead `review`
   names the assigned lead's thread, never an invented task ID. Retain each
   report and record its evidence path and SHA-256 digest. On a core Task the
@@ -414,7 +425,13 @@ starting stage, and escalations recorded before the newest input do not count.
 
 ## Publication and merge
 
-On t3-compose the assigned lead publishes and merges through t3c.
+On t3-compose the assigned lead publishes and merges through t3c. `publish
+push` and `publish pr` grant no merge authority: the merge rests on plan
+decision 19 and step 4. In another repository, use that repository's own
+publication commands with a recorded `op-intent` and `op-result`, then `t3c pr
+verify`; its own merge rules apply. Publication needs stable CPython 3.15
+through uv, Git, `gh`, the configured App and its Keychain item,
+`/usr/bin/security`, `/usr/bin/openssl` and HTTPS.
 
 1. Preconditions: the exact head approved, the required checks and the
    evidence order complete, `t3c evidence check` verified, and the
@@ -455,7 +472,13 @@ On t3-compose the assigned lead publishes and merges through t3c.
    and report the exact failed step. Never force a push, weaken a lease,
    duplicate a pull request, or use personal GitHub credentials. A privacy
    match goes to a Corrections round (unpublished text; its Worker brief names
-   `PRIVACY_FINDINGS` and `UNPUBLISHED_RANGE`) or to Shawn (published). A workflow-file change, or exit 5, goes to Shawn.
+   `PRIVACY_FINDINGS` and `UNPUBLISHED_RANGE`) or to Shawn (published); a match in the coordinator's own text (the title or
+   body) is fixed by the coordinator. Read-only `gh` reads are allowed; every
+   write goes through t3c. A status that is unknown or true-null: keep the
+   artifacts and reconcile before retrying. A revocation failure: keep and
+   report the status and its warning. An unsafe Git setting: repair the named
+   setting and never expose its value. A workflow-file change, or exit 5, goes
+   to Shawn.
 
 ## Updates and installation
 

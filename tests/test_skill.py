@@ -36,10 +36,14 @@ CLAUSES = {
     "Hard rules": (
         "The manager makes no project edits.",
         "Workers commit on their branch only. Workers and Reviewers never push, open, edit or "
-        "merge pull requests, and never post to GitHub.",
+        "merge pull requests, never post to GitHub and never run `gh`. Tests never start an agent "
+        "harness (`claude`, `codex`, `agy` or `pi`).",
+        "Pi's OpenRouter key stays in Pi's own configuration (plan decision 9): the helper never "
+        "reads, passes or logs it, and briefs, source, logs and argv never hold it.",
         "squash-merges it (plan decision 19). The manager does not merge, and no lead merges "
         "another Task's pull request.",
-        "Never read, print or pass a secret in argv. A Keychain prompt gets Allow, never Always Allow.",
+        "Never read, print or pass a secret in argv.",
+        "A Keychain prompt gets Allow, never Always Allow.",
     ),
     "Roles": (
         "A Feature lead runs one Task", "It never reports readiness or progress to the manager.",
@@ -70,6 +74,7 @@ CLAUSES = {
         "`dispatch-intent` before the call, `dispatch-confirmed` with the `taskId`, then the "
         "genuine `result`.",
         "Never backdate or rewrite an event.",
+        "dated history stays as written: add a correction beside it",
     ),
     "Routing": (
         "A standard Task starts at stage 1 and a complex Task at stage 2",
@@ -112,6 +117,11 @@ CLAUSES = {
         "the instance, model and options `route select` returned as its `selection`",
         'call `delegate_task` with `isolation: "worktree"`, `mode: "async"`, that same `target`',
         "`t3c-<work>-<role>-r<round>`",
+        "Keep the Task current with `main`: when `main` has gained merges since the review base, "
+        "start the next round from the new `main` (a new work epoch) and carry the unmerged "
+        "commits over, before taking final evidence.",
+        "for a Pi child until Pi's instruction-file handling is verified (plan decision 9)",
+        "`git diff --check` prints nothing and no `__pycache__` remains",
         "Its exact `Move-rule: three-case-v1` block",
         "to move its own branch to the start commit only when HEAD equals the provisioned commit, "
         "the tree is clean, the start commit exists and the branch is its fresh own branch",
@@ -144,6 +154,10 @@ CLAUSES = {
         "The review of record never sees the pre-pass findings, and `t3c brief check` refuses a "
         "review-of-record brief that carries a `PP-<n>` ID.",
         "That review's brief has Round `final-review`.",
+        "Before it reviews, the lead holds the requirements, design, interfaces, diff, callers, "
+        "tests and evidence.",
+        "never invent a decision to skip the independent review",
+        "A newer task `review` needs another lead check afterward.",
         "A task `review` names the confirmed native Reviewer task; a lead `review` names the "
         "assigned lead's thread, never an invented task ID.",
         "On a core Task the review of record reviews the exact final head, and the lead then "
@@ -167,6 +181,16 @@ CLAUSES = {
         "freshness flags true.",
     ),
     "Publication and merge": (
+        "`publish push` and `publish pr` grant no merge authority: the merge rests on plan decision "
+        "19 and step 4. In another repository, use that repository's own publication commands with "
+        "a recorded `op-intent` and `op-result`, then `t3c pr verify`; its own merge rules apply.",
+        "a match in the coordinator's own text (the title or body) is fixed by the coordinator. "
+        "Read-only `gh` reads are allowed; every write goes through t3c.",
+        "A status that is unknown or true-null: keep the artifacts and reconcile before retrying. "
+        "A revocation failure: keep and report the status and its warning. An unsafe Git setting: "
+        "repair the named setting and never expose its value.",
+        "Publication needs stable CPython 3.15 through uv, Git, `gh`, the configured App and its "
+        "Keychain item, `/usr/bin/security`, `/usr/bin/openssl` and HTTPS.",
         "Link the returned URL at once with `link_pull_request`.",
         "`t3c publish run --status-file FILE -- gh pr merge N --repo OWNER/NAME --squash "
         "--match-head-commit SHA`",
