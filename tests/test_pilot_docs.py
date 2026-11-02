@@ -42,11 +42,16 @@ def extract_section(text, heading):
 
 SEPARATORS = set(' \t`;&|()<>')
 PLAIN_WORD = re.compile(r'[A-Za-z][\w-]*')
-DASHES = ''.join(chr(code) for code in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xfe58, 0xfe63, 0xff0d))
+DASHES = ''.join(chr(code) for code in range(0x80, 0x11000) if unicodedata.category(chr(code)) == 'Pd') + chr(0x2212)
 EMPHASIS = re.compile(r'(?<![\w\\*_~])(\*{1,3}|_{1,3}|~{1,3})(?=[^\s*_~])(.+?)(?<=[^\s*_~])\1(?![\w*_~])')
-OPTION = re.compile('(?:[^A-Za-z0-9 \\t]*?[' + DASHES + ']|[^ \\t]*?[-' + DASHES + ']{2})[A-Za-z0-9]')
+OPTION = re.compile('(?:[^A-Za-z0-9 \\t]*?[' + DASHES + ']|[^ \\t]*?[-' + DASHES + ']{2})[^-' + DASHES + ' \\t]')
 EXECUTABLE = re.compile(r'(?:.*/)?t3c')
 STANDALONE = re.compile(r'(?<![A-Za-z0-9])(?<![A-Za-z0-9][-_.])t3c(?![A-Za-z0-9])(?![-_.][A-Za-z0-9])')
+
+
+def invisible(char):
+    """Whether a character shows nothing: a mark, or a control, format, private-use or unassigned character."""
+    return unicodedata.category(char)[0] in 'MC'
 
 
 def continues(char):
@@ -56,14 +61,27 @@ def continues(char):
         return True
     if char.isascii():
         return bool(char) and char not in SEPARATORS
-    return unicodedata.category(char)[0] in 'MC'
+    return invisible(char)
 
 
 def delimiter(char):
     """Whether a character separates words at the start or the end of a word but stays in a word that goes on after
     it: a square bracket, a brace, or a character outside ASCII that is not a letter, a digit, a mark or an invisible
-    format or control character."""
-    return char in '[]{}' or not (char.isascii() or char.isalnum() or unicodedata.category(char)[0] in 'MC')
+    character."""
+    return char in '[]{}' or not (char.isascii() or char.isalnum() or invisible(char))
+
+
+def option_name(text):
+    """The name of the option that a word is meant to be, or '' if it is none.
+
+    The word is read without its invisible characters: it must have two dashes (or a Unicode dash) and one more
+    character. The name keeps the invisible characters, so that a pasted zero-width character makes it invalid."""
+    kept = [k for k, char in enumerate(text) if not invisible(char)]
+    option = OPTION.match(''.join(text[k] for k in kept))
+    if not option:
+        return ''
+    end = kept[option.end() - 1] + 1
+    return text[:end] + text[end:].split('=')[0]
 
 
 def unemphasize(line):
@@ -87,9 +105,9 @@ def split_words(line):
     end of a word, where Markdown, JSON and prose put delimiters: a square bracket, a brace and a character
     outside ASCII that is not a letter or digit (white space of other kinds, a typographic quote, a symbol)
     separate words there, a whole run of them at a time. So a name with such a character inside it is
-    invalid. A mark and an invisible format or control character always stay in their word. A Unicode dash
-    that starts a word and is followed by a letter, a digit or another dash is an option typed with the wrong
-    dash, and it stays too."""
+    invalid. A mark and an invisible character always stay in their word. A Unicode dash (a character of the
+    dash punctuation category, or the minus sign) directly followed by a letter, a digit, a hyphen or another
+    Unicode dash is an option typed with the wrong dash, and it stays too."""
     stop = [len(line)] * (len(line) + 1)
     for k in range(len(line) - 1, -1, -1):
         stop[k] = stop[k + 1] if delimiter(line[k]) or line[k] in ',:.!?' else k
@@ -131,14 +149,15 @@ def scan_line(line):
     stray mark or bullet glued to a group, a command or an option name makes that name invalid. An option
     belongs to the nearest t3c command before it on the line, else to the global options (command ()); a
     command that is only mentioned in quotes counts as that command when no other is active. A word holds an
-    option when it has two dashes (of any kind) and a letter or digit after any text without white space (a
-    mark, punctuation, a glued value), or one Unicode dash and a letter or digit after marks or punctuation;
-    the option's name is the whole word up to an equals sign after the dashes. A word that is exactly t3c,
+    option when it has two dashes (of any kind) and one more character that is not a dash, after any text
+    without white space (a mark, punctuation, a glued value), or one Unicode dash and one more such character
+    after marks or punctuation. Invisible characters are not counted when this is decided, but the option's name
+    keeps them: it is the whole word up to an equals sign after the dashes. A word that is exactly t3c,
     or a path ending in /t3c, needs a group and a command after it, unless it is the helper's pass-through
-    (--local-dir, a value and "$@" at the end of the line). Any other word that holds t3c as a token of its own
-    (a mark, bullet or punctuation glued before or after it, but not a longer name such as t3c-tmp) makes the
-    line malformed. Other quoted text is data: it is scanned on its own and never changes which command an
-    option belongs to."""
+    (--local-dir, a value and "$@" at the end of the line). Any other word that holds t3c as a token of its own,
+    read with its quotes removed (a mark, bullet or punctuation glued before or after it, but not a longer name
+    such as t3c-tmp), makes the line malformed. Other quoted text is data: it is scanned on its own and never
+    changes which command an option belongs to."""
     words = []
     for word, data in split_words(unemphasize(line)):
         text = word
@@ -148,9 +167,9 @@ def scan_line(line):
     command, mentioned, i = (), False, 0
     while i < len(words):
         word, data, text = words[i]
-        option = OPTION.match(text)
-        if option:
-            yield 'option', (command, text[:option.end()] + text[option.end():].split('=')[0])
+        name = option_name(text)
+        if name:
+            yield 'option', (command, name)
             if word.count('\0') != 1 or not word.startswith('\0'):
                 for item in data:
                     yield from scan_line(item)
@@ -168,7 +187,7 @@ def scan_line(line):
                 i += 3
                 continue
         else:
-            if STANDALONE.search(word):
+            if STANDALONE.search(word) or ' ' not in text and '\t' not in text and STANDALONE.search(text):
                 yield 'malformed', line.strip()
             for item in data:
                 for event in scan_line(item):
@@ -393,6 +412,19 @@ class OfflinePilotDocs(OfflineTestCase):
             ('Steps S1' + chr(0x2013) + 'S4 and pages 3' + chr(0x2013) + '5.', []),
             ("t3'c' work lisst", [cmd(('work', 'lisst'))]),
             ("t'3'c work lisst", [cmd(('work', 'lisst'))]),
+            ('t3c work snapshot --' + chr(0x200b) + 'through-seq 0', [cmd(ws), opt(ws, '--' + chr(0x200b) + 'through-seq')]),
+            ('t3c work snapshot --' + chr(0x2026) + 'through-seq 0', [cmd(ws), opt(ws, '--' + chr(0x2026) + 'through-seq')]),
+            ('t3c work snapshot --' + chr(0x301) + 'through-seq 0', [cmd(ws), opt(ws, '--' + chr(0x301) + 'through-seq')]),
+            ('t3c work snapshot --[through-seq] 0', [cmd(ws), opt(ws, '--[through-seq')]),
+            ('t3c work snapshot --.through-seq 0', [cmd(ws), opt(ws, '--.through-seq')]),
+            ('t3c work snapshot --' + chr(0xe9) + 'xtra 0', [cmd(ws), opt(ws, '--' + chr(0xe9) + 'xtra')]),
+            ('t3c work snapshot -' + chr(0x200b) + '-through-seq 0', [cmd(ws), opt(ws, '-' + chr(0x200b) + '-through-seq')]),
+            ('t3c work snapshot ' + chr(0x58a) + chr(0x58a) + 'through-seq 0', [cmd(ws), opt(ws, chr(0x58a) + chr(0x58a) + 'through-seq')]),
+            ('t3c work snapshot ' + chr(0x2e3a) + 'through-seq 0', [cmd(ws), opt(ws, chr(0x2e3a) + 'through-seq')]),
+            ('|:---|---:|:---:|', []),
+            ('t3""c_ work lisst', [('malformed', 't3""c_ work lisst')]),
+            ("t3'c'$ work lisst", [('malformed', "t3'c'$ work lisst")]),
+            ('"t"3c' + chr(0x200b) + ' work lisst', [('malformed', '"t"3c' + chr(0x200b) + ' work lisst')]),
             ('t3c() { "$PY" -I -S "$ROOT/bin/t3c" --local-dir "$STATE" "$@"; }', [opt((), '--local-dir')]),
             ('|---|---|---|', []),
             ("the old manager's step: `t3c work list --bad`", [cmd(wl), opt(wl, '--bad')]),
