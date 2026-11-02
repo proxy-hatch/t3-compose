@@ -6,6 +6,7 @@ import json
 import re
 import runpy
 import sys
+import unicodedata
 from unittest.mock import patch
 
 from tests.support import OfflineTestCase, ROOT
@@ -39,13 +40,30 @@ def extract_section(text, heading):
     return text[start:start + nxt.start()] if nxt else text[start:]
 
 
-SEPARATORS = set(' \t`;&|(){}<>[]')
+SEPARATORS = set(' \t`;&|()<>')
 PLAIN_WORD = re.compile(r'[A-Za-z][\w-]*')
 DASHES = ''.join(chr(code) for code in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xfe58, 0xfe63, 0xff0d))
 EMPHASIS = re.compile(r'(?<![\w\\*_~])(\*{1,3}|_{1,3}|~{1,3})(?=[^\s*_~])(.+?)(?<=[^\s*_~])\1(?![\w*_~])')
-OPTION = re.compile('[^A-Za-z0-9\\s]*?(?:--|[' + DASHES + '])[A-Za-z0-9]')
+OPTION = re.compile('(?:[^A-Za-z0-9 \\t]*?[' + DASHES + ']|[^ \\t]*?[-' + DASHES + ']{2})[A-Za-z0-9]')
 EXECUTABLE = re.compile(r'(?:.*/)?t3c')
 STANDALONE = re.compile(r'(?<![A-Za-z0-9])(?<![A-Za-z0-9][-_.])t3c(?![A-Za-z0-9])(?![-_.][A-Za-z0-9])')
+
+
+def continues(char):
+    """Whether this character, found after a run of delimiters and sentence punctuation, shows that the word goes on
+    for a shell: a letter, a digit, a mark or an invisible character, or ASCII text that is not a separator."""
+    if char.isalnum():
+        return True
+    if char.isascii():
+        return bool(char) and char not in SEPARATORS
+    return unicodedata.category(char)[0] in 'MC'
+
+
+def delimiter(char):
+    """Whether a character separates words at the start or the end of a word but stays in a word that goes on after
+    it: a square bracket, a brace, or a character outside ASCII that is not a letter, a digit, a mark or an invisible
+    format or control character."""
+    return char in '[]{}' or not (char.isascii() or char.isalnum() or unicodedata.category(char)[0] in 'MC')
 
 
 def unemphasize(line):
@@ -60,20 +78,28 @@ def unemphasize(line):
 
 
 def split_words(line):
-    """Split one line into words as a shell would, and also at Markdown and shell punctuation.
+    """Split one line into words as a shell would: at a space, a tab, a backtick, a semicolon, an ampersand,
+    a bar, a parenthesis or an angle bracket.
 
     Text inside a matched pair of quotes is data: it becomes one NUL in its word and is returned apart.
     An apostrophe between two letters is not a quote, and an empty pair of parentheses stays in its word.
-    A character outside ASCII that is not a letter or digit (a typographic quote, a bracket, a dash, an
-    invisible character) separates words too, except a Unicode dash that starts a word and is followed by a
-    letter or digit: that is an option typed with the wrong dash, and it stays in its word."""
+    A shell keeps every other character in its word, and so does this function, except at the start or the
+    end of a word, where Markdown, JSON and prose put delimiters: a square bracket, a brace and a character
+    outside ASCII that is not a letter or digit (white space of other kinds, a typographic quote, a symbol)
+    separate words there, a whole run of them at a time. So a name with such a character inside it is
+    invalid. A mark and an invisible format or control character always stay in their word. A Unicode dash
+    that starts a word and is followed by a letter, a digit or another dash is an option typed with the wrong
+    dash, and it stays too."""
+    stop = [len(line)] * (len(line) + 1)
+    for k in range(len(line) - 1, -1, -1):
+        stop[k] = stop[k + 1] if delimiter(line[k]) or line[k] in ',:.!?' else k
     words, word, data = [], '', []
     i = 0
     while i < len(line):
         ch = line[i]
         if ch in '"\'':
             end = line.find(ch, i + 1)
-            possessive = ch == "'" and line[i - 1:i].isalnum() and line[i + 1:i + 2].isalnum()
+            possessive = ch == "'" and line[i - 1:i].isalpha() and line[i + 1:i + 2].isalpha()
             if end != -1 and not possessive:
                 data.append(line[i + 1:end])
                 word += '\0'
@@ -83,8 +109,10 @@ def split_words(line):
             word += '()'
             i += 2
             continue
-        smart = ch in DASHES and not word and line[i + 1:i + 2].isalnum()
-        if ch.isspace() or ch in SEPARATORS or not (ch.isascii() or ch.isalnum() or smart):
+        after = line[i + 1:i + 2]
+        glued = bool(word) and continues(line[stop[i + 1]:stop[i + 1] + 1])
+        smart = ch in DASHES and bool(after) and (after.isalnum() or after in '-' + DASHES)
+        if ch in SEPARATORS or delimiter(ch) and not (glued or smart):
             if word:
                 words.append((word, data))
             word, data = '', []
@@ -103,8 +131,9 @@ def scan_line(line):
     stray mark or bullet glued to a group, a command or an option name makes that name invalid. An option
     belongs to the nearest t3c command before it on the line, else to the global options (command ()); a
     command that is only mentioned in quotes counts as that command when no other is active. A word holds an
-    option when two dashes (or one Unicode dash) and a letter or digit start it, perhaps after marks or
-    punctuation; the option's name is the whole word up to an equals sign after the dashes. A word that is exactly t3c,
+    option when it has two dashes (of any kind) and a letter or digit after any text without white space (a
+    mark, punctuation, a glued value), or one Unicode dash and a letter or digit after marks or punctuation;
+    the option's name is the whole word up to an equals sign after the dashes. A word that is exactly t3c,
     or a path ending in /t3c, needs a group and a command after it, unless it is the helper's pass-through
     (--local-dir, a value and "$@" at the end of the line). Any other word that holds t3c as a token of its own
     (a mark, bullet or punctuation glued before or after it, but not a longer name such as t3c-tmp) makes the
@@ -155,8 +184,8 @@ def scan_text(text):
     Markdown blocks are not parsed, so no fence, span, comment or table can hide a token; only matching emphasis
     marks are removed. The scan is strict by design: the word t3c must be followed by a group and a command, and
     every --word must be a real option of the command before it on its line (or a global option), wherever it
-    appears."""
-    for line in re.sub(r'\\\n[ \t]*', ' ', text).splitlines():
+    appears. A line ends only at a line feed or a carriage return; any other separator belongs to its word."""
+    for line in re.sub(r'\\\n[ \t]*', ' ', text).replace('\r', '\n').split('\n'):
         yield from scan_line(line)
 
 
@@ -335,6 +364,35 @@ class OfflinePilotDocs(OfflineTestCase):
             ('t3c work snapshot ' + chr(0x2014) + 'through-seq 0', [cmd(ws), opt(ws, chr(0x2014) + 'through-seq')]),
             ('t3c work snapshot ' + chr(0x2013) + 'through-seq 0', [cmd(ws), opt(ws, chr(0x2013) + 'through-seq')]),
             ('Use the t3c_text field, refs/t3c-publication-snapshot/x and t3c.md.', []),
+            ('t3c work snapshot --through-seq' + chr(0x2013) + 'extra 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x2013) + 'extra')]),
+            ('t3c work snapshot --through-seq' + chr(0x2026) + 'extra 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x2026) + 'extra')]),
+            ('t3c work snapshot --through-seq' + chr(0x200b) + 'extra 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x200b) + 'extra')]),
+            ('t3c work snapshot --through-seq' + chr(0x200b) + ' 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x200b))]),
+            ('t3c work snapshot ' + chr(0x200b) + '--through-seq 0', [cmd(ws), opt(ws, chr(0x200b) + '--through-seq')]),
+            ('t3c work snapshot --through-seq' + chr(0x2013) + '"extra" 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x2013) + 'extra')]),
+            ('t3c work snapshot' + chr(0x301) + ' --through-seq 0',
+             [('malformed', 't3c work snapshot' + chr(0x301) + ' --through-seq 0'), opt((), '--through-seq')]),
+            ('t3c work snapshot' + chr(0x2013) + 'INVALID --through-seq 0',
+             [('malformed', 't3c work snapshot' + chr(0x2013) + 'INVALID --through-seq 0'), opt((), '--through-seq')]),
+            ('t3c' + chr(0x2013) + 'x work list', [('malformed', 't3c' + chr(0x2013) + 'x work list')]),
+            ('t3c work snapshot' + chr(0xa0) + '--through-seq 0',
+             [('malformed', 't3c work snapshot' + chr(0xa0) + '--through-seq 0'), opt((), 'snapshot' + chr(0xa0) + '--through-seq')]),
+            ('t3c work snapshot --through-seq' + chr(0x2014) + ' 0', [cmd(ws), opt(ws, '--through-seq')]),
+            ('t3c work snapshot ' + chr(0x2013) + '--through-seq 0', [cmd(ws), opt(ws, chr(0x2013) + '--through-seq')]),
+            ('t3c work snapshot ' + chr(0x2010) + '-through-seq 0', [cmd(ws), opt(ws, chr(0x2010) + '-through-seq')]),
+            ('t3c work snapshot --repo r--through-seq 0', [cmd(ws), opt(ws, '--repo'), opt(ws, 'r--through-seq')]),
+            ('t3c work snapshot x--through-seq 0', [cmd(ws), opt(ws, 'x--through-seq')]),
+            ('t3c work snapshot --through-seq' + chr(0x201d) + chr(0x201c) + 'extra 0',
+             [cmd(ws), opt(ws, '--through-seq' + chr(0x201d) + chr(0x201c) + 'extra')]),
+            ('t3c work snapshot --through-seq' + chr(0xa0) + chr(0x200b) + ' 0', [cmd(ws), opt(ws, '--through-seq' + chr(0xa0) + chr(0x200b))]),
+            ('t3c work snapshot --through-seq' + chr(0x201d) + '.extra 0', [cmd(ws), opt(ws, '--through-seq' + chr(0x201d) + '.extra')]),
+            ('Run ' + chr(0x201c) + 't3c work snapshot' + chr(0x201d) + '. Then stop.', [cmd(ws)]),
+            ('t3c work snapshot --through-seq[x] 0', [cmd(ws), opt(ws, '--through-seq[x')]),
+            ('t3c work snapshot{x} --through-seq 0', [('malformed', 't3c work snapshot{x} --through-seq 0'), opt((), '--through-seq')]),
+            ('Usage: t3c work snapshot [--through-seq N]', [cmd(ws), opt(ws, '--through-seq')]),
+            ('Steps S1' + chr(0x2013) + 'S4 and pages 3' + chr(0x2013) + '5.', []),
+            ("t3'c' work lisst", [cmd(('work', 'lisst'))]),
+            ("t'3'c work lisst", [cmd(('work', 'lisst'))]),
             ('t3c() { "$PY" -I -S "$ROOT/bin/t3c" --local-dir "$STATE" "$@"; }', [opt((), '--local-dir')]),
             ('|---|---|---|', []),
             ("the old manager's step: `t3c work list --bad`", [cmd(wl), opt(wl, '--bad')]),
@@ -356,7 +414,7 @@ class OfflinePilotDocs(OfflineTestCase):
             (chr(0xab) + 't3c work list --repo x' + chr(0xbb) + ' ' + chr(0x300c) + 't3c event add' + chr(0x300d),
              [cmd(wl), opt(wl, '--repo'), cmd(ea)]),
             (chr(0x201e) + '--repo' + chr(0x201c) + ' of t3c work list' + chr(0x2026), [opt((), '--repo'), cmd(wl)]),
-            ('t3c' + chr(0x200b) + 'work list', [cmd(wl)]),
+            ('t3c' + chr(0x200b) + 'work list', [('malformed', 't3c' + chr(0x200b) + 'work list')]),
             ('"$ROOT/bin/t3c" work snapshot.INVALID', [('malformed', '"$ROOT/bin/t3c" work snapshot.INVALID')]),
             ('"$ROOT/bin/t3c" work', [('malformed', '"$ROOT/bin/t3c" work')]),
             ('"$ROOT/bin/t3c" --local-dir "$STATE" work lisst',
@@ -374,6 +432,8 @@ class OfflinePilotDocs(OfflineTestCase):
         ]
         for line, expected in cases:
             self.assertEqual(list(scan_line(line)), expected, line)
+        broken = 't3c work snapshot' + chr(0x2028) + 'INVALID --through-seq 0'
+        self.assertEqual(malformed_commands(broken), [broken])
 
     def test_scanner_reads_every_markdown_form(self):
         sample = (
