@@ -119,17 +119,21 @@ Every `events/<seq>.json` envelope requires exact keys:
      `inputDigest`, `policyDigest`, `criteriaDigest` (`sha256_digest`),
      `ruleVersion`, `configuredModel`, `reason` (`text`), `riskFacts`
      (`list[fact_id]`), `snapshotModel`, `responseId` (`text | unknown_obj`).
-     `criteria` has exact questions `lane` (`BACKEND_LOGIC|UI_FRONTEND|MIXED`),
-     `criticality` (`CORE|NON_CRITICAL`), `scope`
+     `criteria` has exact questions `lane` (`BACKEND_LOGIC|UI_FRONTEND|MIXED`,
+     and optionally `DOCS`), `criticality` (`CORE|NON_CRITICAL`), `scope`
      (`STANDARD|COMPLEX|INSUFFICIENT_CONTEXT`); each question maps every option
      to `text` and permits optional `instructions: text`. `answers` is
      `unknown_obj` or those three questions with the same `choice_ans` rules
-     above (exact option probabilities, sum within 0.01, confidence in [0,1]).
-     `outcome` is `accepted|retry-with-context|defaulted`. Accepted requires
-     concrete snapshot, response ID and answers, with scope other than
-     `INSUFFICIENT_CONTEXT`; `MIXED` is accepted and maps to backend-logic.
+     above (exact option probabilities, sum within 0.01, confidence in [0,1]),
+     where the options are the criteria the record lists: a `choice` outside
+     them, or probabilities whose keys are not exactly them, are invalid. A
+     record written before `DOCS` existed lists three lane options and stays
+     valid. `outcome` is `accepted|retry-with-context|defaulted`. Accepted
+     requires concrete snapshot, response ID and answers, with scope other than
+     `INSUFFICIENT_CONTEXT`; `MIXED` is accepted and maps to backend-logic, and
+     `DOCS` is accepted and keeps its own lane.
    - **Judgment:** `configVersion: 3`, `inputRef` (`pos_int`), `inputDigest`,
-     `policyDigest` (`sha256_digest`), `lane` (`BACKEND_LOGIC|UI_FRONTEND`),
+     `policyDigest` (`sha256_digest`), `lane` (`BACKEND_LOGIC|UI_FRONTEND|DOCS`),
      `criticality` (`CORE|NON_CRITICAL`), `scope` (`STANDARD|COMPLEX`),
      `reason` (`text`), `basis`
      (`manual|default-low-confidence|default-insufficient-context|default-jev-failure`).
@@ -138,7 +142,8 @@ Every `events/<seq>.json` envelope requires exact keys:
      lane `BACKEND_LOGIC`, criticality `CORE`, scope `COMPLEX`; unlisted
      answers retain any valid confident value. A confident `MIXED` lane is
      recorded as `BACKEND_LOGIC`, since `MIXED` maps to backend-logic, and is
-     not listed. Manual requires an empty list;
+     not listed. A confident `DOCS` lane is kept as `DOCS`; an uncertain lane is
+     listed and takes `BACKEND_LOGIC`. Manual requires an empty list;
      default-jev-failure requires all three names; default-low-confidence and
      default-insufficient-context require at least one name.
    - **Selection:** `configVersion: 3`, `inputRef` (`pos_int`),
@@ -146,7 +151,7 @@ Every `events/<seq>.json` envelope requires exact keys:
      `quotaStateDigest` (`sha256_digest`), `catalogReadAt` (`utc_timestamp`),
      `classificationRef` (`pos_int|null`), `role`
      (`feature-lead|worker|reviewer|verifier|search|text`), `lane`
-     (`default|backend-logic|ui-frontend|non-critical|core|null`), `stage`
+     (`default|backend-logic|ui-frontend|docs|non-critical|core|null`), `stage`
      (`1|2|3|null`, never bool), `pass` (`pre|record|null`), `round`
      (`first|corrections|re-review|null`), `criticality` (`CORE|NON_CRITICAL|null`),
      `scope` (`STANDARD|COMPLEX|null`), `floorsApplied` (`list[fact_id]`),
@@ -160,13 +165,16 @@ Every `events/<seq>.json` envelope requires exact keys:
      appears once per account walked, and a target skipped as a whole has a
      null account.
      Optional `billing` is exactly `"per-token"` or absent; it marks every
-     metered selection, whatever its role.
+     metered selection, whatever its role. Optional `laneFallback` is exactly
+     `"docs-to-backend-logic"` or absent; it marks a Worker selection of a `DOCS`
+     decision made in the `backend-logic` lane because the configuration has no
+     `docs` lane, and no other selection may carry it.
      A `v3_selection` has exactly one of `providerInstanceId` and `providerPool`
      (`text`), `model: text`, and `options` (string or boolean values);
      no `roles`; pool options must be `{}`.
      Matrix roles require non-null classification reference, lane, stage, round,
      criticality and scope. Lanes are `feature-lead: default`,
-     `worker: backend-logic|ui-frontend`, `reviewer: non-critical|core`.
+     `worker: backend-logic|ui-frontend|docs`, `reviewer: non-critical|core`.
      Complex scope needs stage 2 or 3; corrections is Worker-only, re-review
      Reviewer-only. Reviewers require pre or record pass, and core lane iff CORE
      criticality; every other role has null pass. Helpers require all seven

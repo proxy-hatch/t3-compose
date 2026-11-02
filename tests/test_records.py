@@ -327,6 +327,7 @@ class OfflineRoutingV3(OfflineTestCase):
         kind = "routing-escalation"
         base = _valid_event_payloads()[kind]
         for reason, role, lane in (("worker-hard-stop", "worker", "backend-logic"), ("finding-unresolved", "worker", "ui-frontend"),
+                                   ("worker-hard-stop", "worker", "docs"),
                                    ("review-deadlock", "reviewer", "core"), ("reviewer-failure", "reviewer", "non-critical"),
                                    ("lead-stalled", "feature-lead", "default")):
             data = {**base, "reason": reason, "role": role, "lane": lane}
@@ -342,6 +343,78 @@ class OfflineRoutingV3(OfflineTestCase):
         for evidence, valid in (("x" * 8192, True), ("x" * 8193, False),
                                 ("é" * 4096, True), ("é" * 4096 + "x", False)):
             self.check(kind, {**base, "evidence": evidence}, valid)
+
+    def test_records_written_before_the_docs_lane_stay_valid(self):
+        for kind, data in _valid_v3_routing_payloads().items():
+            self.check(kind, data)
+        self.check("routing-escalation", _valid_event_payloads()["routing-escalation"])
+
+    def test_classification_offers_docs_only_when_its_criteria_list_it(self):
+        kind = "routing-classification"
+        plain = _valid_v3_routing_payloads()[kind]
+        offered = copy.deepcopy(plain)
+        offered["criteria"]["lane"]["DOCS"] = "Criterion"
+        offered["answers"]["lane"]["probabilities"]["DOCS"] = 0
+        self.check(kind, offered)
+        chosen = copy.deepcopy(offered)
+        chosen["answers"]["lane"].update(
+            choice="DOCS", probabilities={"BACKEND_LOGIC": 0, "UI_FRONTEND": 0, "MIXED": 0, "DOCS": 1})
+        self.check(kind, chosen)
+        not_offered = copy.deepcopy(plain)
+        not_offered["answers"]["lane"].update(
+            choice="DOCS", probabilities={"BACKEND_LOGIC": 0, "UI_FRONTEND": 0, "MIXED": 0, "DOCS": 1})
+        self.refuse(kind, not_offered, "event.data.answers.lane", "answer must use the offered criteria")
+        no_probability = copy.deepcopy(offered)
+        del no_probability["answers"]["lane"]["probabilities"]["DOCS"]
+        self.refuse(kind, no_probability, "event.data.answers.lane", "answer must use the offered criteria")
+        stray = copy.deepcopy(plain)
+        stray["answers"]["lane"]["probabilities"]["DOCS"] = 0
+        self.refuse(kind, stray, "event.data.answers.lane", "answer must use the offered criteria")
+        for question in ("criticality", "scope"):
+            changed = copy.deepcopy(offered)
+            changed["criteria"][question]["DOCS"] = "Criterion"
+            self.check(kind, changed, False)
+        lowercase = copy.deepcopy(plain)
+        lowercase["criteria"]["lane"]["docs"] = "Criterion"
+        self.check(kind, lowercase, False)
+
+    def test_judgment_accepts_docs_and_defaults_stay_backend_logic(self):
+        kind = "routing-judgment"
+        data = _valid_v3_routing_payloads()[kind]
+        self.check(kind, {**data, "lane": "DOCS"})
+        self.check(kind, {**data, "lane": "docs"}, False)
+        defaulted = {**data, "basis": "default-low-confidence", "defaulted": ["lane"]}
+        self.check(kind, {**defaulted, "lane": "BACKEND_LOGIC"})
+        self.check(kind, {**defaulted, "lane": "DOCS"}, False)
+
+    def test_selection_records_the_docs_lane_and_its_fallback(self):
+        kind = "routing-selection"
+        data = _valid_v3_routing_payloads()[kind]
+        self.check(kind, {**data, "lane": "docs"})
+        self.check(kind, {**data, "laneFallback": "docs-to-backend-logic"})
+        self.check(kind, {**data, "laneFallback": "other"}, False)
+        self.refuse(kind, {**data, "lane": "docs", "laneFallback": "docs-to-backend-logic"},
+                    "event.data.laneFallback", "lane fallback requires a worker in the backend-logic lane")
+        self.refuse(kind, {**data, "lane": "ui-frontend", "laneFallback": "docs-to-backend-logic"},
+                    "event.data.laneFallback", "lane fallback requires a worker in the backend-logic lane")
+        reviewer = {**data, "role": "reviewer", "lane": "core", "pass": "record", "criticality": "CORE"}
+        self.check(kind, reviewer)
+        self.refuse(kind, {**reviewer, "laneFallback": "docs-to-backend-logic"},
+                    "event.data.laneFallback", "lane fallback requires a worker in the backend-logic lane")
+        self.refuse(kind, {**reviewer, "lane": "docs"}, "event.data.lane", "lane invalid for role")
+        self.refuse(kind, {**data, "role": "feature-lead", "lane": "docs"}, "event.data.lane", "lane invalid for role")
+        helper = {**data, "role": "verifier", "classificationRef": None, "lane": None, "stage": None, "pass": None,
+                  "round": None, "criticality": None, "scope": None, "floorsApplied": []}
+        self.check(kind, helper)
+        self.refuse(kind, {**helper, "laneFallback": "docs-to-backend-logic"},
+                    "event.data.laneFallback", "helper cannot fall back to another lane")
+
+    def test_escalation_accepts_the_docs_lane_for_workers_only(self):
+        kind = "routing-escalation"
+        data = {**_valid_event_payloads()[kind], "role": "worker", "lane": "docs"}
+        self.check(kind, data)
+        for role, reason in (("reviewer", "review-deadlock"), ("feature-lead", "lead-stalled")):
+            self.check(kind, {**data, "role": role, "reason": reason}, False)
 
 
 OPTIONAL_FIXTURE_KEYS = {

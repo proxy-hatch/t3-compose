@@ -141,6 +141,17 @@ class OfflineRouting(OfflineRoutingFixture):
                       'feature-lead': 'lead-stalled'}[role]
             self.escalate(role, level, reason)
 
+    def add_docs_lane(self):
+        """A worker/docs lane whose cells differ from backend-logic and use only models the catalog offers."""
+        sol = {'providerInstanceId': DIRECT, 'model': 'gpt-6.1-sol', 'options': {'reasoningEffort': 'high'}}
+        sonnet = {'providerInstanceId': MASTER, 'model': 'claude-sonnet-5-5', 'options': {'effort': 'high'}}
+        opus = {'providerInstanceId': MASTER, 'model': 'claude-opus-5-5', 'options': {'effort': 'high'}}
+        self.cfg['matrix']['worker']['docs'] = {
+            '1': {'primary': sol, 'quotaFallback': [sonnet]},
+            '2': {'primary': sonnet, 'quotaFallback': [opus]},
+            '3': {'primary': opus, 'quotaFallback': []}}
+        self.save()
+
     def test_real_cli_three_successes_and_refusal(self):
         self.current = self.input(child=True)
         self.judge(child=True)
@@ -153,11 +164,12 @@ class OfflineRouting(OfflineRoutingFixture):
         self.assertIsNotNone(self.select(child=True, code=5)['retryAfter'])
 
     def test_matrix_primaries_every_role_lane_stage(self):
+        self.add_docs_lane()
         for role, lanes in self.cfg['matrix'].items():
             for lane, stages in lanes.items():
                 for stage, cell in stages.items():
                     with self.subTest(role=role, lane=lane, stage=stage):
-                        self.judge(lane='UI_FRONTEND' if lane == 'ui-frontend' else 'BACKEND_LOGIC',
+                        self.judge(lane={'ui-frontend': 'UI_FRONTEND', 'docs': 'DOCS'}.get(lane, 'BACKEND_LOGIC'),
                                    criticality='CORE' if lane == 'core' else 'NON_CRITICAL')
                         self.authorize(role, stage)
                         result = self.select(role, stage)
@@ -361,6 +373,76 @@ class OfflineRouting(OfflineRoutingFixture):
                     '--lane', 'BACKEND_LOGIC', '--criticality', 'CORE', '--scope', 'STANDARD',
                     '--reason', 'Synthetic', code=3)
         self.select(code=3)
+
+    def test_judge_accepts_docs_and_refuses_other_spellings(self):
+        event = self.judge(lane='DOCS')
+        self.assertEqual((event['data']['lane'], event['data']['basis'], event['data']['defaulted']),
+                         ('DOCS', 'manual', []))
+        schema.validate_event_data('routing-judgment', event['data'])
+        def judgments():
+            return [e for e in self.events() if e['kind'] == 'routing-judgment']
+        before = judgments()
+        for spelling in ('docs', 'Docs', 'DOCUMENTATION'):
+            self.judge(lane=spelling, code=2)
+            self.assertEqual(judgments(), before)
+
+    def test_a_docs_decision_selects_the_docs_cell_and_only_for_workers(self):
+        self.add_docs_lane()
+        self.judge(lane='DOCS')
+        docs = self.cfg['matrix']['worker']['docs']
+        first = self.select()
+        self.assertEqual((first['lane'], first['stage'], first['selection']), ('docs', 1, docs['1']['primary']))
+        self.assertNotIn('laneFallback', first)
+        self.assertNotIn('laneFallback', self.events()[-1]['data'])
+        self.authorize('worker', 2)
+        self.assertEqual(self.select(stage=2)['selection'], docs['2']['primary'])
+        for role, lane in (('reviewer', 'non-critical'), ('feature-lead', 'default')):
+            self.assertEqual(self.select(role)['lane'], lane)
+
+    def test_a_docs_decision_without_a_docs_lane_routes_to_backend_logic_and_records_it(self):
+        self.judge(lane='DOCS')
+        backend = self.cfg['matrix']['worker']['backend-logic']
+        chosen = self.select()
+        self.assertEqual((chosen['lane'], chosen['laneFallback'], chosen['selection']),
+                         ('backend-logic', 'docs-to-backend-logic', backend['1']['primary']))
+        event = self.events()[-1]
+        self.assertEqual(event['data']['laneFallback'], 'docs-to-backend-logic')
+        schema.validate_event_data('routing-selection', event['data'])
+        self.assertNotIn('laneFallback', self.select('reviewer'))
+        self.judge(lane='BACKEND_LOGIC')
+        self.assertNotIn('laneFallback', self.select())
+
+    def test_a_confident_docs_classification_selects_the_docs_cell(self):
+        self.add_docs_lane()
+        self.current = self.input()
+        classification = _valid_v3_routing_payloads()['routing-classification']
+        classification.update(self.current, riskFacts=[], outcome='accepted')
+        classification['criteria']['lane']['DOCS'] = 'Criterion'
+        classification['criteriaDigest'] = 'sha256:' + hashlib.sha256(
+            jsonio.canonical_json(classification['criteria'])).hexdigest()
+        classification['answers']['lane'].update(
+            choice='DOCS', probabilities={'BACKEND_LOGIC': 0, 'UI_FRONTEND': 0, 'MIXED': 0, 'DOCS': 1})
+        classification['answers']['scope'].update(
+            choice='STANDARD', probabilities={'STANDARD': 1, 'COMPLEX': 0, 'INSUFFICIENT_CONTEXT': 0})
+        accepted = records.append_event(self.local, REPO, WORK, 'routing-classification', classification,
+                                        writer='lead:WORK-1@' + REPO)
+        chosen = self.select()
+        self.assertEqual((chosen['classificationRef'], chosen['lane']), (accepted['seq'], 'docs'))
+
+    def test_escalation_follows_the_lane_a_docs_decision_ran_in(self):
+        self.add_docs_lane()
+        self.judge(lane='DOCS')
+        self.escalate()
+        self.assertEqual(self.events()[-1]['data']['lane'], 'docs')
+        self.assertEqual(self.select(stage=2)['selection'], self.cfg['matrix']['worker']['docs']['2']['primary'])
+        self.select(stage=3, code=4)
+        del self.cfg['matrix']['worker']['docs']
+        self.save()
+        self.judge(lane='DOCS')
+        self.escalate()
+        self.assertEqual(self.events()[-1]['data']['lane'], 'backend-logic')
+        stage_two = self.select(stage=2)
+        self.assertEqual((stage_two['lane'], stage_two['laneFallback']), ('backend-logic', 'docs-to-backend-logic'))
 
     def test_mixed_history_and_classification_decisions(self):
         writer = 'lead:WORK-1@' + REPO
@@ -699,7 +781,7 @@ class OfflineRouting(OfflineRoutingFixture):
         self.save()
         self.select('reviewer', **{'pass': 'pre'}, code=3)
 
-    def test_helpers_null_fields_no_classification_and_no_fallback(self):
+    def test_helpers_null_fields_and_no_classification(self):
         self.current = self.input()
         for role in ('verifier', 'text'):
             result = self.select(role, stage=None, child=(role == 'verifier'))
@@ -711,23 +793,66 @@ class OfflineRouting(OfflineRoutingFixture):
                 options = dict(stage=None)
                 options.update(changes)
                 self.select(role, code=2, **options)
-            target = self.cfg['helpers'][role]['primary']
-            self.cfg['helpers'][role]['quotaFallback'] = [copy.deepcopy(
-                self.cfg['matrix']['worker']['backend-logic']['2']['primary'])]
-            for instance in ACCOUNTS if 'providerPool' in target else [target['providerInstanceId']]:
-                self.refuse(instance, target['model'])
-            self.save()
-            before = self.events()
-            dry = self.select(role, stage=None, code=5)
-            self.assertIsNotNone(dry['retryAfter'])
-            self.assertTrue(all(t['index'] == 0 for t in dry['targetsTried']))
-            self.assertEqual(self.events(), before)
         self.select(stage=None, code=2)
         self.select('search', stage=None, code=2)
         self.cfg['helpers']['verifier']['primary'] = copy.deepcopy(
             self.cfg['matrix']['feature-lead']['default']['1']['primary'])
         self.save()
         self.assertEqual(self.select('verifier', stage=None)['billing'], 'per-token')
+
+    def helper_cells(self):
+        """Terra-shaped helpers on models the catalog offers: a direct primary, and a pool or Pi fallback."""
+        sol = {'providerInstanceId': DIRECT, 'model': 'gpt-6.1-sol', 'options': {'reasoningEffort': 'high'}}
+        astra = {'providerInstanceId': DIRECT, 'model': 'gpt-6-astra', 'options': {'reasoningEffort': 'high'}}
+        pool = {'providerPool': 'agy-synth-pool', 'model': 'gemini-3.8-flash-high', 'options': {}}
+        self.cfg['helpers']['verifier'] = {'primary': sol, 'quotaFallback': [astra]}
+        self.cfg['helpers']['text'] = {'primary': copy.deepcopy(sol), 'quotaFallback': [pool]}
+        self.save()
+        self.current = self.input()
+        return sol, astra, pool
+
+    def test_a_refused_helper_primary_selects_the_first_fallback(self):
+        sol, astra, _ = self.helper_cells()
+        self.refuse(DIRECT, sol['model'])
+        self.save()
+        chosen = self.select('verifier', stage=None)
+        self.assertEqual((chosen['chosenIndex'], chosen['selection']), (1, astra))
+        self.assertEqual([(t['index'], t['reason'].split(' until')[0]) for t in chosen['targetsTried']],
+                         [(0, 'live quota refusal'), (1, 'selected')])
+        event = self.events()[-1]
+        self.assertEqual((event['data']['role'], event['data']['chosenIndex']), ('verifier', 1))
+        schema.validate_event_data('routing-selection', event['data'])
+        self.cfg['helpers']['verifier']['quotaFallback'] = [copy.deepcopy(
+            self.cfg['matrix']['feature-lead']['default']['1']['primary'])]
+        self.save()
+        metered = self.select('verifier', stage=None)
+        self.assertEqual((metered['chosenIndex'], metered['billing']), (1, 'per-token'))
+
+    def test_the_text_helper_fallback_walks_the_pool(self):
+        sol, _, pool = self.helper_cells()
+        self.refuse(DIRECT, sol['model'])
+        self.refuse(ACCOUNTS[0], pool['model'])
+        self.save()
+        chosen = self.select('text', stage=None)
+        self.assertEqual((chosen['chosenIndex'], chosen['chosenPoolAccount'], chosen['selection']),
+                         (1, ACCOUNTS[1], pool))
+        self.assertEqual([(t['index'], t['account']) for t in chosen['targetsTried']],
+                         [(0, None), (1, ACCOUNTS[0]), (1, ACCOUNTS[1])])
+
+    def test_a_helper_whose_targets_have_all_refused_is_dry(self):
+        sol, astra, pool = self.helper_cells()
+        self.refuse(DIRECT, sol['model'])
+        self.refuse(DIRECT, astra['model'])
+        for account in ACCOUNTS:
+            self.refuse(account, pool['model'])
+        self.save()
+        for role, tried in (('verifier', 2), ('text', 1 + len(ACCOUNTS))):
+            before = self.events()
+            dry = self.select(role, stage=None, code=5)
+            self.assertIsNotNone(dry['retryAfter'])
+            self.assertEqual(len(dry['targetsTried']), tried)
+            self.assertEqual(dry['targetsTried'][-1]['index'], 1)
+            self.assertEqual(self.events(), before)
 
     def test_bounded_evidence_read_and_bad_utf8(self):
         self.judge()

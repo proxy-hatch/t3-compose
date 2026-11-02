@@ -306,18 +306,18 @@ def _check_probability(value, path):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0 <= value <= 1):
         _fail(path, "expected finite probability in [0, 1]")
 
-def _choice_answer_validator(options):
-    option_set = frozenset(options)
+def _choice_answer_validator(options, optional=()):
+    option_set, allowed = frozenset(options), frozenset((*options, *optional))
     def check_probs(value, path):
-        if not isinstance(value, dict) or set(value) != option_set:
+        if not isinstance(value, dict) or not option_set <= set(value) <= allowed:
             _fail(path, "probabilities must contain exact option keys")
         total = 0.0
-        for key in options:
+        for key in value:
             _check_probability(value[key], f"{path}.{key}")
             total += float(value[key])
         if not (0.99 <= total <= 1.01):
             _fail(path, "probabilities must sum to 1 within 0.01")
-    return _object_schema({"type": _check_enum("choice"), "choice": _check_enum(*options), "probabilities": check_probs, "confidence": _check_probability})
+    return _object_schema({"type": _check_enum("choice"), "choice": _check_enum(*options, *optional), "probabilities": check_probs, "confidence": _check_probability})
 
 _check_criteria = _object_schema({
     "domain": _object_schema({opt: _check_text for opt in _DOMAIN_OPTIONS}, {"instructions": _check_text}),
@@ -384,7 +384,8 @@ _V3_QUESTIONS = {
     "criticality": ("CORE", "NON_CRITICAL"),
     "scope": ("STANDARD", "COMPLEX", "INSUFFICIENT_CONTEXT"),
 }
-_MATRIX_LANES = {"feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend"),
+_V3_OPTIONAL_CRITERIA = {"lane": ("DOCS",)}  # Offered only when the configuration lists them.
+_MATRIX_LANES = {"feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend", "docs"),
                  "reviewer": ("non-critical", "core")}
 _V3_ROLES = (*_MATRIX_LANES, "verifier", "search", "text")
 
@@ -406,6 +407,11 @@ def _check_v3_selection(value, path):
         _fail(f"{path}.options", "pool options must be empty")
 
 def _post_v3_classification(data, path):
+    if not _is_unknown_obj(data["answers"]):
+        for question, answer in data["answers"].items():
+            offered = set(data["criteria"][question]) - {"instructions"}
+            if answer["choice"] not in offered or set(answer["probabilities"]) != offered:
+                _fail(f"{path}.answers.{question}", "answer must use the offered criteria")
     if data["outcome"] == "accepted":
         for field in ("snapshotModel", "responseId", "answers"):
             if _is_unknown_obj(data[field]):
@@ -437,6 +443,8 @@ def _post_v3_selection(data, path):
             if field != "pass" and data[field] is None:
                 _fail(f"{path}.{field}", "matrix role requires non-null field")
         _check_role_lane(data, path)
+        if "laneFallback" in data and (role != "worker" or data["lane"] != "backend-logic"):
+            _fail(f"{path}.laneFallback", "lane fallback requires a worker in the backend-logic lane")
         if data["scope"] == "COMPLEX" and data["stage"] == 1:
             _fail(f"{path}.stage", "complex scope requires stage 2 or 3")
         if (data["round"] == "corrections" and role != "worker") or (data["round"] == "re-review" and role != "reviewer"):
@@ -447,6 +455,8 @@ def _post_v3_selection(data, path):
                 _fail(f"{path}.{field}", "helper requires null field")
         if data["floorsApplied"]:
             _fail(f"{path}.floorsApplied", "helper cannot apply floors")
+        if "laneFallback" in data:
+            _fail(f"{path}.laneFallback", "helper cannot fall back to another lane")
     if role == "reviewer":
         if data["pass"] is None:
             _fail(f"{path}.pass", "reviewer requires pass")
@@ -683,7 +693,7 @@ EVENT_SCHEMAS = MappingProxyType({
     }),
     "writer-transfer": _spec({"from": _check_writer_id, "to": _check_writer_id, "reconciliationRef": _check_pos_int, "checkpoint": _check_checkpoint}, post=_post_writer_transfer),
     "routing-escalation": _spec({
-        "role": _check_enum(*_MATRIX_LANES), "lane": _check_enum("default", "backend-logic", "ui-frontend", "non-critical", "core"),
+        "role": _check_enum(*_MATRIX_LANES), "lane": _check_enum("default", "backend-logic", "ui-frontend", "docs", "non-critical", "core"),
         "fromStage": _int_enum(1, 2), "toStage": _int_enum(2, 3),
         "reason": _check_enum("worker-hard-stop", "finding-unresolved", "review-deadlock", "reviewer-failure", "lead-stalled"),
         "evidence": _check_escalation_evidence, "wipCommit": _nullable(_check_commit_sha),
@@ -693,14 +703,17 @@ EVENT_SCHEMAS = MappingProxyType({
 ROUTING_V3_SCHEMAS = MappingProxyType({
     "routing-classification": _spec({
         **dict(EVENT_SCHEMAS["routing-classification"]["required"]), "configVersion": _check_config_version,
-        "criteria": _object_schema({q: _object_schema(dict.fromkeys(opts, _check_text), {"instructions": _check_text})
+        "criteria": _object_schema({q: _object_schema(dict.fromkeys(opts, _check_text),
+                                                      {"instructions": _check_text,
+                                                       **dict.fromkeys(_V3_OPTIONAL_CRITERIA.get(q, ()), _check_text)})
                                     for q, opts in _V3_QUESTIONS.items()}),
-        "answers": _or_unknown(_object_schema({q: _choice_answer_validator(opts) for q, opts in _V3_QUESTIONS.items()})),
+        "answers": _or_unknown(_object_schema({q: _choice_answer_validator(opts, _V3_OPTIONAL_CRITERIA.get(q, ()))
+                                               for q, opts in _V3_QUESTIONS.items()})),
         "outcome": _check_enum("accepted", "retry-with-context", "defaulted"),
     }, post=_post_v3_classification),
     "routing-judgment": _spec({
         "configVersion": _check_config_version, "inputRef": _check_pos_int, "inputDigest": _check_digest, "policyDigest": _check_digest,
-        "lane": _check_enum("BACKEND_LOGIC", "UI_FRONTEND"), "criticality": _check_enum("CORE", "NON_CRITICAL"),
+        "lane": _check_enum("BACKEND_LOGIC", "UI_FRONTEND", "DOCS"), "criticality": _check_enum("CORE", "NON_CRITICAL"),
         "scope": _check_enum("STANDARD", "COMPLEX"), "reason": _check_text,
         "basis": _check_enum("manual", "default-low-confidence", "default-insufficient-context", "default-jev-failure"),
         "defaulted": _list_of(_check_enum(*_V3_QUESTIONS)),
@@ -708,7 +721,7 @@ ROUTING_V3_SCHEMAS = MappingProxyType({
     "routing-selection": _spec({
         "configVersion": _check_config_version, "inputRef": _check_pos_int, "inputDigest": _check_digest, "policyDigest": _check_digest,
         "classificationRef": _nullable(_check_pos_int), "role": _check_enum(*_V3_ROLES),
-        "lane": _nullable(_check_enum("default", "backend-logic", "ui-frontend", "non-critical", "core")),
+        "lane": _nullable(_check_enum("default", "backend-logic", "ui-frontend", "docs", "non-critical", "core")),
         "stage": _nullable(_int_enum(1, 2, 3)), "pass": _nullable(_check_enum("pre", "record")),
         "round": _nullable(_check_enum("first", "corrections", "re-review")),
         "criticality": _nullable(_check_enum("CORE", "NON_CRITICAL")), "scope": _nullable(_check_enum("STANDARD", "COMPLEX")),
@@ -717,7 +730,7 @@ ROUTING_V3_SCHEMAS = MappingProxyType({
                                                 "account": _nullable(_check_text), "reason": _check_text}), nonempty=True),
         "chosenIndex": _check_nonneg_int, "configDigest": _check_digest, "catalogReadAt": _check_utc_timestamp,
         "catalogDigest": _check_digest, "quotaStateDigest": _check_digest,
-    }, {"billing": _check_enum("per-token")}, post=_post_v3_selection),
+    }, {"billing": _check_enum("per-token"), "laneFallback": _check_enum("docs-to-backend-logic")}, post=_post_v3_selection),
 })
 _V3_VALIDATORS = {kind: _object_schema(spec["required"], spec["optional"], spec["post"])
                   for kind, spec in ROUTING_V3_SCHEMAS.items()}

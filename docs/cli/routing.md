@@ -14,7 +14,7 @@ validates the writer and complete history.
 ```text
 t3c route input --repo REPO --work ID --input TASK.json
 t3c route judge --repo REPO --work ID --input-ref SEQ --policy-digest DIGEST \
-  --lane BACKEND_LOGIC|UI_FRONTEND --criticality CORE|NON_CRITICAL \
+  --lane BACKEND_LOGIC|UI_FRONTEND|DOCS --criticality CORE|NON_CRITICAL \
   --scope STANDARD|COMPLEX --reason TEXT
 ```
 
@@ -48,7 +48,8 @@ Selection uses the latest matching version-3 judgment or classification
 Version-2 decisions and selections in the history are ignored. A judgment
 supplies lane, criticality and scope. A classification must be `accepted`
 and every answer's confidence must meet `jev.minConfidence`; otherwise exit 4
-asks to record a judgment. `MIXED` maps to `BACKEND_LOGIC`.
+asks to record a judgment. `MIXED` maps to `BACKEND_LOGIC`; `DOCS` keeps its own
+lane (below). `judge --lane DOCS` is accepted whatever the configuration lists.
 
 Declared `task.riskFacts` apply the configured floors after the decision.
 An unknown fact exits 4. A floor only raises scope to `COMPLEX` or criticality
@@ -64,8 +65,13 @@ A requested stage above the reached stage exits 4 with `reachedStage`.
 A dry cell never changes stages.
 
 The cell is `matrix[role][lane][str(stage)]`. Worker lanes are `ui-frontend`
-for `UI_FRONTEND` and `backend-logic` otherwise. Reviewer lanes are `core`
-for `CORE` and `non-critical` otherwise. Feature leads use `default`.
+for `UI_FRONTEND`, `docs` for `DOCS` and `backend-logic` otherwise. A `DOCS`
+decision in a configuration without a `worker.docs` lane is a lane fallback: the
+cell is the backend-logic cell, the selection adds
+`laneFallback: "docs-to-backend-logic"` (the result shows it), and the
+escalation chain runs in backend-logic. Reviewer lanes are `core`
+for `CORE` and `non-critical` otherwise. Feature leads use `default`. `DOCS`
+does not affect either.
 Reviewers default to `--pass record`. Explicit `--pass` on any other role
 exits 2. `--pass pre` selects only the optional `prePass` on that reviewer
 cell (any lane or stage), never its primary or quota fallbacks. Pool account
@@ -126,6 +132,8 @@ null otherwise), `round`, post-floor `criticality` and `scope`,
 The walk starts at index 0 with no gaps and ends at the chosen entry.
 Digests describe the exact loaded file bytes. A chosen `pi` provider,
 including a pool account, adds `billing: "per-token"`; subscriptions omit it.
+A worker selection that fell back from `DOCS` adds `laneFallback`; no other
+selection has it.
 
 The result is that payload plus `selectionRef`, resolved
 `providerInstanceId`, `model` and `options`. A failed durable append
@@ -143,7 +151,8 @@ t3c route select --repo REPO --work ID --role verifier|text \
 Helpers require a current input and policy digest, but no classification or
 judgment. They reject explicit `--stage`, `--round` and `--pass` (exit 2).
 Matrix roles still require `--stage`; their round defaults remain as above.
-Only `helpers[role].primary` is tried, even when a quota fallback is configured.
+A helper walks its cell like a matrix cell: `helpers[role].primary`, then each
+`quotaFallback` in order. `chosenIndex` names the target chosen (0 is the primary).
 Availability, driver eligibility, role blocks, refusal memory and pool walking
 use the same checks. Helpers never select `search`, which is not a CLI role.
 Their selection has null `classificationRef`, `lane`, `stage`, `pass`, `round`,

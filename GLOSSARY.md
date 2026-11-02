@@ -28,7 +28,7 @@ A core Task's final-head review is the review of record's at the Task's reviewer
 Verification does not mean that its pull request has merged.
 
 **Lane**:
-The routing matrix's worker axis: backend-logic or ui-frontend. A `MIXED` classification maps to backend-logic.
+The routing matrix's worker axis: backend-logic, ui-frontend or, when the configuration has it, docs. A `MIXED` classification maps to backend-logic.
 
 **Pre-pass**:
 The stage-1 core review's first pass. It has no fallback, is skipped when refused or unavailable, and is never the review of record.
