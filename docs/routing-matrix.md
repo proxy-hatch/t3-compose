@@ -40,13 +40,15 @@ refusals and spec questions are not escalations. Every escalation is recorded.
 ## The matrix
 
 The owner's table of 2026-11-01 with model names only, and with the
-placements changed for the [GLM budget](#glm-budget):
+placements changed for the [GLM budget](#glm-budget) and the
+[Terra placements](#terra-placements):
 
 | Role / lane | Stage 1 | Stage 1 quota fallback | Stage 2 | Stage 2 quota fallback | Stage 3 | Stage 3 quota fallback |
 |---|---|---|---|---|---|---|
 | Feature lead | Claude Sonnet 5.5 (high) | GPT-6.1 Sol (high) → Gemini 4 Argon (high) | Claude Opus 5.5 (medium) | GPT-6 Astra (high) | Claude Opus 5.5 (xhigh) | none |
 | Worker, backend-logic | Gemini 3.8 Flash (medium) | GLM-5.3-Flash (low) → GPT-6.1 Sol (high) | GPT-6.1 Sol (high) | Claude Sonnet 5.5 (high) → GLM 5.3 (high) | Claude Sonnet 5.5 (xhigh) | Claude Opus 5.5 (high) |
 | Worker, ui-frontend | Gemini 3.8 Flash (medium) | GLM-5.3-Flash (low) → Claude Sonnet 5.5 (high) | Claude Sonnet 5.5 (high) | GPT-6.1 Sol (high) → GLM 5.3 (high) | Claude Sonnet 5.5 (xhigh) | Claude Opus 5.5 (high) |
+| Worker, docs (optional) | GPT-6.1 Terra (medium) | Claude Sonnet 5.5 (high) → GLM-5.3-Flash (low) | GPT-6.1 Terra (xhigh) | Claude Sonnet 5.5 (xhigh) | Claude Opus 5.5 (high) | none |
 | Reviewer, non-critical | Gemini 4 Argon (high) | GPT-6.1 Sol (high) → GLM 5.3 (high) | GPT-6.1 Sol (high) | Claude Sonnet 5.5 (high) → GLM 5.3 (high) | Claude Opus 5.5 (high) | none |
 | Reviewer, core | pre-pass Gemini 3.8 Flash (high), then GPT-6.1 Sol (high) | Claude Sonnet 5.5 (high) → Gemini 4 Argon (high) → GLM 5.3 (high) | Claude Opus 5.5 (high) | GPT-6 Astra (high) | GPT-6 Astra (high) | none |
 
@@ -57,10 +59,12 @@ Starting stage: standard scope starts at stage 1; complex scope starts at
 stage 2. It applies to the lead, the Workers and the Reviewers, and every new
 round (first, Corrections, re-review) starts at the Task's starting stage.
 
-Helpers have no lane and no stage, and each has no quota fallback:
+Helpers have no lane and no stage. Each walks its primary and then its quota
+fallback, like a matrix cell, under every quota rule below:
 
-- the verifier, for the manager's GUI/OS end-to-end gate: GPT-6 Astra (high);
-- the text helper: Gemini 3.8 Flash (high).
+- the verifier, for the manager's GUI/OS end-to-end gate: GPT-6.1 Terra (high),
+  then GPT-6 Astra (high);
+- the text helper: GPT-6.1 Terra (medium), then Gemini 3.8 Flash (high).
 
 The manager row: the Engineering manager's primary is Claude Opus 5.5 (medium)
 for project-management work; its quota fallback is GPT-6 Astra, medium for
@@ -108,13 +112,66 @@ above holds the result.
   guarantee. At the cap the provider answers 402, a credits error, which is a
   quota refusal. Placement only lowers the rate.
 
+## Terra placements
+
+Owner-approved, 2026-11-02, after the vendor said that GPT-6.1 Terra is
+probably better than Astra and Sol at technical communication, and similar on
+vision and computer use. Terra is first only where the output is judged mainly
+as communication, or by vision and computer use:
+
+- GUI and OS verification at the final gate (vision and computer use): the
+  verifier drives the built app and judges what is on screen.
+- Bounded text generation (technical communication): summaries, PR text,
+  release notes. This is the text helper.
+- Tasks whose deliverable is mainly technical writing (technical
+  communication): design docs, specs, the CLI reference, guides, templates.
+  This is the docs lane.
+
+Unchanged: code Workers (backend and UI), reviews of record, leads and the
+pre-pass. Docs reviews stay correctness-first; a Terra docs pre-pass is a
+possible later experiment.
+
+| Cell | Primary | Quota fallback |
+|---|---|---|
+| `helpers.verifier` | GPT-6.1 Terra (high) | GPT-6 Astra (high) |
+| `helpers.text` | GPT-6.1 Terra (medium) | Gemini 3.8 Flash (high) |
+| `worker` / `docs`, stage 1 | GPT-6.1 Terra (medium) | Claude Sonnet 5.5 (high) → GLM-5.3-Flash (low) |
+| `worker` / `docs`, stage 2 | GPT-6.1 Terra (xhigh) | Claude Sonnet 5.5 (xhigh) |
+| `worker` / `docs`, stage 3 | Claude Opus 5.5 (high) | none |
+
+Caveats, accepted: the claim is the vendor's own and hedged; Terra shares
+Codex's usage limit with Sol and Astra, so every fallback after Terra crosses
+provider; and the outcome is measured on the next docs Tasks, by Worker rounds
+and review findings.
+
+### The docs lane
+
+- Jev's lane question gains `DOCS`: "the deliverable is mainly technical
+  writing (docs, specs, guides, templates, messages) with little or no code".
+  It is offered only when the configuration's `classification.lane.criteria`
+  lists `DOCS`. A confident `MIXED` answer (code and docs) stays backend-logic,
+  and so does an uncertain lane. A lead may record the lane itself with
+  `route judge --lane DOCS`.
+- Only Workers use the lane: a `DOCS` decision selects the `worker` / `docs`
+  cell at the Task's stage. The lead, the Reviewers and the pre-pass are routed
+  by criticality as before.
+- The `docs` lane and the `DOCS` criterion are optional in the configuration.
+  When the lane is absent, a `DOCS` decision routes to the backend-logic cell
+  and the selection records `laneFallback: "docs-to-backend-logic"`, so a
+  configuration without the lane keeps working. An escalation chain runs in the
+  lane that was used.
+- Helpers walk their quota fallbacks like any cell. A remembered refusal of the
+  primary selects the first fallback, and a helper whose targets have all
+  refused is a dry cell: the command exits 5.
+
 ## Classification
 
 Jev answers three closed-choice questions from the Task's context:
-lane (`BACKEND_LOGIC`, `UI_FRONTEND`, `MIXED`; a `MIXED` answer maps to
-backend-logic), criticality (`CORE`: logic, stateful code, an API, security or
-a shared contract; `NON_CRITICAL`: UI, CRUD, tests only or wording) and scope
-(`STANDARD`, `COMPLEX`, `INSUFFICIENT_CONTEXT`). Each required answer's
+lane (`BACKEND_LOGIC`, `UI_FRONTEND`, `MIXED`, and `DOCS` when the
+configuration lists it; a `MIXED` answer maps to backend-logic and a `DOCS`
+answer to the docs lane), criticality (`CORE`: logic, stateful code, an API,
+security or a shared contract; `NON_CRITICAL`: UI, CRUD, tests only or wording)
+and scope (`STANDARD`, `COMPLEX`, `INSUFFICIENT_CONTEXT`). Each required answer's
 confidence must reach the minimum confidence, 0.6. An uncertain answer allows
 one retry with more context. If an answer is still uncertain, the stronger
 option applies to it alone: only an uncertain answer takes its fixed default

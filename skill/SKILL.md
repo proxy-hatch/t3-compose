@@ -165,11 +165,15 @@ Every Task runs in t3c records from its first dispatch. Details are in
 `<root>/docs/routing-matrix.md` holds the matrix; `<root>/docs/cli/routing.md`
 and `<root>/docs/cli/quota.md` hold the commands. Its rules:
 
-- A Task has a lane (backend-logic or ui-frontend), a criticality (core or
-  non-critical) and a scope (standard or complex). Jev answers these through
+- A Task has a lane (backend-logic, ui-frontend or docs), a criticality (core
+  or non-critical) and a scope (standard or complex). Jev answers these through
   `t3c route classify`; an uncertain answer takes the fixed stronger default
   per answer; a lead may record its own judgment with `t3c route judge`. The
-  risk facts a Task declares apply floors that only raise the class.
+  risk facts a Task declares apply floors that only raise the class. The docs
+  lane is for a Task whose deliverable is mainly technical writing (`DOCS`; a
+  mixed Task stays backend-logic). It exists only where the config lists a
+  worker `docs` lane: without it a `DOCS` decision runs in backend-logic and the
+  selection records `laneFallback`.
 - A standard Task starts at stage 1 and a complex Task at stage 2, for the
   lead, the Workers and the Reviewers. Every new round starts at that stage.
 - Always dispatch the cell's primary. Never estimate or pre-check quota.
@@ -213,7 +217,8 @@ and `<root>/docs/cli/quota.md` hold the commands. Its rules:
   command exits 0 with `{skipped: true, reason, retryAfter, targetsTried}` and
   writes nothing; go on to the review of record.
 - Helpers: `route select --role verifier|text` needs a current input but no
-  decision, takes no stage, round or pass, and tries only the helper's primary.
+  decision, takes no stage, round or pass, and walks the helper's primary and
+  then its quota fallbacks, like a matrix cell.
 
 To route one dispatch:
 

@@ -131,14 +131,17 @@ def _decision(args, cfg, loaded, source):
         if ('scope' in floor or 'criticality' in floor) and fact not in floors:
             floors.append(fact)
     start = 2 if scope == 'COMPLEX' else 1
+    fallback = None
     if args.role == 'feature-lead':
         lane = 'default'
     elif args.role == 'reviewer':
         lane = 'core' if criticality == 'CORE' else 'non-critical'
     else:
-        lane = 'ui-frontend' if lane == 'UI_FRONTEND' else 'backend-logic'
+        lane = {'UI_FRONTEND': 'ui-frontend', 'DOCS': 'docs'}.get(lane, 'backend-logic')
+        if lane == 'docs' and 'docs' not in data['matrix']['worker']:
+            lane, fallback = 'backend-logic', 'docs-to-backend-logic'
     return dict(refs=refs, decision=decision, criticality=criticality, scope=scope,
-                floors=floors, lane=lane, start=start), None
+                floors=floors, lane=lane, start=start, fallback=fallback), None
 
 
 def _reached(events, source, role, lane, start):
@@ -200,7 +203,7 @@ def _select(args, cfg, loaded, source):
     helper = args.role in ('verifier', 'text')
     if helper:
         decision = None
-        lane = criticality = scope = None
+        lane = criticality = scope = fallback = None
         floors = []
         cell = data['helpers'][args.role]
     else:
@@ -209,6 +212,7 @@ def _select(args, cfg, loaded, source):
             return failure
         decision, lane = context['decision'], context['lane']
         criticality, scope, floors = context['criticality'], context['scope'], context['floors']
+        fallback = context['fallback']
         if args.stage < context['start']:
             return _needed('requested stage is below the starting stage', startingStage=context['start'])
         reached = _reached(loaded['events'], source, args.role, lane, context['start'])
@@ -241,8 +245,6 @@ def _select(args, cfg, loaded, source):
     pre = args.pass_ == 'pre'
     if pre:
         targets = (cell['prePass'],) if 'prePass' in cell else ()
-    elif helper:
-        targets = (cell['primary'],)
     else:
         targets = (cell['primary'], *cell['quotaFallback'])
     for index, frozen in enumerate(targets):
@@ -280,6 +282,8 @@ def _select(args, cfg, loaded, source):
                        'selection': selection, 'chosenPoolAccount': account, 'targetsTried': tried,
                        'chosenIndex': index, 'configDigest': cfg.digest, 'catalogReadAt': args.catalog_read_at,
                        'catalogDigest': catalog_digest, 'quotaStateDigest': state.digest}
+            if fallback is not None:
+                payload['laneFallback'] = fallback
             if provider['driverKind'] == 'pi':
                 payload['billing'] = 'per-token'
             event = records.append_event(args.local_dir, args.repo, args.work, 'routing-selection', payload,
@@ -352,7 +356,7 @@ def register(registry):
         parser.add_argument('--input-ref', type=int, required=True)
         parser.add_argument('--policy-digest', required=True)
         if leaf == 'judge':
-            parser.add_argument('--lane', choices=('BACKEND_LOGIC', 'UI_FRONTEND'), required=True)
+            parser.add_argument('--lane', choices=('BACKEND_LOGIC', 'UI_FRONTEND', 'DOCS'), required=True)
             parser.add_argument('--criticality', choices=('CORE', 'NON_CRITICAL'), required=True)
             parser.add_argument('--scope', choices=('STANDARD', 'COMPLEX'), required=True)
             parser.add_argument('--reason', required=True)

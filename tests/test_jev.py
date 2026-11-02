@@ -19,16 +19,19 @@ from t3compose import config, records, jsonio, schema
 
 KEY = "synthetic-jev-secret-sentinel"
 REPO = "synthetic/jev-tests"
+WITHOUT_DOCS = ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED")
+WITH_DOCS = (*WITHOUT_DOCS, "DOCS")
+DOCS_CRITERION = ("The deliverable is mainly technical writing (docs, specs, guides, templates, messages) "
+                  "with little or no code.")
 
 
 def response(lane="BACKEND_LOGIC", criticality="CORE", scope="STANDARD",
-             lane_conf=0.8, crit_conf=0.8, scope_conf=0.8):
+             lane_conf=0.8, crit_conf=0.8, scope_conf=0.8, offered=WITHOUT_DOCS):
     answers = {
         "lane": {
             "type": "choice", "choice": lane, "confidence": lane_conf,
-            "probabilities": {"BACKEND_LOGIC": 0.8, "UI_FRONTEND": 0.1, "MIXED": 0.1}
-            if lane == "BACKEND_LOGIC" else {"BACKEND_LOGIC": 0.1, "UI_FRONTEND": 0.8, "MIXED": 0.1}
-            if lane == "UI_FRONTEND" else {"BACKEND_LOGIC": 0.1, "UI_FRONTEND": 0.1, "MIXED": 0.8},
+            "probabilities": {option: 0.8 if option == lane else 0.1 for option in offered}
+            if len(offered) == 3 else {option: 0.7 if option == lane else 0.1 for option in offered},
         },
         "criticality": {
             "type": "choice", "choice": criticality, "confidence": crit_conf,
@@ -166,6 +169,75 @@ class OfflineJev(OfflineTestCase):
             self.assertEqual(data["criteria"][name], {**question["criteria"], "instructions": question["instructions"]})
         for event in self.events():
             schema.validate_event(event)
+
+    def offer_docs(self):
+        self.cfg["classification"]["lane"]["criteria"]["DOCS"] = DOCS_CRITERION
+        self.save_config()
+
+    def test_docs_is_offered_only_when_the_config_lists_it(self):
+        code, data, calls, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual(set(json.loads(calls[0].data)["questions"]["lane"]["criteria"]), set(WITHOUT_DOCS))
+        self.assertEqual(set(data["criteria"]["lane"]) - {"instructions"}, set(WITHOUT_DOCS))
+        self.offer_docs()
+        self.new_work()
+        code, data, calls, _ = self.invoke(response(offered=WITH_DOCS))
+        self.assertEqual(code, 0)
+        offered = json.loads(calls[0].data)["questions"]["lane"]["criteria"]
+        self.assertEqual((set(offered), offered["DOCS"]), (set(WITH_DOCS), DOCS_CRITERION))
+        self.assertEqual(data["criteria"]["lane"]["DOCS"], DOCS_CRITERION)
+        for event in self.events():
+            schema.validate_event(event)
+
+    def test_a_confident_docs_answer_is_the_decision_without_a_judgment(self):
+        self.offer_docs()
+        code, data, calls, err = self.invoke(response(lane="DOCS", offered=WITH_DOCS))
+        self.assertEqual((code, err, len(calls)), (0, "", 1))
+        self.assertEqual((data["outcome"], data["answers"]["lane"]["choice"]), ("accepted", "DOCS"))
+        self.assertNotIn("judgment", data)
+        self.assertEqual([event["kind"] for event in self.events()], ["routing-input", "routing-classification"])
+        for event in self.events():
+            schema.validate_event(event)
+
+    def test_a_docs_answer_survives_a_defaulted_neighbor_in_the_judgment(self):
+        self.offer_docs()
+        code, data, _, _ = self.invoke(response(lane="DOCS", criticality="NON_CRITICAL", crit_conf=0.3,
+                                                offered=WITH_DOCS), decline=True)
+        self.assertEqual(code, 0)
+        judgment = data["judgment"]
+        self.assertEqual((judgment["lane"], judgment["criticality"], judgment["defaulted"]),
+                         ("DOCS", "CORE", ["criticality"]))
+        for event in self.events():
+            schema.validate_event(event)
+
+    def test_uncertain_and_mixed_lanes_stay_backend_logic_when_docs_is_offered(self):
+        self.offer_docs()
+        code, data, _, _ = self.invoke(response(lane="DOCS", lane_conf=0.3, offered=WITH_DOCS), decline=True)
+        self.assertEqual((code, data["judgment"]["lane"], data["judgment"]["defaulted"]),
+                         (0, "BACKEND_LOGIC", ["lane"]))
+        self.new_work()
+        code, data, _, _ = self.invoke(response(lane="MIXED", offered=WITH_DOCS))
+        self.assertEqual(code, 0)
+        self.assertEqual(data["answers"]["lane"]["choice"], "MIXED")
+        self.assertEqual((data["judgment"]["lane"], data["judgment"]["reason"]),
+                         ("BACKEND_LOGIC", "confident MIXED lane mapped to BACKEND_LOGIC"))
+
+    def test_an_answer_outside_the_offered_criteria_is_an_invalid_response(self):
+        cases = (("DOCS answered but not offered", False, response(lane="DOCS", offered=WITH_DOCS)),
+                 ("DOCS probability but not offered", False, response(offered=WITH_DOCS)),
+                 ("DOCS offered but no DOCS probability", True, response()))
+        for label, offered, reply in cases:
+            with self.subTest(label):
+                self.new_work()
+                self.cfg["classification"]["lane"]["criteria"].pop("DOCS", None)
+                if offered:
+                    self.cfg["classification"]["lane"]["criteria"]["DOCS"] = DOCS_CRITERION
+                self.save_config()
+                code, data, calls, _ = self.invoke(reply)
+                self.assertEqual((code, len(calls)), (0, 1))
+                self.assertEqual((data["outcome"], data["reason"]), ("defaulted", "invalid Jev response"))
+                self.assertEqual((data["judgment"]["basis"], data["judgment"]["lane"]),
+                                 ("default-jev-failure", "BACKEND_LOGIC"))
 
     def test_input_validation_and_screen_block_before_persistence(self):
         original = copy.deepcopy(self.task)

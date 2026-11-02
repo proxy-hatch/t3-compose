@@ -23,6 +23,14 @@ def _matrix_config_dict():
     return data
 
 
+def _with_docs(base):
+    """The example plus the optional worker/docs lane and the optional DOCS lane criterion."""
+    data = copy.deepcopy(base)
+    data["matrix"]["worker"]["docs"] = copy.deepcopy(data["matrix"]["worker"]["backend-logic"])
+    data["classification"]["lane"]["criteria"]["DOCS"] = "The deliverable is mainly technical writing."
+    return data
+
+
 def _valid_state_dict():
     return json.loads((ROOT / "docs/examples/agent-routing-state.example.json").read_text(encoding="utf-8"))
 
@@ -400,13 +408,17 @@ class OfflineConfigValidation(OfflineTestCase):
 class OfflineMatrixConfigValidation(OfflineTestCase):
     def test_schema_vocabulary_matches_config(self):
         from t3compose import config, schema
-        self.assertEqual(dict(config.MATRIX_LANES), schema._MATRIX_LANES)
+        lanes = {role: (*required, *config.MATRIX_OPTIONAL_LANES.get(role, ()))
+                 for role, required in config.MATRIX_LANES.items()}
+        self.assertEqual(lanes, schema._MATRIX_LANES)
         self.assertEqual(set(config.ROLE_BLOCK_ROLES), set(schema._V3_ROLES) - {"search"})
         self.assertEqual(config.HELPER_NAMES, ("verifier", "text"))
         self.assertIn("search", schema._V3_ROLES)  # Historical selection records stay readable.
         classification = _matrix_config_dict()["classification"]
+        self.assertEqual(dict(config.OPTIONAL_CRITERIA), schema._V3_OPTIONAL_CRITERIA)
         for question, options in schema._V3_QUESTIONS.items():
-            self.assertEqual(options, tuple(classification[question]["criteria"]))
+            optional = schema._V3_OPTIONAL_CRITERIA.get(question, ())
+            self.assertEqual(options, tuple(key for key in classification[question]["criteria"] if key not in optional))
 
     def setUp(self):
         super().setUp()
@@ -571,6 +583,53 @@ class OfflineMatrixConfigValidation(OfflineTestCase):
         xhigh["options"]["effort"] = "xhigh"
         data["matrix"]["worker"]["backend-logic"]["2"]["quotaFallback"] = [high, xhigh]
         cfg.validate_config_data(data)
+
+    def test_docs_lane_and_docs_criterion_are_optional(self):
+        cfg, base = _cfg(), _matrix_config_dict()
+        docs = _with_docs(base)
+        loaded, _ = cfg.validate_config_data(docs)
+        self.assertEqual(tuple(loaded["matrix"]["worker"]), ("backend-logic", "ui-frontend", "docs"))
+        self.assertIn("DOCS", loaded["classification"]["lane"]["criteria"])
+        for label, drop in (("lane", lambda d: d["matrix"]["worker"].pop("docs")),
+                            ("criterion", lambda d: d["classification"]["lane"]["criteria"].pop("DOCS"))):
+            with self.subTest(absent=label):
+                data = copy.deepcopy(docs)
+                drop(data)
+                cfg.validate_config_data(data)
+        cases = [
+            (("matrix", "worker", "docs", "3"), None, "missing-key", "matrix.worker.docs.3"),
+            (("matrix", "worker", "docs", "4"), base["matrix"]["worker"]["backend-logic"]["1"], "unknown-key", "matrix.worker.docs.4"),
+            (("matrix", "worker", "docs", "1", "primary", "model"), "", "invalid-string", "matrix.worker.docs.1.primary.model"),
+            (("matrix", "worker", "docs", "1", "prePass"), [], "pre-pass-outside-reviewer-cell", "matrix.worker.docs.1.prePass"),
+            (("matrix", "worker", "other"), base["matrix"]["worker"]["backend-logic"], "unknown-key", "matrix.worker.other"),
+            (("matrix", "reviewer", "docs"), base["matrix"]["worker"]["backend-logic"], "unknown-key", "matrix.reviewer.docs"),
+            (("matrix", "feature-lead", "docs"), base["matrix"]["worker"]["backend-logic"], "unknown-key", "matrix.feature-lead.docs"),
+            (("classification", "lane", "criteria", "DOCS"), "", "invalid-string", "classification.lane.criteria.DOCS"),
+            (("classification", "lane", "criteria", "docs"), "Lowercase.", "unknown-key", "classification.lane.criteria.docs"),
+            (("classification", "criticality", "criteria", "DOCS"), "Not a criticality.", "unknown-key", "classification.criticality.criteria.DOCS"),
+            (("classification", "lane", "criteria", "BACKEND_LOGIC"), None, "missing-key", "classification.lane.criteria.BACKEND_LOGIC"),
+        ]
+        for path, value, rule, expected in cases:
+            with self.subTest(path=path, rule=rule):
+                data = copy.deepcopy(docs)
+                target = data
+                for key in path[:-1]:
+                    target = target[key]
+                if value is None:
+                    target.pop(path[-1], None)
+                else:
+                    target[path[-1]] = copy.deepcopy(value)
+                self.assert_invalid(data, expected, rule)
+
+    def test_docs_criterion_is_policy_and_docs_lane_is_not(self):
+        cfg, base = _cfg(), _matrix_config_dict()
+        digest = cfg.compute_policy_digest(base)
+        lane_only = copy.deepcopy(base)
+        lane_only["matrix"]["worker"]["docs"] = copy.deepcopy(base["matrix"]["worker"]["backend-logic"])
+        self.assertEqual(cfg.compute_policy_digest(lane_only), digest)
+        criterion = copy.deepcopy(base)
+        criterion["classification"]["lane"]["criteria"]["DOCS"] = "The deliverable is mainly technical writing."
+        self.assertNotEqual(cfg.compute_policy_digest(criterion), digest)
 
     def test_matrix_cli(self):
         base, cfg = _matrix_config_dict(), _cfg()

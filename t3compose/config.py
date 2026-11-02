@@ -24,6 +24,8 @@ MATRIX_LANES = MappingProxyType({
     "feature-lead": ("default",), "worker": ("backend-logic", "ui-frontend"),
     "reviewer": ("non-critical", "core"),
 })
+MATRIX_OPTIONAL_LANES = MappingProxyType({"worker": ("docs",)})
+OPTIONAL_CRITERIA = MappingProxyType({"lane": ("DOCS",)})
 MATRIX_STAGES = ("1", "2", "3")
 HELPER_NAMES = ("verifier", "text")
 ROLE_BLOCK_ROLES = ("feature-lead", "worker", "reviewer", "verifier", "text")
@@ -254,8 +256,9 @@ def _validate_matrix_config(raw):
     if "matrix" in raw and _check_keys(raw["matrix"], "matrix", MATRIX_LANES, (), errors):
         for role, lanes in MATRIX_LANES.items():
             rp = f"matrix.{role}"
-            if role in raw["matrix"] and _check_keys(raw["matrix"][role], rp, lanes, (), errors):
-                for lane in lanes:
+            optional = MATRIX_OPTIONAL_LANES.get(role, ())
+            if role in raw["matrix"] and _check_keys(raw["matrix"][role], rp, lanes, optional, errors):
+                for lane in (*lanes, *optional):
                     lp = f"{rp}.{lane}"
                     lane_obj = raw["matrix"][role].get(lane)
                     if lane in raw["matrix"][role] and _check_keys(lane_obj, lp, MATRIX_STAGES, (), errors):
@@ -301,8 +304,9 @@ def _validate_matrix_config(raw):
             qp = f"classification.{name}"
             if name in cls and _check_keys(cls[name], qp, ("instructions", "criteria"), (), errors):
                 _check_str_field(cls[name], "instructions", qp, errors)
-                if "criteria" in cls[name] and _check_keys(cls[name]["criteria"], f"{qp}.criteria", criteria, (), errors):
-                    for key in criteria:
+                optional = OPTIONAL_CRITERIA.get(name, ())
+                if "criteria" in cls[name] and _check_keys(cls[name]["criteria"], f"{qp}.criteria", criteria, optional, errors):
+                    for key in (*criteria, *optional):
                         _check_str_field(cls[name]["criteria"], key, f"{qp}.criteria", errors)
     if "riskFacts" in raw:
         facts = raw["riskFacts"]

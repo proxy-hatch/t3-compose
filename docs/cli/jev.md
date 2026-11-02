@@ -48,13 +48,20 @@ accepted result.
 
 Jev is asked the three version-3 routing questions from the configuration's
 `classification` section in a single request:
-1. `lane`: `BACKEND_LOGIC`, `UI_FRONTEND`, or `MIXED`.
+1. `lane`: `BACKEND_LOGIC`, `UI_FRONTEND`, or `MIXED`, and `DOCS` when the configuration's
+   `classification.lane.criteria` lists it (the key is optional).
 2. `criticality`: `CORE` or `NON_CRITICAL`.
 3. `scope`: `STANDARD`, `COMPLEX`, or `INSUFFICIENT_CONTEXT`.
 
+Jev is offered exactly the criteria the configuration lists, and the record keeps
+them. An answer must use them: a `choice` outside the listed criteria, or
+`probabilities` whose keys are not exactly the listed criteria, is an invalid Jev
+response and takes the Jev-failure path below. A configuration without `DOCS`
+therefore never records a `DOCS` answer.
+
 Each answer is accepted on its own when its `confidence` is at least
 `jev.minConfidence` and its `choice` is not `INSUFFICIENT_CONTEXT`. Only `scope`
-can be `INSUFFICIENT_CONTEXT`; a confident `MIXED` lane is accepted. An answer is
+can be `INSUFFICIENT_CONTEXT`; a confident `MIXED` or `DOCS` lane is accepted. An answer is
 uncertain when its confidence is below `minConfidence` or its choice is
 `INSUFFICIENT_CONTEXT`.
 
@@ -65,7 +72,8 @@ Fixed defaults apply per question when uncertain answers are resolved:
 
 When defaults are applied, confident answers are kept. The classification answers
 always retain Jev's original choices (a confident `MIXED` lane stays `MIXED`).
-A judgment maps a confident `MIXED` lane to `BACKEND_LOGIC`.
+A judgment maps a confident `MIXED` lane to `BACKEND_LOGIC`. A confident `DOCS` lane is
+kept as `DOCS`, and an uncertain lane still takes `BACKEND_LOGIC`.
 
 ## Judgment records
 
@@ -74,7 +82,7 @@ Version-3 `routing-judgment` records reference the same input
 1. **Per-answer defaults applied** (after a used retry, a declined retry, or no-offer):
    - Basis: `default-insufficient-context` when the scope answer defaulted with choice `INSUFFICIENT_CONTEXT`, else `default-low-confidence`.
    - `defaulted`: list of defaulted question names in `lane`, `criticality`, `scope` order.
-   - Values: kept confident answers and fixed defaults (confident `MIXED` lane mapped to `BACKEND_LOGIC` and not listed in `defaulted`).
+   - Values: kept confident answers and fixed defaults (confident `MIXED` lane mapped to `BACKEND_LOGIC` and not listed in `defaulted`; a confident `DOCS` lane kept as `DOCS`).
    - Reason: fixed public text naming what defaulted (and noting a confident `MIXED` mapping when lane was confident `MIXED`).
 2. **Jev failure** (transport fault, HTTP error, redirect, or malformed response):
    - Basis: `default-jev-failure`.
@@ -88,7 +96,8 @@ Version-3 `routing-judgment` records reference the same input
    - Values: `lane: "BACKEND_LOGIC"`, kept confident criticality and scope.
    - Reason: `"confident MIXED lane mapped to BACKEND_LOGIC"`.
 
-No judgment is written for a plain accepted classification (no `MIXED`, no defaults):
+No judgment is written for a plain accepted classification (no `MIXED`, no defaults; a
+confident `DOCS` lane is plain):
 the classification record is the decision.
 
 ## Context and retry budget
