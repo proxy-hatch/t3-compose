@@ -34,7 +34,7 @@ file otherwise). Only L8 needs HTTPS access to OpenRouter and that existing
 key. The runner adds no machine prerequisite, capture command, credential
 mechanism or agent harness. Never put a key in arguments. Supply the saved
 catalog using the [routing catalog contract](cli/routing.md): a valid UTC
-timestamp ending in `Z`, neither future nor more than 15 minutes old at
+timestamp ending in `Z`, neither future nor more than 24 hours old at
 invocation. Freshness is checked only at invocation: later expiry does not
 stop this classification-only run. The catalog is metadata, not a dispatch
 permission; the runner never captures catalogs or selects executable targets.

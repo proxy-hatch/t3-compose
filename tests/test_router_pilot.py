@@ -350,14 +350,24 @@ class OfflineRouterPilot(OfflineTestCase):
         self.assertEqual(len(works), 28)
 
     def test_catalog_stale_or_malformed_refused(self):
-        # Stale catalog
-        stale_time = (datetime.now(timezone.utc) - timedelta(seconds=1000)).isoformat().replace("+00:00", "Z")
-        code, _, err, _ = self.invoke(argv=[str(SCRIPT), "--examples", str(self.examples),
-                                            "--catalog", str(self.catpath),
-                                            "--catalog-read-at", stale_time,
-                                            "--local-dir", str(self.local)])
-        self.assertEqual(code, 2)
-        self.assertIn("refused", err)
+        """Refused: over 24 hours old, in the future, malformed. Run: within 24 hours, even past the old 15 minutes."""
+
+        def seconds_ago(seconds):
+            return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+        def run_at(read_at):
+            return self.invoke(argv=["--examples", str(self.examples), "--catalog", str(self.catpath),
+                                     "--catalog-read-at", read_at, "--local-dir", str(self.local)])
+
+        for read_at in (seconds_ago(86500), seconds_ago(-60), "not-a-time"):
+            code, _, err, calls = run_at(read_at)
+            self.assertEqual(code, 2, read_at)
+            self.assertIn("refused", err)
+            self.assertEqual(calls, [])
+        self.assertEqual(records.list_work(self.local, REPO)["works"], [])
+        for seconds in (0, 901, 86300):
+            code, _, _, _ = run_at(seconds_ago(seconds))
+            self.assertEqual(code, 0, seconds)
 
     def test_config_validation_and_exit_codes(self):
         # Bad config version
