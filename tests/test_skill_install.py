@@ -77,9 +77,23 @@ class OfflineSkillInstall(OfflineTestCase):
         self.assertEqual(os.readlink(cases["foreign"]), str(elsewhere))
         self.assertTrue(cases["a-dir"].is_dir())
 
-    def test_a_link_made_between_the_check_and_the_write_is_a_refusal(self):
-        with patch.object(skill_install.os, "symlink", side_effect=FileExistsError):
+    def test_a_link_made_between_the_check_and_the_write_survives_the_refusal(self):
+        elsewhere = self.temp / "elsewhere"
+        elsewhere.mkdir()
+        real_symlink, made = os.symlink, []
+
+        def rival_first(target, name, *args, **kwargs):
+            real_symlink(str(elsewhere), name)  # another process links the name after the check
+            made.append(os.lstat(name).st_ino)
+            return real_symlink(target, name, *args, **kwargs)  # the real call meets the real link
+
+        with patch.object(skill_install.os, "symlink", rival_first):
             self.invoke("install", code=1)
+        self.assertEqual(os.readlink(self.link), str(elsewhere))
+        self.assertEqual([os.lstat(self.link).st_ino], made)
+        self.assertEqual([path.name for path in self.skills.iterdir()], [NAME])
+
+    def test_a_write_that_fails_otherwise_is_an_error_and_creates_nothing(self):
         with patch.object(skill_install.os, "symlink", side_effect=PermissionError):
             self.invoke("install", code=2)
         self.assertEqual(list(self.skills.iterdir()), [])
@@ -151,6 +165,40 @@ class OfflineSkillInstall(OfflineTestCase):
         self.invoke("install", code=2)
         self.assertEqual(list(self.skills.iterdir()), [])
 
+    def test_a_relative_skills_directory_is_made_absolute(self):
+        os.mkdir("relative-skills")  # each test starts in its own working directory
+        data = self.invoke("install", skills="relative-skills")
+        link = os.path.join(os.getcwd(), "relative-skills", NAME)
+        self.assertEqual((data["path"], os.readlink(link)), (link, str(self.source)))
+
+    def test_a_skills_directory_that_is_a_link_elsewhere_is_fine(self):
+        real, alias = self.temp / "real-skills", self.temp / "skills-alias"
+        real.mkdir()
+        alias.symlink_to(real)
+        self.invoke("install", skills=alias)
+        self.assertEqual(os.readlink(real / NAME), str(self.source))
+        self.assertEqual(self.invoke("status", skills=alias)["state"], "installed")
+
+    def test_a_relative_link_to_this_skill_counts_as_installed(self):
+        stored = os.path.relpath(self.source, self.skills)
+        self.link.symlink_to(stored)
+        data = self.invoke("install")
+        self.assertEqual((data["state"], data["changed"], data["target"]), ("installed", False, stored))
+        self.assertEqual(self.invoke("status")["state"], "installed")
+
+    def test_a_link_that_cannot_be_read_is_an_error_and_changes_nothing(self):
+        real_lstat = os.lstat
+
+        def unreadable(path, *args, **kwargs):
+            if os.fspath(path) == str(self.link):
+                raise PermissionError
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(skill_install.os, "lstat", unreadable):
+            self.invoke("install", code=2)
+            self.invoke("status", code=2)
+        self.assertEqual(list(self.skills.iterdir()), [])
+
     def test_commands_are_registered(self):
         names = cli.command_names()
         self.assertIn(("skill", "install"), names)
@@ -171,8 +219,34 @@ class OfflineSkillInstall(OfflineTestCase):
         self.assertEqual((status.returncode, json.loads(status.stdout)["state"]), (0, "installed"))
 
 
+class RecordingParser:
+    def __init__(self, name):
+        self.name, self.arguments, self.defaults = name, [], {}
+
+    def add_argument(self, *flags, **options):
+        self.arguments.append((flags, options))
+
+    def set_defaults(self, **defaults):
+        self.defaults.update(defaults)
+
+
+class RecordingRegistry:
+    """What a command module registers, recorded without argparse, which reads locale files."""
+    def __init__(self):
+        self.groups, self.parsers = [], []
+
+    def group(self, name):
+        self.groups.append(name)
+        return self
+
+    def add_parser(self, name):
+        self.parsers.append(RecordingParser(name))
+        return self.parsers[-1]
+
+
 class OfflineSkillRegistration(OfflineTestCase):
     def test_import_and_registration_do_no_io(self):
+        registry = RecordingRegistry()
         with patch.object(process, "run", side_effect=AssertionError("unexpected process")), \
                 patch("builtins.open", side_effect=AssertionError("unexpected read")), \
                 patch("os.open", side_effect=AssertionError("unexpected open")), \
@@ -181,9 +255,19 @@ class OfflineSkillRegistration(OfflineTestCase):
                 patch("os.readlink", side_effect=AssertionError("unexpected read")), \
                 patch("os.symlink", side_effect=AssertionError("unexpected write")):
             importlib.reload(skill_install)
-            registry = cli.Registry(cli.Parser(prog="synthetic"))
             skill_install.register(registry)
-            registry.validate()
+        self.assertEqual(registry.groups, ["skill", "skill"])
+        self.assertEqual([parser.name for parser in registry.parsers], ["install", "status"])
+        for parser in registry.parsers:
+            self.assertEqual(parser.arguments, [(("--skills-dir",), {"required": True}),
+                                                (("--name",), {"default": NAME})])
+        self.assertEqual([parser.defaults["handler"] for parser in registry.parsers],
+                         [skill_install.install, skill_install.status])
+
+    def test_registration_passes_the_real_registry_validation(self):
+        registry = cli.Registry(cli.Parser(prog="synthetic"))
+        skill_install.register(registry)
+        self.assertEqual(registry.validate(), (("skill", "install"), ("skill", "status")))
 
 
 class OfflineSkillInstallDocs(OfflineTestCase):
