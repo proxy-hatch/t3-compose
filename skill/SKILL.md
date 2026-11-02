@@ -25,8 +25,8 @@ this skill and a spec disagree, the spec wins; report the gap.
   `"$PY" -I -S -B -m unittest discover -s tests -t . -v`. One module:
   `... discover -s tests -t . -p 'test_x.py'`. A run leaves no `__pycache__`.
 - Output is one JSON value on stdout. A failed check can still print data:
-  `evidence check` and `config check` print their report with exit 1 or 3.
-  A message-only failure prints nothing on stdout. `publish run`
+  `evidence check`, `skill status` and `config check` print their report with
+  exit 1 or 3. A message-only failure prints nothing on stdout. `publish run`
   alone passes a child's exit status through. Exit codes: 0 success, 1 check
   failed, 2 invalid input or helper failure, 3 invalid config, 4 manager
   judgment needed, 5 report to Shawn, 75 busy.
@@ -493,7 +493,8 @@ through uv, Git, `gh`, the configured App and its Keychain item,
   commit runs. After a merge, read the checkout's HEAD first; run
   `git pull --ff-only` only when T3 has not already fast-forwarded a clean
   `main`. A dirty, divergent or non-`main` checkout goes to Shawn.
-- The skill is installed at user level by linking this directory. Installing
+- `t3c skill install --skills-dir DIR` links this directory into a skills
+  directory; `t3c skill status --skills-dir DIR` reports the link. Installing
   writes outside `.local/`, so it waits for Shawn's explicit request.
 
 ## Command reference
@@ -531,3 +532,5 @@ Every registered command, once. Specs: `<root>/docs/cli/*.md`.
 | `t3c pr verify` | Verify a pull request's head, base and author. |
 | `t3c heavy run` | Run a heavy check exclusively in a clean worktree at an exact head. |
 | `t3c heavy status` | Show the heavy-check lock and its holder. |
+| `t3c skill install` | Link this skill into a skills directory. |
+| `t3c skill status` | Report whether the link is installed. |
