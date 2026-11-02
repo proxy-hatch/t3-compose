@@ -80,9 +80,11 @@ this skill and a spec disagree, the spec wins; report the gap.
   machine prerequisites and integration evidence in the pull request body. It
   sends the manager one short message only for its merge, a blocker outside its
   Task, a change that touches another Task's files or a shared interface, a new
-  machine prerequisite, a rule change Shawn gave (quote him), or agy
-  exhaustion. Ordinary quota refusals are recorded and handled through
-  fallback, and it never reports readiness or progress to the manager.
+  machine prerequisite, a rule change Shawn gave (quote him), or a stage-3 cell
+  with no target that can serve. It does not report ordinary usage-limit
+  refusals, agy's included: it records them with `t3c quota record` and takes
+  the cell's next target. It never reports readiness or progress to the
+  manager.
 - With no lead in a managed repository, the manager owns the Task's
   coordination, checks, independent final-review coordination and publication,
   under that repository's rules.
@@ -134,8 +136,13 @@ Every Task runs in t3c records from its first dispatch. Details are in
    --writer W`. `W` is the canonical manager writer, `manager@` plus the
    repository identity. A work's review base is immutable: a Task that moves
    onto a newer `main` opens a new work epoch (`<ID>-main-<short sha>`).
-2. The first event is the manager's `lead-assignment`, from the launch
-   message: the real date, the Task line as the reason. A lead never invents it.
+2. A Task with an assigned Feature lead starts with the manager's
+   `lead-assignment` as its first event, from the launch message: the real date,
+   the lead's thread, the Task line as the reason. A lead never invents it. A
+   Task without a lead (a managed repository before Feature leads are enabled)
+   has no such event: the manager coordinates it and records its events, and
+   an independent Reviewer reviews its final head. Never record an assignment
+   that did not happen.
 3. Append events with `t3c event add --repo REPO --work ID --kind KIND --file
    DATA.json --writer W`. For each dispatch: `dispatch-intent` before the
    call, `dispatch-confirmed` with the `taskId`, then the genuine `result`.
@@ -178,8 +185,8 @@ and `<root>/docs/cli/quota.md` hold the commands. Its rules:
   by the active account moves the active pointer to the next account. Walking
   accounts is not a fallback. When no target of a cell can serve,
   `route select` exits 5 with the earliest expiry: wait. A dry cell never
-  escalates to another stage. At stage 3 the item waits and the manager reports
-  to Shawn.
+  escalates to another stage. At stage 3 the item waits and the lead tells the
+  manager, who reports to Shawn.
 - Role blocks make a driver kind unavailable for a role, with recorded reason
   and evidence. A target that fails a capability probe for a role is not used.
 - GLM (metered, per token) is a last-resort quota fallback only. It is never a

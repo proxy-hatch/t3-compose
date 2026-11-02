@@ -42,7 +42,10 @@ CLAUSES = {
         "Never read, print or pass a secret in argv. A Keychain prompt gets Allow, never Always Allow.",
     ),
     "Roles": (
-        "A Feature lead runs one Task", "it never reports readiness or progress to the manager",
+        "A Feature lead runs one Task", "It never reports readiness or progress to the manager.",
+        "or a stage-3 cell with no target that can serve",
+        "It does not report ordinary usage-limit refusals, agy's included: it records them with "
+        "`t3c quota record` and takes the cell's next target.",
         "With no lead in a managed repository, the manager owns the Task's coordination",
     ),
     "Start and restart": (
@@ -58,7 +61,11 @@ CLAUSES = {
         "Every Task runs in t3c records from its first dispatch.",
         "A work's review base is immutable: a Task that moves onto a newer `main` opens a new "
         "work epoch (`<ID>-main-<short sha>`).",
-        "The first event is the manager's `lead-assignment`, from the launch message",
+        "A Task with an assigned Feature lead starts with the manager's `lead-assignment` as its "
+        "first event",
+        "A Task without a lead (a managed repository before Feature leads are enabled) has no such "
+        "event: the manager coordinates it and records its events, and an independent Reviewer "
+        "reviews its final head.",
         "`dispatch-intent` before the call, `dispatch-confirmed` with the `taskId`, then the "
         "genuine `result`.",
         "Never backdate or rewrite an event.",
@@ -83,7 +90,10 @@ CLAUSES = {
         "is stated",
         "A recorded refusal keeps its provider instance or pool account and model out of use for "
         "30 minutes.",
-        "A dry cell never escalates to another stage.",
+        "A dry cell never escalates to another stage. At stage 3 the item waits and the lead tells "
+        "the manager, who reports to Shawn.",
+        "Classify a failed child by its own response, and use the harness's label only when the "
+        "child gave none.",
         "GLM (metered, per token) is a last-resort quota fallback only. It is never a primary, a "
         "lead, a pre-pass or a helper, and its thinking is low or high, never max.",
         "Record `billing: per-token` for each use and list every GLM use in the merge line.",
@@ -101,7 +111,10 @@ CLAUSES = {
         "the instance, model and options `route select` returned as its `selection`",
         'call `delegate_task` with `isolation: "worktree"`, `mode: "async"`, that same `target`',
         "`t3c-<work>-<role>-r<round>`",
-        "Its exact `Move-rule: three-case-v1` block", "never fetching a missing start commit",
+        "Its exact `Move-rule: three-case-v1` block",
+        "to move its own branch to the start commit only when HEAD equals the provisioned commit, "
+        "the tree is clean, the start commit exists and the branch is its fresh own branch",
+        "never fetching a missing start commit",
         "The digest they print is the intent's `briefDigest`.",
         "Cancel a child that landed wrong within seconds with `task_cancel`.",
     ),
@@ -130,6 +143,8 @@ CLAUSES = {
         "The review of record never sees the pre-pass findings, and `t3c brief check` refuses a "
         "review-of-record brief that carries a `PP-<n>` ID.",
         "That review's brief has Round `final-review`.",
+        "A task `review` names the confirmed native Reviewer task; a lead `review` names the "
+        "assigned lead's thread, never an invented task ID.",
         "On a core Task the review of record reviews the exact final head, and the lead then "
         "checks its result and records its own review last.",
         "On a non-critical Task the lead's own review stands.",
@@ -146,7 +161,9 @@ CLAUSES = {
         "once after the merge.",
         "Reviewers and docs-only Workers run no full SUITE.",
         "runs through `t3c heavy run`, one at a time on the whole machine",
-        "A pass needs `childStatus` 0 and both freshness flags true.",
+        "Keep the completion summary: `label`, `commit`, `log`, `childStatus`, `headUnchanged`, "
+        "`treeUnchanged`, `startedAt` and `endedAt`. A pass needs `childStatus` 0 and both "
+        "freshness flags true.",
     ),
     "Publication and merge": (
         "Link the returned URL at once with `link_pull_request`.",
