@@ -220,6 +220,16 @@ def malformed_commands(text):
     return [value for kind, value in scan_text(text) if kind == 'malformed']
 
 
+def help_options(text):
+    """The option names that a help text holds, each as a whole token: '--repo', not '--repo REPO'."""
+    return set(re.findall(r'(?<![\w-])--?[A-Za-z0-9][\w-]*', text))
+
+
+def unknown_options(text, help_of):
+    """The (command, option) pairs that a document text names and the command's help does not hold as a token."""
+    return [(command, option) for command, option in documented_options(text) if option not in help_options(help_of(*command))]
+
+
 def normalize_ws(s):
     return ' '.join(s.split())
 
@@ -323,8 +333,11 @@ class OfflinePilotDocs(OfflineTestCase):
             return help_cache[words]
 
         for path in DOC_PATHS[:3]:
-            for command, option in documented_options(read_doc(path)):
-                self.assertRegex(help_of(*command), rf'(?<![\w-]){re.escape(option)}(?![\w-])', f'{path}: {option}')
+            self.assertEqual(unknown_options(read_doc(path), help_of), [], path)
+        ws = ('work', 'snapshot')
+        sample = '''t3c work snapshot "--through-seq THROUGH_SEQ" '--repo REPO' --work w --through-seq 0 --through-seqq'''
+        self.assertEqual(unknown_options(sample, help_of), [(ws, '--through-seq THROUGH_SEQ'), (ws, '--repo REPO'), (ws, '--through-seqq')])
+        self.assertEqual(unknown_options('t3c work snapshot --repo r --work w --through-seq=0', help_of), [])
 
     def test_scanner_line_contract(self):
         ws, ea, wl = ('work', 'snapshot'), ('event', 'add'), ('work', 'list')
