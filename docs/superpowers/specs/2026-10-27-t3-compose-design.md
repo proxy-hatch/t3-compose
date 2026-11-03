@@ -251,7 +251,7 @@ accounts, reasoning and thresholds from the matrix, but cannot waive repository
 requirements.
 
 The routing matrix's cells cover the Feature lead (the default lane), Workers
-(backend-logic and ui-frontend lanes) and Reviewers (non-critical and core),
+(backend-logic, ui-frontend and an optional docs lane) and Reviewers (non-critical and core),
 each with three stages. A cell names one primary and an ordered quota-fallback
 list, walked once on refusals; the list may be empty, holds no duplicates and
 never contains the primary. The stage-1 core reviewer cell adds a pre-pass that
@@ -266,7 +266,10 @@ per-answer default handling is fixed in code; a pre-pass may be configured only
 on a reviewer cell, and is refused everywhere else; a role block names one of
 the four supported driver kinds.
 
-Lanes and stages: Jev's `MIXED` lane answer maps to backend-logic. A Task's
+Lanes and stages: Jev's `MIXED` lane answer maps to backend-logic, and its
+`DOCS` answer (offered only when the config lists that criterion) maps to the
+optional worker docs lane, or to backend-logic with a recorded `laneFallback`
+when the matrix has no docs lane. A Task's
 starting stage is 1 for standard scope and 2 for complex scope, and applies to
 the lead, the Workers and the Reviewers; every new round (first, Corrections,
 re-review) starts at the starting stage. Escalation is vertical and per issue.
@@ -388,11 +391,12 @@ Use these approaches as references; preserve MIT attribution when reusing code.
 The adapter sends original task intent, acceptance criteria, relevant interfaces,
 scope and task-specific risk facts. Omit repeated global instructions and credential
 or account data; boilerplate safety language must not make every task appear hard.
-Ask closed-choice questions for lane (`BACKEND_LOGIC`, `UI_FRONTEND`,
-`MIXED`), criticality (`CORE`: logic, stateful code, an API, security or a
-shared contract; `NON_CRITICAL`: UI, CRUD, tests only or wording) and scope
-(`STANDARD`, `COMPLEX`, `INSUFFICIENT_CONTEXT`). These are classification
-results, not free-form model identifiers.
+Ask closed-choice questions for lane (`BACKEND_LOGIC`, `UI_FRONTEND`, `MIXED`
+and, only when the config lists the criterion, `DOCS`), criticality (`CORE`:
+logic, stateful code, an API, security or a shared contract; `NON_CRITICAL`: UI,
+CRUD, tests only or wording) and scope (`STANDARD`, `COMPLEX`,
+`INSUFFICIENT_CONTEXT`). These are classification results, not free-form model
+identifiers.
 
 Code maps accepted classifications to the matrix. It independently applies role
 blocks, risk floors, live catalog validation and the account walk. The `MIXED`

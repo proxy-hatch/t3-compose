@@ -90,10 +90,14 @@ class OfflineRouterPilot(OfflineTestCase):
                 g_crit = gold["criticality"]
                 g_scope = gold["scope"]
                 # In gold, floors may have raised scope/criticality. Raw might be standard/non_critical for floor examples.
-                raw_lane = "MIXED" if g_lane == "MIXED" else g_lane
-                raw_crit = "NON_CRITICAL" if gold["floors"] and g_crit == "CORE" else g_crit
-                raw_scope = "STANDARD" if gold["floors"] and g_scope == "COMPLEX" else g_scope
-                payload = response(lane=raw_lane, criticality=raw_crit, scope=raw_scope)
+                offered = tuple(self.cfg["classification"]["lane"]["criteria"])
+                raw_lane = g_lane if g_lane in offered else "BACKEND_LOGIC"
+                raising = [self.cfg["riskFacts"][fact] for fact in gold["floors"]]
+                raw_crit = "NON_CRITICAL" if g_crit == "CORE" and any(
+                    fact.get("criticality") == "CORE" for fact in raising) else g_crit
+                raw_scope = "STANDARD" if g_scope == "COMPLEX" and any(
+                    fact.get("scope") == "COMPLEX" for fact in raising) else g_scope
+                payload = response(lane=raw_lane, criticality=raw_crit, scope=raw_scope, offered=offered)
             elif isinstance(ans, Exception):
                 raise ans
             elif isinstance(ans, dict):
@@ -122,7 +126,7 @@ class OfflineRouterPilot(OfflineTestCase):
 
     def test_shipped_dataset_format_and_coverage(self):
         entries = self.dataset["examples"]
-        self.assertEqual(len(entries), 14)
+        self.assertEqual(len(entries), 17)
         self.assertEqual(self.dataset.get("label"), "synthetic")
         self.assertEqual(self.dataset.get("version"), 2)
         covered_floors = set()
@@ -130,6 +134,7 @@ class OfflineRouterPilot(OfflineTestCase):
         criticalities = set()
         scopes = set()
         doc_count = 0
+        docs_labeled = [entry["id"] for entry in entries if entry["expected"]["lane"] == "DOCS"]
         for entry in entries:
             self.assertEqual(entry["label"], "synthetic")
             gold = entry["expected"]
@@ -143,7 +148,11 @@ class OfflineRouterPilot(OfflineTestCase):
             task_text = json.dumps(entry["task"]).lower()
             self.assertFalse(any(bad in task_text for bad in ["recipe", "travel", "bakery"]))
         self.assertTrue(FACTS <= covered_floors)
-        self.assertEqual(lanes, {"BACKEND_LOGIC", "UI_FRONTEND", "MIXED"})
+        self.assertEqual(lanes, {"BACKEND_LOGIC", "UI_FRONTEND", "MIXED", "DOCS"})
+        self.assertGreaterEqual(len(docs_labeled), 2)
+        boundary = next(entry for entry in entries if entry["id"] == "cli-flag-with-guide")
+        self.assertEqual(boundary["expected"]["lane"], "BACKEND_LOGIC")  # code and its docs together
+        self.assertIn("document-change", boundary["expected"]["floors"])
         self.assertEqual(criticalities, {"CORE", "NON_CRITICAL"})
         self.assertEqual(scopes, {"STANDARD", "COMPLEX"})
         self.assertGreaterEqual(doc_count, 1)
@@ -160,30 +169,30 @@ class OfflineRouterPilot(OfflineTestCase):
     def test_expected_labels_never_in_http_request(self):
         code, report, _, calls = self.invoke()
         self.assertEqual(code, 0)
-        self.assertEqual(len(calls), 14)
+        self.assertEqual(len(calls), 17)
         for call in calls:
             body = json.loads(call.data)
             self.assertNotIn("expected", body["state"])
             self.assertNotIn("expected", body)
 
-    def test_full_run_exactly_14_calls_decline_true_and_derived_outcomes(self):
+    def test_full_run_exactly_17_calls_decline_true_and_derived_outcomes(self):
         code, report, _, calls = self.invoke()
         self.assertEqual(code, 0)
         self.assertTrue(report["complete"])
-        self.assertEqual(len(calls), 14)
-        self.assertEqual(len(report["results"]), 14)
+        self.assertEqual(len(calls), 17)
+        self.assertEqual(len(report["results"]), 17)
         summary = report["summary"]
-        self.assertEqual(summary["derived"], 14)
+        self.assertEqual(summary["derived"], 17)
         self.assertEqual(summary["incomplete"], 0)
         self.assertEqual(summary["laneMismatches"], 0)
-        self.assertEqual(summary["matchingRoutes"]["scope"], 14)
-        self.assertEqual(summary["matchingRoutes"]["criticality"], 14)
+        self.assertEqual(summary["matchingRoutes"]["scope"], 17)
+        self.assertEqual(summary["matchingRoutes"]["criticality"], 17)
         self.assertEqual(summary["mistakenCheapRoutes"]["scope"], 0)
         self.assertEqual(summary["unnecessaryExpensiveRoutes"]["scope"], 0)
 
         # Check records integrity: work was created, classification written, no selection events
         works = records.list_work(self.local, REPO)["works"]
-        self.assertEqual(len(works), 14)
+        self.assertEqual(len(works), 17)
         for res in report["results"]:
             w_events = records.load_work(self.local, REPO, res["workId"])["events"]
             kinds = [e["kind"] for e in w_events]
@@ -205,7 +214,7 @@ class OfflineRouterPilot(OfflineTestCase):
             self.assertNotIn(str(self.keyfile).encode(), raw)
             self.assertIsNotNone(res["derived"])
             self.assertIn(res["derived"]["startingStage"], (1, 2))
-            self.assertIn(res["derived"]["lane"], ("backend-logic", "ui-frontend"))
+            self.assertIn(res["derived"]["lane"], ("backend-logic", "ui-frontend", "docs"))
 
     def test_defaulting_behavior_preserving_confident_answers(self):
         # Example 0: low confidence on scope (0.45)
@@ -271,6 +280,111 @@ class OfflineRouterPilot(OfflineTestCase):
             self.assertNotIn("lane", mixed_res["judgment"]["defaulted"])
         self.assertEqual(mixed_res["derived"]["lane"], "backend-logic")
         self.assertFalse(mixed_res["laneMismatch"])
+
+    def test_docs_examples_derive_the_docs_lane(self):
+        code, report, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        docs = [r for r in report["results"] if r["expected"]["lane"] == "DOCS"]
+        self.assertGreaterEqual(len(docs), 2)
+        for res in docs:
+            with self.subTest(example=res["id"]):
+                self.assertEqual(res["classification"]["answers"]["lane"]["choice"], "DOCS")
+                self.assertEqual(res["classification"]["outcome"], "accepted")
+                self.assertIsNone(res["judgment"])
+                self.assertEqual(res["derived"]["lane"], "docs")
+                self.assertFalse(res["laneMismatch"])
+        self.assertEqual(report["summary"]["laneMismatches"], 0)
+        self.assertEqual(report["summary"]["defaultedAnswers"]["counts"], {"lane": 0, "criticality": 0, "scope": 0})
+
+    def test_docs_gold_answered_as_backend_logic_is_a_lane_mismatch(self):
+        def answers(n, task):
+            gold = self.dataset["examples"][n]["expected"]
+            if gold["lane"] != "DOCS":
+                return None
+            return response(lane="BACKEND_LOGIC", criticality=gold["criticality"], scope=gold["scope"])
+
+        code, report, _, _ = self.invoke(answers)
+        self.assertEqual(code, 0)
+        docs = [r for r in report["results"] if r["expected"]["lane"] == "DOCS"]
+        for res in docs:
+            with self.subTest(example=res["id"]):
+                self.assertEqual(res["derived"]["lane"], "backend-logic")
+                self.assertTrue(res["laneMismatch"])
+        self.assertEqual(report["summary"]["laneMismatches"], len(docs))
+
+    def test_a_docs_answer_survives_a_defaulted_neighbor(self):
+        target = "docs-message-templates"
+
+        def answers(n, task):
+            if self.dataset["examples"][n]["id"] != target:
+                return None
+            return response(lane="DOCS", criticality="NON_CRITICAL", crit_conf=.3, scope="STANDARD")
+
+        code, report, _, _ = self.invoke(answers)
+        self.assertEqual(code, 0)
+        row = next(r for r in report["results"] if r["id"] == target)
+        self.assertEqual((row["judgment"]["lane"], row["judgment"]["defaulted"]), ("DOCS", ["criticality"]))
+        self.assertEqual((row["derived"]["lane"], row["derived"]["criticality"]), ("docs", "CORE"))
+        self.assertEqual((row["laneMismatch"], row["criticalityComparison"]), (False, "expensive"))
+
+    def test_an_unsure_docs_answer_takes_the_backend_logic_default(self):
+        target = "docs-operator-guide"
+
+        def answers(n, task):
+            if self.dataset["examples"][n]["id"] != target:
+                return None
+            return response(lane="DOCS", criticality="NON_CRITICAL", scope="STANDARD", lane_conf=.3)
+
+        code, report, _, _ = self.invoke(answers)
+        self.assertEqual(code, 0)
+        row = next(r for r in report["results"] if r["id"] == target)
+        self.assertEqual(row["classification"]["outcome"], "defaulted")
+        self.assertEqual((row["judgment"]["lane"], row["judgment"]["basis"], row["judgment"]["defaulted"]),
+                         ("BACKEND_LOGIC", "default-low-confidence", ["lane"]))
+        self.assertEqual((row["derived"]["lane"], row["laneMismatch"]), ("backend-logic", True))
+        defaulted = report["summary"]["defaultedAnswers"]
+        self.assertEqual(defaulted["byQuestion"]["lane"], {"count": 1, "exampleIds": [target]})
+        self.assertEqual(defaulted["byBasis"]["default-low-confidence"], 1)
+
+    def test_a_config_without_the_docs_criterion_still_runs(self):
+        del self.cfg["classification"]["lane"]["criteria"]["DOCS"]
+        self.write(self.cfgpath, self.cfg)
+        code, report, _, calls = self.invoke()
+        self.assertEqual((code, report["complete"], len(calls)), (0, True, 17))
+        for call in calls:
+            self.assertNotIn("DOCS", json.loads(call.data)["questions"]["lane"]["criteria"])
+        docs = [r for r in report["results"] if r["expected"]["lane"] == "DOCS"]
+        self.assertTrue(docs)
+        for res in docs:
+            self.assertEqual((res["derived"]["lane"], res["laneMismatch"]), ("backend-logic", True))
+        self.assertEqual(report["summary"]["laneMismatches"], len(docs))
+
+    def test_load_examples_accepts_the_docs_label_and_refuses_other_spellings(self):
+        from live.router_pilot import load_examples
+        for lane, valid in (("DOCS", True), ("docs", False), ("Docs", False), ("DOCUMENTATION", False)):
+            data = copy.deepcopy(self.dataset)
+            data["examples"][0]["expected"]["lane"] = lane
+            self.write(self.examples, data)
+            with self.subTest(lane=lane):
+                if valid:
+                    self.assertEqual(len(load_examples(self.examples, self.cfg)[0]), 17)
+                else:
+                    with self.assertRaises(ValueError):
+                        load_examples(self.examples, self.cfg)
+
+    def test_summary_compares_the_docs_label_with_the_derived_lane(self):
+        from live.router_pilot import summarize
+        rows = []
+        for ident, gold_lane, derived_lane in (("a", "DOCS", "docs"), ("b", "DOCS", "backend-logic"),
+                                               ("c", "UI_FRONTEND", "ui-frontend"), ("d", "MIXED", "backend-logic"),
+                                               ("e", "BACKEND_LOGIC", "docs")):
+            rows.append({"id": ident, "judgment": None,
+                         "expected": {"lane": gold_lane, "scope": "STANDARD", "criticality": "CORE", "floors": []},
+                         "derived": {"lane": derived_lane, "scope": "STANDARD", "criticality": "CORE",
+                                     "appliedFloors": []}})
+        summary = summarize(rows)
+        self.assertEqual([row["laneMismatch"] for row in rows], [False, True, False, False, True])
+        self.assertEqual(summary["laneMismatches"], 2)
 
     def test_risk_floors_and_stage_derivation(self):
         code, report, _, _ = self.invoke()
@@ -347,7 +461,7 @@ class OfflineRouterPilot(OfflineTestCase):
         self.assertEqual(code2, 0)
         self.assertNotEqual(report1["runId"], report2["runId"])
         works = records.list_work(self.local, REPO)["works"]
-        self.assertEqual(len(works), 28)
+        self.assertEqual(len(works), 34)
 
     def test_catalog_stale_or_malformed_refused(self):
         """Refused: over 24 hours old, in the future, malformed. Run: within 24 hours, even past the old 15 minutes."""
@@ -442,7 +556,7 @@ class OfflineRouterPilot(OfflineTestCase):
 
         with patch.object(pilot, "datetime", clock):
             code, report, _, calls = self.invoke(during=advance)
-        self.assertEqual((code, report["complete"], len(calls)), (0, True, 14))
+        self.assertEqual((code, report["complete"], len(calls)), (0, True, 17))
 
     def test_corrections_example_version_is_exact(self):
         from live.router_pilot import load_examples

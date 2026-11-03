@@ -49,7 +49,7 @@
         "interfaces": ["README.md is technical documentation for the fictional Pebble library"],
         "scope": ["README.md, one word"], "riskFacts": ["document-change"], "dependencies": []
       },
-      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+      "expected": {"lane": "DOCS", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
     },
     {
       "id": "design-note", "label": "synthetic",
@@ -59,7 +59,7 @@
         "interfaces": ["Module design note, technical documentation"],
         "scope": ["fictional-module-note.md"], "riskFacts": ["document-change"], "dependencies": []
       },
-      "expected": {"lane": "BACKEND_LOGIC", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+      "expected": {"lane": "DOCS", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
     },
     {
       "id": "credential-field", "label": "synthetic",
@@ -140,6 +140,36 @@
         "scope": ["fictional_prefs.py and fictional_checkbox.js"], "riskFacts": [], "dependencies": []
       },
       "expected": {"lane": "MIXED", "criticality": "CORE", "scope": "STANDARD", "floors": []}
+    },
+    {
+      "id": "docs-operator-guide", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: write a fictional operator guide for the fictional Pebble job queue that explains how to start a worker, read its log lines and restart it after a crash. Write prose and command examples only; change no code.",
+        "acceptance": ["The guide has a start section, a log-reading section and a restart section.", "Every command in the guide appears in the fictional tool's usage text."],
+        "interfaces": ["docs/operator-guide.md, new technical documentation for Pebble"],
+        "scope": ["docs/operator-guide.md"], "riskFacts": ["document-change"], "dependencies": []
+      },
+      "expected": {"lane": "DOCS", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+    },
+    {
+      "id": "docs-message-templates", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: write fictional status-message and handoff templates for a fictional release process. Each template names its fields and says when to use it. Change wording and structure only; write no code.",
+        "acceptance": ["Each template lists its fields and the moment it is sent.", "No template asks for a secret or an account name."],
+        "interfaces": ["templates/status-message.md and templates/handoff.md, both new"],
+        "scope": ["templates/status-message.md and templates/handoff.md"], "riskFacts": ["document-change"], "dependencies": []
+      },
+      "expected": {"lane": "DOCS", "criticality": "NON_CRITICAL", "scope": "STANDARD", "floors": ["document-change"]}
+    },
+    {
+      "id": "cli-flag-with-guide", "label": "synthetic",
+      "task": {
+        "intent": "Synthetic: add a --dry-run flag to a fictional command-line tool so that it prints the changes it would make and writes nothing, and update the tool's usage guide to describe the flag.",
+        "acceptance": ["With --dry-run the tool prints each planned change and leaves every file untouched.", "The usage guide describes --dry-run and shows one example."],
+        "interfaces": ["command-line flag --dry-run of the fictional tool; USAGE.md"],
+        "scope": ["fictional_tool.py (one flag) and USAGE.md (one section)"], "riskFacts": ["document-change"], "dependencies": []
+      },
+      "expected": {"lane": "BACKEND_LOGIC", "criticality": "CORE", "scope": "STANDARD", "floors": ["document-change"]}
     }
   ]
 }
