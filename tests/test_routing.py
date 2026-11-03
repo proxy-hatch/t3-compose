@@ -400,6 +400,8 @@ class OfflineRouting(OfflineRoutingFixture):
             self.assertEqual(self.select(role)['lane'], lane)
 
     def test_a_docs_decision_without_a_docs_lane_routes_to_backend_logic_and_records_it(self):
+        del self.cfg['matrix']['worker']['docs']
+        self.save()
         self.judge(lane='DOCS')
         backend = self.cfg['matrix']['worker']['backend-logic']
         chosen = self.select()

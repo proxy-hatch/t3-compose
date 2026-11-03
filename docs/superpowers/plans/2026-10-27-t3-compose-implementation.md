@@ -1353,7 +1353,7 @@ metered split. All six commands and the combined acceptance below are retained.
   without rotation. No test selects an unavailable account. `easyWorker` has
   the same model-aware walk tests. Catalog tests cover both flags independently,
   constraints and their recorded text, missing provider/model/option,
-  unreadable/malformed/stale catalogs and the 15-minute boundary, without a
+  unreadable/malformed/stale catalogs and the 24-hour boundary, without a
   separate status field. RT-1a's `live/catalog_shape.py` validates a saved real
   catalog (L3).
 - **Prework.** Before dispatch, the manager saves a redacted sample of a real
@@ -1742,7 +1742,8 @@ prose: RP-1 is held, and no live check runs in that window.
   (pass `pre`) has no fallback and is never the review of record, and when
   it finds no available target it exits 0 with a skipped result and its
   reason and writes nothing, so the dispatcher goes on to the review of
-  record; helper cells (verifier, text) have no fallback; the unused
+  record; helper cells (verifier, text) had no fallback when this Task landed
+  (MX-5a made helpers walk their quota fallbacks like any cell); the unused
   `search` entry, tolerated until now, leaves the helpers and the
   `roleBlocks` roles (MX-1 is not reopened); remove version-2 config
   support — a version-2 config exits 3 with a migration message (the

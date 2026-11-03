@@ -41,7 +41,7 @@ def load_examples(path, cfg):
         facts = task["riskFacts"]
         require(len(facts) == len(set(facts)) and all(f in cfg["riskFacts"] for f in facts))
         shape(expected, ("lane", "criticality", "scope", "floors"))
-        require(expected["lane"] in ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED"))
+        require(expected["lane"] in ("BACKEND_LOGIC", "UI_FRONTEND", "MIXED", "DOCS"))
         require(expected["criticality"] in ("CORE", "NON_CRITICAL"))
         require(expected["scope"] in ("STANDARD", "COMPLEX"))
         floors = expected["floors"]
@@ -88,7 +88,10 @@ def derive_route(task, classification_data, cfg_risk_facts):
             eff_criticality = "CORE"
 
     starting_stage = 1 if eff_scope == "STANDARD" else 2
-    derived_lane = "backend-logic" if eff_lane in ("BACKEND_LOGIC", "MIXED", "backend-logic") else "ui-frontend"
+    if eff_lane == "DOCS":
+        derived_lane = "docs"
+    else:
+        derived_lane = "backend-logic" if eff_lane in ("BACKEND_LOGIC", "MIXED", "backend-logic") else "ui-frontend"
 
     return {
         "lane": derived_lane,
@@ -140,8 +143,9 @@ def summarize(rows):
 
         counts["derived"] += 1
 
-        # Lane comparison: normalize confident MIXED to backend-logic
-        gold_lane_norm = "backend-logic" if gold["lane"] in ("BACKEND_LOGIC", "MIXED") else "ui-frontend"
+        # Lane comparison: normalize gold MIXED to backend-logic and gold DOCS to docs
+        gold_lane_norm = ("docs" if gold["lane"] == "DOCS" else
+                          "backend-logic" if gold["lane"] in ("BACKEND_LOGIC", "MIXED") else "ui-frontend")
         derived_lane_norm = derived["lane"]
         lane_mismatch = (derived_lane_norm != gold_lane_norm)
         row["laneMismatch"] = lane_mismatch

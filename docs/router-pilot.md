@@ -2,7 +2,7 @@
 
 This is RP-1's runner specification. It supplies observations for Shawn to tune
 the confidence threshold, classification criteria and floors under the CD-8
-matrix. Fourteen authored examples do not certify accuracy; the runner changes
+matrix. Seventeen authored examples do not certify accuracy; the runner changes
 no configuration. Only the Engineering manager runs live L8 after review.
 Offline tests inject HTTP and a synthetic catalog; those passes are offline
 evidence only.
@@ -39,7 +39,7 @@ invocation. Freshness is checked only at invocation: later expiry does not
 stop this classification-only run. The catalog is metadata, not a dispatch
 permission; the runner never captures catalogs or selects executable targets.
 
-The default dataset expects **14 Jev HTTP calls**, one per example, with
+The default dataset expects **17 Jev HTTP calls**, one per example, with
 `decline=True` (`--decline-retry`). It retries nothing, dispatches no child,
 and never calls `route select`.
 
@@ -47,7 +47,7 @@ and never calls `route select`.
 
 `pilot/router-examples.json` is version 2. Exact document keys are `version`
 (integer 2), `label` (exactly `synthetic`) and `examples` (12–32 entries).
-The shipped file has exactly 14 software engineering tasks. Each entry has:
+The shipped file has exactly 17 software engineering tasks. Each entry has:
 
 - `id`: a unique public identifier matching `[a-z][a-z0-9-]{0,63}`.
 - `label`: exactly `synthetic`, declaring fictional task text.
@@ -55,7 +55,9 @@ The shipped file has exactly 14 software engineering tasks. Each entry has:
   `scope`, `riskFacts`, `dependencies`, validated by the shared schema with
   null context and the canonical 16 KiB cap.
 - `expected`: exactly `lane`, `criticality`, `scope`, `floors`.
-  - `lane`: `BACKEND_LOGIC`, `UI_FRONTEND` or `MIXED`.
+  - `lane`: `BACKEND_LOGIC`, `UI_FRONTEND`, `MIXED` or `DOCS`. `DOCS` labels a
+    Task whose deliverable is mainly technical writing; code changed together
+    with its documentation is `BACKEND_LOGIC`.
   - `criticality`: `CORE` or `NON_CRITICAL`.
   - `scope`: `STANDARD` or `COMPLEX`.
   - `floors`: unique configured risk-fact IDs matching `task.riskFacts`.
@@ -64,9 +66,10 @@ The file is capped at 512 KiB. Duplicate keys, unknown fields, wrong types,
 duplicate IDs/facts/floors and unconfigured facts fail before work or HTTP.
 Coverage includes all canonical CD-8 risk facts: `credentials-or-guardrail`,
 `recovery-or-concurrency`, `shared-interface` and `document-change`.
-Both lanes, both criticalities, both scopes, and at least one technical document
-are covered. Gold labels express author expectations independently of current
-floor values.
+All four lane labels, both criticalities, both scopes, and at least one
+technical document are covered: four examples are labeled `DOCS`, and one Task
+that changes code together with its documentation is labeled `BACKEND_LOGIC`.
+Gold labels express author expectations independently of current floor values.
 
 ## Records, report and exits
 
@@ -92,6 +95,11 @@ Missing answers never create local defaults.
 Local derivation follows CD-8 §3:
 - Effective decisions take returned judgments (or accepted answers).
 - Confident `MIXED` maps to `BACKEND_LOGIC` -> `backend-logic`.
+- `DOCS` maps to `docs`. Jev can answer `DOCS` only when
+  `classification.lane.criteria` lists it; without that key the `DOCS` examples
+  count as lane mismatches. The runner derives the lane the decision names. Only
+  `route select` applies the matrix's `docs-to-backend-logic` fallback for a
+  configuration without a `docs` lane, and the runner never calls it.
 - Configured risk floors only raise:
   - `credentials-or-guardrail` and `recovery-or-concurrency` raise scope to
     `COMPLEX` and criticality to `CORE`.
@@ -108,7 +116,7 @@ Summary comparisons evaluate scope and criticality independently:
 - `matchingRoutes`: derived matches gold for that question. Floors correcting
   raw answers do not count as mistakes when the final derived class matches gold.
 - `laneMismatches`: concrete derived lane differs from gold after normalizing
-  confident `MIXED` to `backend-logic`.
+  a gold `MIXED` to `backend-logic` and a gold `DOCS` to `docs`.
 - `defaultedAnswers`: reported by question (`lane`, `criticality`, `scope`)
   with counts and example IDs, distinguishing uncertainty (`default-low-confidence`,
   `default-insufficient-context`) from service errors (`default-jev-failure`).

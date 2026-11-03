@@ -23,11 +23,11 @@ def _matrix_config_dict():
     return data
 
 
-def _with_docs(base):
-    """The example plus the optional worker/docs lane and the optional DOCS lane criterion."""
+def _without_docs(base):
+    """The example without the optional worker/docs lane and the optional DOCS lane criterion."""
     data = copy.deepcopy(base)
-    data["matrix"]["worker"]["docs"] = copy.deepcopy(data["matrix"]["worker"]["backend-logic"])
-    data["classification"]["lane"]["criteria"]["DOCS"] = "The deliverable is mainly technical writing."
+    del data["matrix"]["worker"]["docs"]
+    del data["classification"]["lane"]["criteria"]["DOCS"]
     return data
 
 
@@ -182,7 +182,7 @@ class OfflineConfigValidation(OfflineTestCase):
         cfg_mod = _cfg()
         cfg_data = _matrix_config_dict()
         compact_bytes = json.dumps(cfg_data, separators=(",", ":")).encode("utf-8")
-        spaced_bytes = (json.dumps(cfg_data, indent=4) + "\n").encode("utf-8")
+        spaced_bytes = (json.dumps(cfg_data, indent=2) + "\n").encode("utf-8")
 
         self.config_path.write_bytes(compact_bytes)
         loaded_compact = cfg_mod.load_config(self.config_path)
@@ -380,7 +380,8 @@ class OfflineConfigValidation(OfflineTestCase):
                 if path and path[-1] in ("providerPools", "riskFacts", "options", "quotaObservations"):
                     continue  # These mappings have dynamic keys, not closed field sets.
                 changes = [("extra", "__unexpected__"), ("shape", None)]
-                changes += [("missing", key) for key in obj if not (base.get("version") == 3 and (key == "prePass" or (path and path[0] == "riskFacts" and key in ("scope", "criticality"))))]
+                optional = {(("matrix", "worker"), "docs"), (("classification", "lane", "criteria"), "DOCS")}
+                changes += [("missing", key) for key in obj if not (base.get("version") == 3 and (key == "prePass" or (path and path[0] == "riskFacts" and key in ("scope", "criticality")) or (path, key) in optional))]
                 changes += [("type", key) for key, value in obj.items() if not isinstance(value, (dict, list))]
                 for kind, key in changes:
                     with self.subTest(path=path, kind=kind, key=key):
@@ -585,11 +586,14 @@ class OfflineMatrixConfigValidation(OfflineTestCase):
         cfg.validate_config_data(data)
 
     def test_docs_lane_and_docs_criterion_are_optional(self):
-        cfg, base = _cfg(), _matrix_config_dict()
-        docs = _with_docs(base)
+        cfg, docs = _cfg(), _matrix_config_dict()
+        base = _without_docs(docs)
         loaded, _ = cfg.validate_config_data(docs)
         self.assertEqual(tuple(loaded["matrix"]["worker"]), ("backend-logic", "ui-frontend", "docs"))
         self.assertIn("DOCS", loaded["classification"]["lane"]["criteria"])
+        loaded, _ = cfg.validate_config_data(base)
+        self.assertEqual(tuple(loaded["matrix"]["worker"]), ("backend-logic", "ui-frontend"))
+        self.assertNotIn("DOCS", loaded["classification"]["lane"]["criteria"])
         for label, drop in (("lane", lambda d: d["matrix"]["worker"].pop("docs")),
                             ("criterion", lambda d: d["classification"]["lane"]["criteria"].pop("DOCS"))):
             with self.subTest(absent=label):
@@ -622,7 +626,7 @@ class OfflineMatrixConfigValidation(OfflineTestCase):
                 self.assert_invalid(data, expected, rule)
 
     def test_docs_criterion_is_policy_and_docs_lane_is_not(self):
-        cfg, base = _cfg(), _matrix_config_dict()
+        cfg, base = _cfg(), _without_docs(_matrix_config_dict())
         digest = cfg.compute_policy_digest(base)
         lane_only = copy.deepcopy(base)
         lane_only["matrix"]["worker"]["docs"] = copy.deepcopy(base["matrix"]["worker"]["backend-logic"])

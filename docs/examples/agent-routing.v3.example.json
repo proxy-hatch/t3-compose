@@ -19,6 +19,11 @@
         "1": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "max"}}, "quotaFallback": [{"providerPool": "agy-synth-pool", "model": "gemini-3.8-flash-medium", "options": {}}]},
         "2": {"primary": {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3", "options": {"thinking": "max"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}]},
         "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, "quotaFallback": []}
+      },
+      "docs": {
+        "1": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-terra", "options": {"reasoningEffort": "medium"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "high"}}, {"providerInstanceId": "pi-synth-glm", "model": "openrouter/z-ai/glm-5.3-flash", "options": {"thinking": "low"}}]},
+        "2": {"primary": {"providerInstanceId": "codex-synth-primary", "model": "gpt-6.1-terra", "options": {"reasoningEffort": "xhigh"}}, "quotaFallback": [{"providerInstanceId": "claude-synth-primary", "model": "claude-sonnet-5-5", "options": {"effort": "xhigh"}}]},
+        "3": {"primary": {"providerInstanceId": "claude-synth-primary", "model": "claude-opus-5-5", "options": {"effort": "high"}}, "quotaFallback": []}
       }
     },
     "reviewer": {
@@ -42,13 +47,14 @@
   "roleBlocks": [],
   "quota": {"refusalRetryMinutes": 30},
   "classification": {
-    "ruleVersion": "2026-11-01-v3-example",
+    "ruleVersion": "2026-11-02-v3-example",
     "lane": {
-      "instructions": "Classify which kind of code the work changes. Judge what the work changes, not what its text mentions.",
+      "instructions": "Classify which kind of change the work makes, from its intent, acceptance criteria, interfaces, scope and risk facts. Judge what the work changes, not what its text mentions.",
       "criteria": {
-        "BACKEND_LOGIC": "Logic, data, APIs, tooling, tests or technical documentation.",
-        "UI_FRONTEND": "User-interface code, styling or front-end assets.",
-        "MIXED": "Both kinds of change, or unclear; routed as backend-logic."
+        "BACKEND_LOGIC": "Logic, data, APIs, tooling, build or configuration, or tests of a software project, including documentation changed together with that code.",
+        "UI_FRONTEND": "User-interface code, styling, layout or front-end assets.",
+        "DOCS": "The deliverable is mainly technical writing (docs, specs, guides, templates, messages), with little or no code.",
+        "MIXED": "Both kinds of change in one Task, or unclear which; routed as backend-logic."
       }
     },
     "criticality": {
