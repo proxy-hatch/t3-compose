@@ -245,7 +245,19 @@ class OfflinePrivacy(OfflineTestCase):
         args.local_dir = self.local
         for index, bad in corruptions:
             sequence = iter(replies[:index] + [bad] + replies[index + 1:])
-            runner = FakeRunner({"git": lambda argv, **kw: subprocess.CompletedProcess(argv, 0, next(sequence), b""),
+            def reply(argv, **kwargs):
+                if "--show-object-format" in argv:
+                    return subprocess.CompletedProcess(argv, 0, b"sha1\n", b"")
+                if kwargs.get("input") in (a + b"\n", b + b"\n"):
+                    return subprocess.CompletedProcess(argv, 0, kwargs["input"][:-1] + b" commit\n", b"")
+                # The shared core rechecks complete history after CLI selection.
+                if "--is-shallow-repository" in argv and replied_shallow[0]:
+                    return subprocess.CompletedProcess(argv, 0, b"false\n", b"")
+                if "--is-shallow-repository" in argv:
+                    replied_shallow[0] = True
+                return subprocess.CompletedProcess(argv, 0, next(sequence), b"")
+            replied_shallow = [False]
+            runner = FakeRunner({"git": reply,
                                  "grep": lambda argv, **kw: subprocess.CompletedProcess(argv, 1, b"", b"")})
             with self.subTest(stage=index), patch.object(process, "run", runner):
                 with self.assertRaises(cli.CommandError):
@@ -281,3 +293,169 @@ class OfflinePrivacy(OfflineTestCase):
         self.assertEqual(self.invoke("--branch", "publication")[0], 2)
         (self.repo / ".git/shallow").write_text(head + "\n")
         self.assertEqual(self.invoke("--branch", "publication")[0], 2)
+
+    # Removing exact-set validation or recomputing BASE..HEAD breaks these
+    # direct API assertions; fixtures contain only synthetic identifiers.
+    def scan(self, commits, **kwargs):
+        from t3compose import privacy
+        options = dict(base=self.base, head=self.git("rev-parse", "HEAD"), branch="main")
+        options.update(kwargs)
+        self.assertTrue(callable(getattr(privacy, "scan_commits", None)),
+                        "missing shared exact-set scanner")
+        return privacy.scan_commits(self.repo, self.local, commits, **options)
+
+    def test_api_exact_subset_does_not_recompute_cli_history(self):
+        first = self.commit("syn-secret", {"file": "syn-other"})
+        clean = self.commit("clean", {"file": "public"})
+        self.assertEqual(self.scan([clean]),
+                         {"ok": True, "commits": 1, "findings": [], "action": None})
+        result = self.scan([first, clean])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["commits"], 2)
+        self.assertEqual([f["field"] for f in result["findings"]], ["message", "file"])
+        self.assertEqual(self.data(self.invoke(entry=True), 1)["commits"], 2)
+        # Selection need not be reachable from head: later push adapters have
+        # their own complete selection responsibility.
+        self.assertEqual(self.scan([first], head=self.base)["commits"], 1)
+
+    def test_api_preserves_commit_and_text_order_and_redacts_metadata(self):
+        first = self.commit("syn-secret")
+        second = self.commit("syn-other")
+        report = self.scan((first, second), branch="syn-secret-branch",
+                           texts=(("title", "syn-other"), ("syn-secret", "syn-secret")))
+        self.assertEqual([f["field"] for f in report["findings"]],
+                         ["branch", "text", "label", "text", "message", "message"])
+        self.assertEqual([f["commit"] for f in report["findings"][-2:]], [first, second])
+        self.assertEqual(report["findings"][2]["label"], "[redacted]")
+        reverse = self.scan([second, first])
+        self.assertEqual([f["commit"] for f in reverse["findings"]], [second, first])
+        self.assertNotIn("syn-secret", json.dumps(report))
+        self.assertNotIn("syn-other", json.dumps(report))
+
+    def test_api_rejects_invalid_selections_and_endpoints_safely(self):
+        head = self.commit("public")
+        blob = self.git("hash-object", "-w", "--stdin", input=b"public")
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        self.git("-c", "tag.gpgSign=false", "tag", "-a", "annotated", "-m", "public")
+        tag = self.git("rev-parse", "annotated")
+        invalid_ids = (None, 3, b"a" * 40, "HEAD", head[:12], head.upper(),
+                       "f" * 40, blob, tree, tag, "syn-secret\n", "a" * 64)
+        for value in invalid_ids:
+            with self.subTest(value=value):
+                with self.assertRaises(cli.CommandError) as raised:
+                    self.scan([value])
+                self.assertNotIn("syn-secret", str(raised.exception))
+                for endpoint in ("base", "head"):
+                    with self.assertRaises(cli.CommandError):
+                        self.scan([], **{endpoint: value})
+        for selection in (None, head, head.encode(), {head}, {head: True},
+                          iter([head]), [head, head]):
+            with self.subTest(selection=type(selection).__name__):
+                with self.assertRaises(cli.CommandError):
+                    self.scan(selection)
+
+    def test_api_rejects_invalid_decoded_text_and_pair_shapes(self):
+        invalid = (None, b"text", 1, "nul\0", "\ud800", "é" * 524289)
+        for value in invalid:
+            with self.subTest(kind=type(value).__name__):
+                with self.assertRaises(cli.CommandError):
+                    self.scan([], branch=value)
+                with self.assertRaises(cli.CommandError):
+                    self.scan([], texts=[(value, "public")])
+                with self.assertRaises(cli.CommandError):
+                    self.scan([], texts=[("title", value)])
+        for texts in (None, "title", {"title": "public"}, iter([]),
+                      ["ab"], [("title",)], [("title", "public", "extra")], [("", "public")]):
+            with self.subTest(texts=type(texts).__name__):
+                with self.assertRaises(cli.CommandError):
+                    self.scan([], texts=texts)
+        with self.assertRaises(cli.CommandError):
+            self.scan([], branch="")
+        self.assertTrue(self.scan([], texts=[("title", "")])["ok"])
+
+    def test_api_list_is_fresh_even_empty_and_captured_once(self):
+        from t3compose import identifier_list
+        self.assertTrue(self.scan([])["ok"])
+        original = identifier_list.load_identifiers
+        def captured(local):
+            patterns = original(local)
+            self.list_file.write_text("different-pattern\n")
+            return patterns
+        with patch.object(identifier_list, "load_identifiers", side_effect=captured) as load:
+            report = self.scan([], branch="syn-secret", texts=[("title", "syn-other")])
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual([f["field"] for f in report["findings"]], ["branch", "text"])
+        self.assertTrue(self.scan([], branch="syn-secret")["ok"])
+        for raw in (b"", b"[\n", b"\xff", b"nul\0", b"a" * 65537, b"x\n" * 513):
+            self.list_file.write_bytes(raw)
+            with self.assertRaises(cli.CommandError):
+                self.scan([])
+        self.list_file.unlink()
+        with self.assertRaises(cli.CommandError):
+            self.scan([])
+
+    def test_api_and_cli_explicitly_refuse_sha256_repository(self):
+        self.repo = self.temp / "sha256-repo"
+        self.repo.mkdir()
+        self.git("init", "-q", "--object-format=sha256", "-b", "main")
+        self.git("config", "user.name", "Synthetic Tester")
+        self.git("config", "user.email", "synthetic@example.invalid")
+        self.base = self.commit("base")
+        with self.assertRaisesRegex(cli.CommandError, "SHA-1"):
+            self.scan([])
+        result = self.invoke(revision="HEAD..HEAD", entry=True)
+        self.assertEqual(result[0], 2)
+        self.assertEqual(result[1], "")
+        self.assertIn("SHA-1", result[2])
+
+    def test_api_refuses_inherited_binary_and_oversize_even_after_base(self):
+        for content in (b"jpeg\0\xff", b"\xff", b"x" * 1048577):
+            self.base = self.commit("inherited", {"asset": content})
+            head = self.commit("public")
+            with self.subTest(size=len(content)):
+                with self.assertRaises(cli.CommandError):
+                    self.scan([head])
+                result = self.invoke()
+                self.assertEqual(result[0], 2)
+                self.assertEqual(result[1], "")
+
+    def test_api_later_failure_never_returns_partial_findings(self):
+        first = self.commit("syn-secret")
+        bad = self.commit("public", {"asset": b"\0"})
+        (self.repo / "asset").unlink()
+        clean = self.commit("removed")
+        with self.assertRaises(cli.CommandError):
+            self.scan([first, bad, clean])
+        result = self.invoke()
+        self.assertEqual(result[0], 2)
+        self.assertEqual(result[1], "")
+        self.assertNotIn("syn-secret", result[2])
+
+    def test_api_merge_side_unsupported_tree_is_not_hidden_by_clean_head(self):
+        self.git("checkout", "-q", "-b", "side")
+        side = self.commit("side", {"asset": b"\0"})
+        self.git("checkout", "-q", "main")
+        self.commit("main")
+        self.git("-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "-m", "merge", "side")
+        (self.repo / "asset").unlink()
+        clean = self.commit("removed")
+        self.assertTrue(self.scan([clean])["ok"])
+        with self.assertRaises(cli.CommandError):
+            self.scan([side, clean])
+        result = self.invoke()
+        self.assertEqual(result[0], 2)
+        self.assertEqual(result[1], "")
+
+    def test_cli_uses_shared_core_with_resolved_endpoints_and_complete_set(self):
+        from t3compose import privacy
+        first = self.commit("first")
+        head = self.commit("second")
+        self.assertTrue(callable(getattr(privacy, "scan_commits", None)),
+                        "missing shared exact-set scanner")
+        with patch.object(privacy, "scan_commits", wraps=privacy.scan_commits) as scan:
+            self.data(self.invoke(), 0)
+        args, kwargs = scan.call_args
+        self.assertEqual(list(args[2]), [head, first])
+        self.assertEqual(kwargs["base"], self.base)
+        self.assertEqual(kwargs["head"], head)
+        self.assertEqual(kwargs["branch"], "main")

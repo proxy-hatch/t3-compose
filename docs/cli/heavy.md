@@ -34,10 +34,22 @@ into diagnostics or metadata. Labels and log paths are deliberate output
 fields, so callers must choose public-safe labels before publishing evidence.
 
 Local state and the log must lie outside the checked worktree and its Git
-storage. State and log creation must not dirty the checked tree, even when
+storage. The log must also lie outside the selected `--local-dir`. State and log creation must not dirty the checked tree, even when
 such paths would otherwise be ignored. The same validation runs again after
 lock acquisition, including after a blocking wait. Invalid preflight starts
 no check. A queued refusal creates no log. No command is run through a shell.
+
+For example, first create an external sibling scratch directory, then use a
+fresh absolute log filename there while retaining the shared state directory:
+
+```text
+t3c --local-dir /scratch/shared-state heavy run --repo-path /work/check-tree --commit SHA --label SUITE --log /scratch/check-logs/suite-fresh.log -- CMD
+```
+
+`/scratch/check-logs` must already exist and `suite-fresh.log` must not exist.
+Choose a fresh log for each run. Keep the same `--local-dir` for all cooperating
+callers; changing it per check would fragment the shared lock namespace. These
+log restrictions do not change the shared lock's location or lifetime.
 
 ## Results
 
