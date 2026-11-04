@@ -1,10 +1,15 @@
 """Read-only publication screening of every selected commit and supplied text."""
 import os
+import hashlib
+import json
+from datetime import date, datetime, timezone
+from pathlib import Path
+from types import MappingProxyType
 import re
 import stat
 from collections.abc import Sequence
 
-from . import cli, identifier_list, process
+from . import cli, identifier_list, jsonio, process, records
 
 MAX_BYTES = identifier_list.MAX_TEXT_BYTES
 TIMEOUT_SECONDS = 30
@@ -231,6 +236,236 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
     data = {"ok": not findings, "commits": len(commits), "findings": findings,
             "action": "publication blocked; Corrections or Shawn must resolve matches" if findings else None}
     return data
+
+
+# Internal provenance foundation. No scanner or publisher consumes this yet.
+POLICY_VERSION = 'artifact-provenance/v1'
+_POLICY_DESCRIPTOR = dict(policyVersion=POLICY_VERSION, schemaVersion=1,
+                          objectFormat='sha1', authority='owner',
+                          verification='git-object-inventory', contextVersion=1)
+
+
+def _digest(value):
+    return 'sha256:' + hashlib.sha256(value).hexdigest()
+
+
+def _canonical_digest(value):
+    return _digest(jsonio.canonical_json(value))
+
+
+def _policy_identifiers(patterns):
+    return dict(policyVersion=POLICY_VERSION, policyDigest=_canonical_digest(_POLICY_DESCRIPTOR),
+                listDigest=_canonical_digest(list(patterns)), patternCount=len(patterns))
+
+
+def prepare_policy_identifiers(local_dir):
+    """Freshly validate the private list; return counts/digests, never patterns."""
+    return _policy_identifiers(identifier_list.load_identifiers(local_dir))
+
+
+def _require_policy(condition):
+    if not condition:
+        _fail('invalid artifact provenance input')
+
+
+def _policy_text(value):
+    _require_policy(isinstance(value, str) and bool(value.strip()))
+    _require_policy('\0' not in value)
+    value.encode('utf-8')
+    return value
+
+
+def _policy_path(value):
+    _policy_text(value)
+    _require_policy(not any(c in value for c in '\\*?[]') and
+                    all(p not in {'', '.', '..'} for p in value.split('/')))
+    return value
+
+
+def _policy_segment(value):
+    _policy_text(value)
+    _require_policy(len(value) <= 128 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value))
+
+
+def _policy_digest(value):
+    _require_policy(isinstance(value, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', value))
+
+
+def _closed(value, keys, *, version=True):
+    _require_policy(type(value) is dict and set(value) == set(keys.split()))
+    if version:
+        _require_policy(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
+
+
+def _json_tree(value, depth=0):
+    _require_policy(depth <= 32)
+    if isinstance(value, str):
+        _require_policy('\0' not in value)
+        value.encode('utf-8')
+    elif isinstance(value, (list, dict)):
+        for item in (value.items() if isinstance(value, dict) else value):
+            if isinstance(value, dict):
+                _json_tree(item[0], depth + 1)
+                _json_tree(item[1], depth + 1)
+            else:
+                _json_tree(item, depth + 1)
+
+
+def _policy_snapshot(path):
+    # Pin the descriptor before testing type. No FIFO open/read can block.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        _require_policy(stat.S_ISREG(os.fstat(stream.fileno()).st_mode))
+        raw = stream.read(MAX_BYTES + 1)
+    _require_policy(len(raw) <= MAX_BYTES)
+    value = json.loads(raw.decode('utf-8'), object_pairs_hook=jsonio._unique_object,
+                       parse_constant=jsonio._invalid_constant, parse_float=jsonio._parse_float,
+                       parse_int=jsonio._parse_int)
+    _json_tree(value)
+    return value, _digest(raw)
+
+
+def _freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def _authority(local_dir, repository, receipt, source, context):
+    loaded = records.load_work(local_dir, repository, receipt['authorityWorkId'])
+    events = loaded['events']
+    seq = receipt['approvalSeq']
+    _require_policy(type(seq) is int and 1 <= seq <= len(events))
+    expected = 'privacy-artifact/v1 approve ' + receipt['receiptId'] + ' ' + context
+    approval = events[seq - 1]
+    _require_policy(approval['kind'] == 'decision' and approval['data'] == dict(
+        question=expected, answer=source['quote'], date=source['date'], decidedBy='owner'))
+    for event in events:
+        if event['kind'] != 'decision':
+            continue
+        data = event['data']
+        question = data['question']
+        if not question.startswith('privacy-artifact'):
+            continue
+        match = re.fullmatch(r'privacy-artifact/v1 (approve|revoke) '
+                             r'([A-Za-z0-9][A-Za-z0-9._-]{0,127}) (sha256:[0-9a-f]{64})', question)
+        _require_policy(match is not None and data['decidedBy'] == 'owner' and
+                        isinstance(data['answer'], str) and bool(data['answer'].strip()) and
+                        isinstance(data['date'], str))
+        action, identity, bound = match.groups()
+        if identity == receipt['receiptId']:
+            # A revoke is terminal even when it names an earlier full context.
+            _require_policy(action != 'revoke' and bound == context)
+    return dict(authorityEventCount=len(events), authorityCheckpoint=records.checkpoint(
+        loaded['work'], events), authorityWorkDigest=_canonical_digest(loaded['work']),
+        authorityEventsDigest=_canonical_digest(events))
+
+
+def _load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
+    started = datetime.now(timezone.utc).isoformat()
+    # The trusted caller supplies the same validated snapshot used by its matcher.
+    _require_policy(isinstance(patterns, (list, tuple)))
+    patterns = tuple(patterns)
+    identifier_list.match_identifiers(patterns, '')
+    identifiers = _policy_identifiers(patterns)
+    policy_path = Path(policy_path)
+    policy, policy_raw_digest = _policy_snapshot(policy_path)
+    _closed(policy, 'schemaVersion policyVersion manifestFile manifestDigest receiptFile receiptDigest authorityWorkId')
+    _require_policy(policy['policyVersion'] == POLICY_VERSION)
+    _policy_segment(policy['authorityWorkId'])
+
+    def referenced(document, kind):
+        name, digest = document[kind + 'File'], document[kind + 'Digest']
+        _policy_path(name)
+        _policy_digest(digest)
+        value, observed = _policy_snapshot(policy_path.parent / name)
+        _require_policy(observed == digest)
+        return value
+
+    manifest, receipt = referenced(policy, 'manifest'), referenced(policy, 'receipt')
+    _closed(manifest, 'schemaVersion repository objectFormat baseline entries')
+    _closed(receipt, 'schemaVersion receiptId repository baseline manifestDigest policyVersion policyDigest '
+                     'listDigest authorityWorkId approvalSeq sourceFile sourceDigest verificationFile verificationDigest')
+    _policy_segment(receipt['receiptId'])
+    _require_policy(receipt['authorityWorkId'] == policy['authorityWorkId'])
+    for key in ('policyVersion', 'policyDigest', 'listDigest'):
+        _require_policy(receipt[key] == identifiers[key])
+    _require_policy(receipt['manifestDigest'] == policy['manifestDigest'])
+    _repository(repo)
+    # Normalize a URL obtained through the hardened Git seam, never a directory.
+    origin = _text(_git(repo, 'config', '--get', 'remote.origin.url'))
+    _require_policy(origin.endswith('\n') and origin.count('\n') == 1)
+    origin = origin[:-1]
+    _require_policy('://' in origin or re.fullmatch(r'[^/@:]+@[^/:]+:.+', origin))
+    repository = records.normalize_repository(origin)
+    _require_policy(manifest['repository'] == repository == receipt['repository'] and
+                    manifest['objectFormat'] == 'sha1')
+    baseline = _commit_id(manifest['baseline'])
+    base = _commit_id(base)
+    _require_policy(receipt['baseline'] == baseline)
+    for sha in dict.fromkeys((baseline, base)):
+        _require_policy(_git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
+                            input=(sha+'\n').encode('ascii')) == (sha+' commit\n').encode('ascii'))
+    _require_policy(_git(repo, 'merge-base', baseline, base) == (baseline+'\n').encode('ascii'))
+    entries = manifest['entries']
+    _require_policy(type(entries) is list and 1 <= len(entries) <= 4096)
+    paths = set()
+    for entry in entries:
+        _closed(entry, 'path mode blobOid size', version=False)
+        path = _policy_path(entry['path'])
+        _require_policy(path not in paths and entry['mode'] == '100644')
+        paths.add(path)
+        _commit_id(entry['blobOid'])
+        _require_policy(type(entry['size']) is int and 0 <= entry['size'] <= 2**63 - 1)
+    keys = ('receiptId', 'repository', 'baseline', 'manifestDigest', 'policyVersion',
+            'policyDigest', 'listDigest', 'authorityWorkId')
+    context = dict(schemaVersion=1, **{k: receipt[k] for k in keys})
+    inventory_context = _canonical_digest(context)
+    source, verification = referenced(receipt, 'source'), referenced(receipt, 'verification')
+    _closed(source, 'schemaVersion receiptId contextDigest sourceRef date quote')
+    _closed(verification, 'schemaVersion receiptId contextDigest verifier sourceRef method '
+                          'baselineEvidence inventoryDigest result')
+    for evidence in (source, verification):
+        _require_policy(evidence['receiptId'] == receipt['receiptId'] and
+                        evidence['contextDigest'] == inventory_context)
+        _policy_text(evidence['sourceRef'])
+    _policy_text(source['quote'])
+    _policy_text(source['date'])
+    _require_policy(re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', source['date']) and
+                    date.fromisoformat(source['date']).isoformat() == source['date'])
+    _policy_text(verification['verifier'])
+    _require_policy(verification['method'] == 'git-object-inventory' and
+                    verification['result'] == 'verified' and
+                    verification['inventoryDigest'] == policy['manifestDigest'])
+    evidence = verification['baselineEvidence']
+    _closed(evidence, 'repository commit objectFormat entriesDigest', version=False)
+    _require_policy(evidence == dict(repository=repository, commit=baseline, objectFormat='sha1',
+                                    entriesDigest=_canonical_digest(entries)))
+    context.update(sourceDigest=receipt['sourceDigest'], verificationDigest=receipt['verificationDigest'])
+    full_context = _canonical_digest(context)
+    authority = _authority(local_dir, repository, receipt, source, full_context)
+    return _freeze(dict(manifest=manifest, receiptId=receipt['receiptId'], base=base,
+        repository=repository, authorityWorkId=receipt['authorityWorkId'], approvalSeq=receipt['approvalSeq'],
+        inventoryContextDigest=inventory_context, contextDigest=full_context,
+        policyFileDigest=policy_raw_digest, manifestDigest=policy['manifestDigest'],
+        receiptDigest=policy['receiptDigest'], sourceDigest=receipt['sourceDigest'],
+        verificationDigest=receipt['verificationDigest'], **identifiers, **authority,
+        observedStart=started, observedEnd=datetime.now(timezone.utc).isoformat()))
+
+
+def load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
+    """Validate private cooperative provenance; return immutable internal inputs.
+
+    Never grants eligibility, completed coverage or publication permission.
+    patterns must be the trusted caller's captured validated matcher sequence.
+    Current authority is observed freshly, without an atomic revocation claim.
+    """
+    try:
+        return _load_artifact_policy(repo, local_dir, policy_path, base=base, patterns=patterns)
+    except (cli.CommandError, OSError, ValueError, TypeError, RecursionError, OverflowError):
+        _fail('invalid artifact provenance input')
 
 
 def register(registry):

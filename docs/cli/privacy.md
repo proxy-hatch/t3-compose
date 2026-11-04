@@ -155,3 +155,123 @@ for `--text-file` and passes their decoded content to the core. Labels and
 contents never enter process argv. Findings retain supplied commit/text order
 and the existing tree walk order, redaction and `.lock` exclusion. Every selected
 whole tree is screened; inherited binary or oversized blobs still refuse.
+
+## Internal artifact provenance foundation
+
+This foundation exposes no CLI flag and changes no screening behavior. An opaque
+inventory cannot exempt content through `check`, `scan_commits` or the publisher.
+Actual owner approval of any real inventory remains separate from implementing
+this capability. The following APIs return internal inputs, never a completed
+scan, eligibility, `policySatisfied`, or publication permission.
+
+```python
+prepare_policy_identifiers(local_dir)
+load_artifact_policy(repo, local_dir, policy_path, *, base, patterns)
+```
+
+Preparation freshly loads and validates the identifier list and returns exactly
+`policyVersion`, `policyDigest`, `listDigest`, `patternCount`. It returns no
+patterns. `listDigest` is SHA-256 of canonical JSON of the validated pattern
+array, preserving order, duplicates and empty rows with the existing LF rules.
+The loader's trusted caller supplies the **same captured validated list/tuple**
+used by its matcher. The loader copies it to a tuple, validates its syntax, and
+derives its digest without reloading another list. A later scanner integration
+must load freshly once per operation and use that snapshot throughout.
+
+`repo` is a local repository path; `local_dir` selects current records state.
+`base` is an immutable full lowercase SHA-1 commit ID. `policy_path` may be an
+absolute or relative local path. All referenced filenames below resolve relative
+to its directory, independently of cwd; absolute references are refused. Paths
+are exact, nonblank slash-separated names: no empty, dot or dotdot segments,
+backslashes, `*`, `?`, `[` or `]`. No wildcard or prefix interpretation occurs.
+Policy snapshots refuse final symlinks; parent directories are trusted local
+configuration. There is no network lookup.
+
+Each policy, manifest, receipt, source and verification file is opened once with
+`O_RDONLY|O_NONBLOCK|O_NOFOLLOW`, checked as regular by `fstat` on that descriptor,
+and read with a 1 MiB plus one limit. Digests hash the same accepted raw bytes,
+including whitespace. FIFOs, devices, directories and oversized inputs refuse.
+JSON is UTF-8, duplicate-key and nonfinite-number rejecting, with maximum nesting
+32. NUL, surrogates, missing/unknown keys and wrong scalar types refuse. Every
+`schemaVersion` is integer 1, never boolean. Errors carry no input values or
+paths. These are private internal inputs and metadata, unsuitable for stdout or
+public evidence without the usual privacy check.
+
+All digest strings use `sha256:` plus 64 lowercase hex digits. Git IDs use 40
+lowercase hex digits; Git SHA-1 identity and document SHA-256 have different
+purposes. `policyVersion` is `artifact-provenance/v1`. `policyDigest` hashes the
+canonical descriptor below. It identifies the versioned contract, not code
+authenticity. Canonical JSON uses sorted keys, compact separators, UTF-8 without
+ASCII escaping, and no nonfinite numbers, as in `jsonio.canonical_json`.
+
+```json
+{"authority":"owner","contextVersion":1,"objectFormat":"sha1","policyVersion":"artifact-provenance/v1","schemaVersion":1,"verification":"git-object-inventory"}
+```
+
+All schemas below are closed, with exactly the listed keys:
+
+| Document | Keys |
+| --- | --- |
+| Policy | schemaVersion, policyVersion, manifestFile, manifestDigest, receiptFile, receiptDigest, authorityWorkId |
+| Manifest | schemaVersion, repository, objectFormat, baseline, entries |
+| Manifest entry | path, mode, blobOid, size |
+| Receipt | schemaVersion, receiptId, repository, baseline, manifestDigest, policyVersion, policyDigest, listDigest, authorityWorkId, approvalSeq, sourceFile, sourceDigest, verificationFile, verificationDigest |
+| Source | schemaVersion, receiptId, contextDigest, sourceRef, date, quote |
+| Verification | schemaVersion, receiptId, contextDigest, verifier, sourceRef, method, baselineEvidence, inventoryDigest, result |
+| Verification baselineEvidence | repository, commit, objectFormat, entriesDigest |
+
+Manifest entries have no schemaVersion field. There are 1–4096 entries with
+unique exact paths, mode string `100644`, lowercase SHA-1 `blobOid`, and integer
+`size` from 0 through 2^63−1 (boolean refused). Executable, symlink and gitlink
+modes are unsupported. `objectFormat` is exactly `sha1`. Repository identities
+must equal the canonical local origin identity in manifest, receipt and authority
+work. Origin is read through hardened `privacy._git`, then its returned URL is
+normalized; no ambient directory-based Git lookup runs. HTTPS and SSH origin
+URLs are supported. The repository must be complete and SHA-1. Baseline and BASE
+must exist as exact commit objects, and baseline must be an ancestor of BASE.
+This foundation does **not** validate entry tuples against either tree.
+
+`receiptId` and `authorityWorkId` are 1–128 ASCII characters matching
+`[A-Za-z0-9][A-Za-z0-9._-]*`. `approvalSeq` is a positive integer event sequence.
+The receipt joins the policy's authority stream and manifest digest and the
+current policy/list identifiers. Source `quote` is the exact actual owner answer;
+`date` is its real Gregorian `YYYY-MM-DD` date, not a reconstruction date.
+`sourceRef` is a concrete nonblank communication locator. Verification `verifier`
+and `sourceRef` are concrete nonblank independent-observation attestations;
+`method` is exactly `git-object-inventory`, `result` exactly `verified`.
+`inventoryDigest` equals the raw manifest digest. Its baselineEvidence must equal
+`{repository: manifest.repository, commit: manifest.baseline, objectFormat: "sha1",
+entriesDigest: SHA256(canonical_json(manifest.entries))}`. These fields bind the
+independently supplied evidence; actual Git entry checks remain deferred.
+
+Two context digests avoid cycles. The inventory context is canonical JSON of
+`schemaVersion: 1` plus receipt fields `receiptId`, `repository`, `baseline`,
+`manifestDigest`, `policyVersion`, `policyDigest`, `listDigest`, `authorityWorkId`.
+Source and verification both bind this digest and receiptId. The full context
+adds `sourceDigest` and `verificationDigest` to that same context object. Policy
+pins the receipt's raw digest separately. The authority question binds both
+receipt identity and this full context; the record recipe is in
+[records](../records.md#artifact-provenance-source-record-recipe).
+
+The returned deeply immutable mapping contains `manifest`, `receiptId`, `base`,
+`repository`, `authorityWorkId`, `approvalSeq`, `inventoryContextDigest`,
+`contextDigest`, `policyFileDigest`, `manifestDigest`, `receiptDigest`,
+`sourceDigest`, `verificationDigest`, the four preparation fields,
+`authorityEventCount`, `authorityCheckpoint`, `authorityWorkDigest`,
+`authorityEventsDigest`, `observedStart`, and `observedEnd`. Manifest entries are
+tuples of immutable mappings. It does not return source quotes or raw records.
+The checkpoint binds the exact validated work and observed event prefix; the
+additional work/events digests hash their canonical parsed snapshots, not raw
+record-file formatting. UTC start/end timestamps bracket the observation.
+
+Authority is freshly loaded from the selected current records stream on every
+call, never from a detached receipt or a caller-supplied prefix. Revocation is
+terminal for receipt identity across contexts. Concurrent append after event
+enumeration is possible: this is an observed prefix, not atomic nonrevocation.
+Future evaluation/publication gates must re-observe current state. Owner-source
+provenance and verifier independence are cooperative attestations, not identity
+authentication. Coordinators are responsible for faithfully recording them.
+
+Deferred work includes actual baseline/BASE/every-parent tuples, opaque-only
+eligibility, raw nonpass coverage, public-text disposition evaluation and
+publisher integration. None is waived or satisfied by this foundation.
