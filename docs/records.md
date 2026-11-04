@@ -507,9 +507,11 @@ The returned inputs do not complete a scan or grant publication permission.
 ### Normalizing an existing owner decision
 
 An owner decision can already exist elsewhere: in another record stream, an
-earlier work or a communication. The authority stream does not copy or rewrite
-it. A coordinator brings it in by **appending** one current `decision` event with
-the exact approval grammar above:
+earlier work or a communication. Nothing copies or rewrites it. A coordinator
+brings it in by **appending** one current `decision` event, with the exact
+approval grammar above, to the one authority stream the receipt names
+(`authorityWorkId`). A second stream would hide a revocation recorded in the
+first, which is why decisions are never copied into a replacement stream:
 
 - `question`: `privacy-artifact/v1 approve <receiptId> <fullContextDigest>`;
 - `answer`: the exact quote of the original authority, unchanged;
@@ -540,10 +542,9 @@ missing entry, and that they match the Git objects at the baseline. Both digests
 are bound: the preparation artifact's SHA-256 is recorded with its locator in the
 verification's `sourceRef`, and the helper manifest's raw digest is its
 `inventoryDigest`, which the receipt, the full context and the approval event pin.
-The derivation is
-mechanical: it neither expands nor replaces what the owner approved. An entry the
-owner did not approve cannot be added; a changed inventory needs a new receiptId
-and a new decision.
+The derivation is mechanical: it neither expands nor replaces what the owner
+approved. An entry the owner did not approve cannot be added; a changed inventory
+needs a new receiptId and a new decision.
 
 ### Work epochs and required checks
 

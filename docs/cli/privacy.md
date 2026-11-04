@@ -502,7 +502,7 @@ the same summary.
 | rawStatus | `no-text-findings`, `findings` (takes precedence) or `policy-evaluation-required` |
 | rawExit | 0 or 1: what `privacy check` with the same policy exits for this selection |
 | commits | selected commit count |
-| coverage | counts only: `screened` values, supplied `texts`, `textFindings` (one per matching field, all unresolved), `approvedUnscanned` occurrences (never screened) and `excluded` `.lock` entries |
+| coverage | counts only: `screened` values (branch, labels, texts, messages, paths and supported file bodies), supplied `texts`, `textFindings` (one per matching field, all unresolved), `approvedUnscanned` occurrences (never screened) and `excluded` `.lock` entries |
 | action | `null` when satisfied, else `policy unsatisfied; Corrections or Shawn must resolve text matches` |
 
 The summary has no `ok` and makes no claim that all content was screened. It never
