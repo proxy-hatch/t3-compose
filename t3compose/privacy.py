@@ -632,8 +632,9 @@ def _literal_environment():
 def _literal_grammar(encoded):
     """Recognize a finite nonnullable subset, never implement an ERE matcher.
 
-    Exclude all potential overlap regardless of anchors: grep -o cannot reveal
-    every overlapping alternative. Refusal may be stricter than actual matches.
+    The caller passes only rows the shared matcher reports as matching. Exclude
+    all potential overlap regardless of anchors: grep -o cannot reveal every
+    overlapping alternative. Refusal may be stricter than actual matches.
     """
     rows, literals = [], []
     for pattern in encoded:
@@ -696,6 +697,7 @@ def _literal_proofs(repo, patterns, text, *, public_commit):
 
     Invalid arguments/snapshot raise CommandError. Unsupported grammar, missing
     witnesses, command/read failures or changed locale return a fixed refusal.
+    Only rows the shared matcher reports as matching are held to the grammar.
     Operational refusal discards all partial occurrences. No list is reloaded.
     """
     import tempfile
@@ -736,21 +738,36 @@ def _literal_proofs(repo, patterns, text, *, public_commit):
         result.update(complete=False, occurrences=[], reason=reason)
         return result
 
-    grammar = _literal_grammar(encoded)
-    if grammar is None:
-        return refuse('unsupported-grammar')
     if 'GREP_OPTIONS' in locale:
         return refuse('unsupported-environment')
+
+    def covered():
+        # The unchanged shared matcher on the full captured list. Its answer is
+        # usable only as sorted unique exact integers naming rows of that list.
+        rows = identifier_list.match_identifiers(patterns, text)
+        if (type(rows) is list and all(type(row) is int and 1 <= row <= len(patterns) for row in rows)
+                and rows == sorted(set(rows))):
+            return rows
+        return None
+
     env = dict(os.environ)
     fixed_env = dict(env, LC_ALL='C')
     for key in ('GREP_OPTIONS', 'GREP_COLOR', 'GREP_COLORS'):
         fixed_env.pop(key, None)
     occurrences, values = [], []
     try:
+        # A row that does not match has no occurrence and needs no grammar proof.
+        matched = covered()
+        if matched is None:
+            return refuse('unaccounted-match')
+        chosen = [encoded[row - 1] for row in matched]
+        grammar = _literal_grammar(chosen)
+        if grammar is None:
+            return refuse('unsupported-grammar')
         with tempfile.TemporaryDirectory(dir='/tmp', prefix='t3c-literal-') as scratch:
             directory = Path(scratch)
             os.chmod(directory, 0o700)
-            for row, (pattern, branches) in enumerate(zip(encoded, grammar), 1):
+            for row, pattern, branches in zip(matched, chosen, grammar):
                 code, raw = _literal_grep(directory, pattern, data, env)
                 previous_end = -1
                 remainder = bytearray(data)
@@ -782,9 +799,9 @@ def _literal_proofs(repo, patterns, text, *, public_commit):
                 residual_code, _ = _literal_grep(directory, pattern, bytes(remainder), env)
                 if residual_code == 0:
                     return refuse('unaccounted-match')
-            # A separate raw matcher verifies row coverage under inherited semantics.
-            expected = identifier_list.match_identifiers(patterns, text)
-            if expected != sorted({o['patternLine'] for o in occurrences}):
+            # A second raw run, after extraction, must agree with the first and
+            # with the rows extracted, under inherited semantics.
+            if covered() != matched or matched != sorted({o['patternLine'] for o in occurrences}):
                 return refuse('unaccounted-match')
             intervals = sorted((o['byteOffset'], o['byteOffset']+o['byteLength']) for o in occurrences)
             if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):

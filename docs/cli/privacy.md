@@ -386,36 +386,55 @@ reloads private state. `text` is decoded UTF-8 without NUL, at most 1 MiB.
 object in a nonshallow SHA-1 repository. No refs, tag peeling or network reads.
 The parameter name does **not** attest that the commit has ever been public.
 
-The conservative proof grammar is a nonempty literal, optionally anchored by
-`^` at its start and `$` at its end, or `|`-separated such branches. Escapes,
+`GREP_OPTIONS` presence refuses proof before any matcher runs. The unchanged
+shared matcher then runs on the full captured list and the original text. Its
+row numbers must be sorted unique exact integers within the list; anything else
+refuses `unaccounted-match`. Only the rows it reports as matching are held to
+the conservative proof grammar: a nonempty literal, optionally anchored by `^`
+at its start and `$` at its end, or `|`-separated such branches. Escapes,
 groups, classes, wildcard/quantifier syntax, internal anchors and ASCII control
 characters are unsupported. Limits are 64 total branches and 8,192 literal
-UTF-8 bytes. Duplicate or contained alternatives and any proper suffix/prefix
-overlap (including self overlap) refuse the whole proof, even when anchors or
-actual input would prevent overlap. For example, a literal with the same first
-and last byte is conservatively unsupported. This recognition proves
-non-nullability and excludes matches hidden by greedy nonoverlapping extraction;
-it does not replace ERE matching with Python regexes. Unsupported patterns keep
-their existing raw scanner behavior.
+UTF-8 bytes across the matching rows. Duplicate or contained alternatives and
+any proper suffix/prefix overlap (including self overlap) among them refuse the
+whole proof, even when anchors or actual input would prevent overlap. For
+example, a literal with the same first and last byte is conservatively
+unsupported. This recognition proves non-nullability and excludes matches hidden
+by greedy nonoverlapping extraction; it does not replace ERE matching with
+Python regexes.
 
-Each row runs separately through system `grep -E -b -o`, under captured inherited
-locale settings, with LF boundaries. Output offsets are byte offsets, validated
-against original bytes and branch anchors. A separate shared raw match verifies
-row coverage. A second ERE extraction over input with extracted spans replaced
-by NUL (outside the supported grammar, preserving LF and byte positions)
-refuses omitted occurrences. Output and occurrences are bounded at 1 MiB per command and 4,096
-respectively. No empty, overlapping, malformed or unaccounted proof completes.
-`GREP_OPTIONS` presence refuses proof. Relevant inherited `LANG`, `LANGUAGE`,
-`LC_*`, and grep environment variables are canonically digested; changes across
-the operation refuse. This detects changes, without promising atomic environment
-stability. Callers must not concurrently mutate process environment.
+A row the shared matcher reports as not matching has no occurrence and needs no
+proof; its syntax, size and overlap with other rows do not matter. Matching rows
+keep their original 1-based numbers in `patternLine`, and `listDigest` covers the
+full captured list. A matching row outside the grammar refuses the whole proof as
+`unsupported-grammar`; every empty-capable row matches any nonempty input, so it
+always does. A row the shared matcher itself rejects is a `proof-read-failed`
+refusal. The raw scanner is unchanged.
 
-Witness search reads the pinned recursive tree through hardened Git seams.
+Each matching row runs separately through system `grep -E -b -o`, under captured
+inherited locale settings, with LF boundaries. Output offsets are byte offsets,
+validated against original bytes and branch anchors. A second ERE extraction over
+input with extracted spans replaced by NUL (outside the supported grammar,
+preserving LF and byte positions) refuses omitted occurrences. After extraction a
+second, independent shared raw match must equal the first and the extracted row
+set, or the proof refuses `unaccounted-match`. Output and occurrences are bounded
+at 1 MiB per command and 4,096 respectively. No empty, overlapping, malformed or
+unaccounted proof completes. Relevant inherited `LANG`, `LANGUAGE`, `LC_*`, and
+grep environment variables are canonically digested; changes across the operation
+refuse. This detects changes, without promising atomic environment stability.
+Callers must not concurrently mutate process environment.
+
+Witness search reads the pinned recursive tree through hardened Git seams. The
+whole listing is read and validated before any witness is sought, even for input
+with no occurrence. A gitlink or other unsupported entry, a non-UTF-8 name, or a
+listing over 1 MiB refuses as `proof-read-failed` wherever the witness would sort.
 Only modes `100644`/`100755`, supported bounded UTF-8/no-NUL blobs can witness.
 Symlinks, directories and excluded `.lock` paths cannot witness; opaque and
 oversized bodies cannot witness. Size is checked before reading. At most 128
 distinct regular candidates and 8 MiB aggregate bounded body reads are allowed.
-Search stops once all distinct matched literals have witnesses; limits apply
+Candidates are visited in Git tree order, and opaque and oversized regular
+candidates count toward the 128 although they are never read, so a witness that
+sorts late can refuse as `proof-limit` after little reading. Once all distinct
+matched literals have witnesses, search stops reading bodies; the limits apply
 to candidates examined before that point, not the total snapshot size. Later
 candidates are not claimed read or screened; unresolved literals still require
 continued search or a bounded refusal.
@@ -438,7 +457,8 @@ The private result is a dictionary with exactly:
 - `proofVersion`: string `literal-proof/v1`.
 - `publicCommit`: supplied validated full lowercase SHA-1 string.
 - `listDigest`: `sha256:` plus 64 lowercase hex digits, over canonical JSON of
-  the captured validated pattern array, preserving row order.
+  the full captured validated pattern array, matching rows or not, preserving
+  row order.
 - `inputDigest`: the same digest format, over original UTF-8 bytes.
 - `localeDigest`: the same digest format, over canonical JSON of the relevant
   inherited environment mapping, including presence/absence.
@@ -458,8 +478,23 @@ Invalid arguments, non-UTF-8-encodable relevant environment data, or snapshot
 preconditions raise sanitized `CommandError`.
 Operational/unsupported refusals return no partial occurrences. `missing-witness`
 retains complete extraction with nullable witnesses and `complete: false`.
+`proof-read-failed` covers every deterministic bound or shape refusal that has no
+code of its own, as well as read and command failures: unsupported snapshot
+entries, non-UTF-8 names, a listing or grep output over 1 MiB, or a row the shared
+matcher rejects. It is not automatically transient and must not be retried blindly.
 A supported input with no occurrences can complete vacuously; this grants no
 approval and says nothing about omitted fields.
+
+The whole result, including `literalDigest`, `listDigest` and `inputDigest`, is
+secret-equivalent private evidence. These unsalted hashes let anyone holding them
+confirm a guess of a private value offline. Never write the result to stdout, to
+public or shared evidence, or to GitHub, even after the matcher-based redaction
+used for coverage, which does not recognize a digest. B2 and C keep the exact
+proof facts in private state and emit nonsecret summaries only.
+
+A witness proves only that the exact bytes occur in one supported regular blob,
+possibly as a substring of unrelated longer text. It does not prove identifier
+identity, field, context or approved scope.
 
 B2 must rerun shared scanning with the same captured list and locale, collect
 all actual field occurrences, bind exact report/selection/input facts, and join
@@ -471,3 +506,9 @@ and publication-gate rechecks. Raw scan results, history coverage, defaults and
 publisher behavior remain unchanged. No real opaque approval or receipt is
 created by this foundation; complete literal proof is never policy satisfaction
 or permission to publish.
+
+Design input for B2, not a change here: the 128-candidate bound depends on Git
+tree order and counts unread candidates. B2 may count only read candidates (the
+8 MiB bound already limits reading), raise the cap with that bound binding, or
+accept a verified caller-supplied witness path. It must not raise a bound or
+accept an arbitrary witness path silently.
