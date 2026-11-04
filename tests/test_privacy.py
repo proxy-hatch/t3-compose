@@ -1504,7 +1504,8 @@ class OfflineLiteralProofs(OfflineTestCase):
         from t3compose import privacy
         reads, original = [], privacy._object
         def spy(repo, kind, oid):
-            reads.append(oid) if kind == 'blob' else None
+            if kind == 'blob':
+                reads.append(oid)
             return original(repo, kind, oid)
         return reads, patch.object(privacy, '_object', side_effect=spy)
 
@@ -1656,7 +1657,8 @@ class OfflinePolicyEvaluation(OfflineTestCase):
 
     def test_missing_invalid_stale_or_revoked_inputs_never_complete(self):
         self.inventory()
-        policy, patterns, original = self.temp / 'policy', self.list_file.read_bytes(), (self.temp / 'policy').read_bytes()
+        policy = self.temp / 'policy'
+        patterns, original = self.list_file.read_bytes(), policy.read_bytes()
         for content in (b'', b'[\n', b'\xff', b'x\n' * 513):  # even an empty selection needs a valid list
             self.list_file.write_bytes(content)
             self.refused([])
