@@ -1491,9 +1491,9 @@ class OfflineLiteralProofs(OfflineTestCase):
                 with self.subTest(entry=name, text=text):
                     self.refused(['token'], text, 'proof-read-failed', snapshot)
 
-    def test_corrections_candidate_cap_counts_unread_opaque_files_in_tree_order(self):
+    def test_corrections_candidate_cap_counts_opaque_files_in_tree_order(self):
         (self.repo / 'product').unlink()
-        files = {f'a-{i:03}': b'\0' + bytes([i]) for i in range(128)}  # opaque: never read, still candidates
+        files = {f'a-{i:03}': b'\0' + bytes([i]) for i in range(128)}  # opaque: read and rejected, still candidates
         files['z-witness'] = 'token'
         self.refused(['token'], 'token', 'proof-limit', self.commit('witness after the cap', files))
         (self.repo / 'a-000').unlink()

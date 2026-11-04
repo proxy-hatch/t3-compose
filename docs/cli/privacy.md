@@ -403,11 +403,14 @@ by greedy nonoverlapping extraction; it does not replace ERE matching with
 Python regexes.
 
 A row the shared matcher reports as not matching has no occurrence and needs no
-proof; its syntax, size and overlap with other rows do not matter. Matching rows
+proof; its fit to the proof grammar, literal size and overlap do not matter.
+Full captured-list validation and shared-matcher acceptance still apply. Matching rows
 keep their original 1-based numbers in `patternLine`, and `listDigest` covers the
 full captured list. A matching row outside the grammar refuses the whole proof as
-`unsupported-grammar`; every empty-capable row matches any nonempty input, so it
-always does. A row the shared matcher itself rejects is a `proof-read-failed`
+`unsupported-grammar`, including every empty-capable row it reports.
+An unanchored empty-capable row, such as an empty row or `a*`, matches every
+nonempty input. A context-dependent one, such as `^$`, matches only where its
+context occurs: for `^$`, an empty line. Elsewhere it has no occurrence. A row the shared matcher itself rejects is a `proof-read-failed`
 refusal. The raw scanner is unchanged.
 
 Each matching row runs separately through system `grep -E -b -o`, under captured
@@ -431,9 +434,11 @@ Only modes `100644`/`100755`, supported bounded UTF-8/no-NUL blobs can witness.
 Symlinks, directories and excluded `.lock` paths cannot witness; opaque and
 oversized bodies cannot witness. Size is checked before reading. At most 128
 distinct regular candidates and 8 MiB aggregate bounded body reads are allowed.
-Candidates are visited in Git tree order, and opaque and oversized regular
-candidates count toward the 128 although they are never read, so a witness that
-sorts late can refuse as `proof-limit` after little reading. Once all distinct
+Candidates are visited in Git tree order. Oversized regular candidates count
+toward the 128 without being read. Opaque candidates within the size bound are
+read so they can be classified; they count toward both the 128 and the 8 MiB
+budget, and cannot witness. A witness that sorts late can therefore refuse as
+`proof-limit` after little or no reading. Once all distinct
 matched literals have witnesses, search stops reading bodies; the limits apply
 to candidates examined before that point, not the total snapshot size. Later
 candidates are not claimed read or screened; unresolved literals still require
@@ -508,7 +513,8 @@ created by this foundation; complete literal proof is never policy satisfaction
 or permission to publish.
 
 Design input for B2, not a change here: the 128-candidate bound depends on Git
-tree order and counts unread candidates. B2 may count only read candidates (the
+tree order and counts candidates that cannot witness, including unread oversized
+ones. B2 may count only read candidates (the
 8 MiB bound already limits reading), raise the cap with that bound binding, or
 accept a verified caller-supplied witness path. It must not raise a bound or
 accept an arbitrary witness path silently.
