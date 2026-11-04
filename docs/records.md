@@ -579,3 +579,50 @@ scanner and observes current authority again at its end; publication must observ
 again at its gate. Saving coverage does not authorize an inventory or establish
 authentication, verifier independence or atomic nonrevocation. No new event kind
 or actual owner receipt is installed by this capability.
+
+## Public-text standing-authority recipe
+
+The [public-text policy](cli/privacy.md#public-text-dispositions-public-textv1)
+consumes a standing owner decision that text already public by design may be
+republished. It uses existing `decision` events and asks the owner for nothing new;
+it never approves an opaque inventory, a credential or an unrelated match. Source
+evidence, a locator, a coordinator's judgment, prior publication and an
+implementation assignment are not authority. Tests use explicitly synthetic
+decisions only. No real rule is installed by the capability. The evaluator
+integration is the next Task; until then no command consumes these records.
+
+1. **Normalize the decision.** Append one `decision` to the one dedicated authority
+   stream the rule names (`authorityWorkId`): `question`
+   `privacy-public-text/v1 approve <ruleId> <ruleContext>`; `answer` the exact quote of
+   the original words; `decidedBy` `owner`, only because they are the owner's; `date`
+   the original date (the event's `at` records the real append time). The rule
+   document holds `source` (the original locator, date and quote), `scope` and the
+   `fields` the owner's words cover. Compute `ruleContext` as `privacy_dispositions.digest`
+   of the rule without `approvalSeq`, record the event, then set `approvalSeq` to its
+   sequence. Never copy a decision into a second stream, edit or backdate one, or ask
+   the owner to decide again what exists.
+2. **Attest prior publication.** An independent observer records, with a concrete
+   locator, that the pinned full SHA-1 `publicCommit` was actually public. A local
+   object, a caller's SHA and a moving ref such as `origin/main` are not evidence.
+3. **Review occurrences.** Evaluate privately in process: each unresolved verdict names
+   its input by digest, aligned with `raw.findings`. For each input, take the exact
+   occurrences (row, offset, length, literal digest, public blob and its content
+   digest) from the internal literal-proof seam over the same captured list and
+   `publicCommit`. Digests are secret-equivalent, so keep every file and log private.
+   An independent reviewer examines each occurrence in its exact context and records
+   its class. Only product text the owner's rule covers is
+   `public-product-text`; record credentials, tokens, private paths, unrelated and
+   ambiguous matches as exclusions, which stay unresolved. A pattern row, a path, a
+   label or a flag never grants scope. An unknown literal, a new input or a changed
+   list needs a new review: the join is by exact input and occurrence.
+4. **Revoke** with `privacy-public-text/v1 revoke <ruleId> <ruleContext>` in the same
+   stream, a concrete resolved owner answer and date. It is terminal for the rule.
+5. **Required checks.** Once the evaluator is integrated, as for [artifact work](#work-epochs-and-required-checks), the
+   policy check is the exact `t3c privacy verify ...` with the same `--privacy-policy`
+   in a new work epoch (or a `scope` event with a resolved decision); the raw
+   `privacy check` stays failed evidence, never relabeled. A publication gate
+   evaluates its own selection and metadata again and requires `policy_satisfied`.
+
+The records are cooperative: they bind a decision, evidence and occurrences under this
+workflow, not who spoke or who verified, and they give no atomic revocation. Observation
+is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv1).
