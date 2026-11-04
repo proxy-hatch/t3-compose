@@ -502,3 +502,15 @@ source/evidence and respect the single authoritative stream rather than copying
 old decisions into a replacement stream. These cooperative local records prove
 bindings under that workflow, not who actually spoke or verifier independence.
 The returned inputs do not complete a scan or grant publication permission.
+
+
+The explicit inherited-artifact scanner now consumes this cooperative provenance
+and validates actual baseline/BASE tuples and every selected opaque occurrence's
+direct parents. Its versioned [raw coverage](cli/privacy.md#coverage-schema-artifact-coveragev1)
+binds the observed checkpoint, work/events digests, source/verification and input
+snapshots. Approved-unscanned bodies produce raw nonpass, never a passing check
+or `policySatisfied`. Do not record raw exit 1 as successful required-check
+evidence. A future evaluator must rerun the scanner; publication must re-observe
+current authority. Saving coverage does not authorize an inventory or establish
+authentication, verifier independence or atomic nonrevocation. No new event kind
+or actual owner receipt is installed by this capability.

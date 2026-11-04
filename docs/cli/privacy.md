@@ -6,7 +6,7 @@ It implements the [workflow's privacy rule](../superpowers/specs/2026-10-27-t3-c
 
 ```text
 t3c [--local-dir PATH] [--text] privacy check --repo-path P --range BASE..HEAD
-    [--branch NAME] [--text-file LABEL=FILE ...]
+    [--branch NAME] [--text-file LABEL=FILE ...] [--privacy-policy FILE]
 ```
 
 Use the interpreter invocation in the [CLI contract](../cli.md). Global options
@@ -115,7 +115,7 @@ Tests use synthetic state and temporary Git repositories through the real
 ## Shared strict scanner API
 
 ```python
-scan_commits(repo, local_dir, commits, *, base, head, branch, texts=())
+scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy=None)
 ```
 
 `t3compose.privacy.scan_commits` returns the raw dictionary described above:
@@ -154,12 +154,12 @@ and malformed pairs are refused. The CLI still reads bounded regular files
 for `--text-file` and passes their decoded content to the core. Labels and
 contents never enter process argv. Findings retain supplied commit/text order
 and the existing tree walk order, redaction and `.lock` exclusion. Every selected
-whole tree is screened; inherited binary or oversized blobs still refuse.
+whole tree is screened; inherited binary or oversized blobs still refuse in strict mode.
 
 ## Internal artifact provenance foundation
 
-This foundation exposes no CLI flag and changes no screening behavior. An opaque
-inventory cannot exempt content through `check`, `scan_commits` or the publisher.
+The provenance loader supplies inputs for the explicit scanner mode below.
+The publisher continues using strict screening without this opt-in.
 Actual owner approval of any real inventory remains separate from implementing
 this capability. The following APIs return internal inputs, never a completed
 scan, eligibility, `policySatisfied`, or publication permission.
@@ -175,8 +175,7 @@ patterns. `listDigest` is SHA-256 of canonical JSON of the validated pattern
 array, preserving order, duplicates and empty rows with the existing LF rules.
 The loader's trusted caller supplies the **same captured validated list/tuple**
 used by its matcher. The loader copies it to a tuple, validates its syntax, and
-derives its digest without reloading another list. A later scanner integration
-must load freshly once per operation and use that snapshot throughout.
+derives its digest without reloading another list. The scanner loads freshly once per operation and uses that snapshot throughout.
 
 `repo` is a local repository path; `local_dir` selects current records state.
 `base` is an immutable full lowercase SHA-1 commit ID. `policy_path` may be an
@@ -234,7 +233,8 @@ directory has the same spelling. HTTPS, SSH URI and scp-style SSH origins are
 supported; passwords, explicit ports, nonempty queries/fragments and malformed
 identities refuse. The repository must be complete and SHA-1. Baseline and BASE
 must exist as exact commit objects, and baseline must be an ancestor of BASE.
-This foundation does **not** validate entry tuples against either tree.
+The loader alone does **not** validate entry tuples against either tree; the
+opt-in scanner independently validates them before scanning.
 
 `receiptId` and `authorityWorkId` are 1–128 ASCII characters matching
 `[A-Za-z0-9][A-Za-z0-9._-]*`. `approvalSeq` is a positive integer event sequence.
@@ -247,7 +247,7 @@ and `sourceRef` are concrete nonblank independent-observation attestations;
 `inventoryDigest` equals the raw manifest digest. Its baselineEvidence must equal
 `{repository: manifest.repository, commit: manifest.baseline, objectFormat: "sha1",
 entriesDigest: SHA256(canonical_json(manifest.entries))}`. These fields bind the
-independently supplied evidence; actual Git entry checks remain deferred.
+independently supplied evidence; actual Git entry checks occur in the opt-in scanner.
 
 Two context digests avoid cycles. The inventory context is canonical JSON of
 `schemaVersion: 1` plus receipt fields `receiptId`, `repository`, `baseline`,
@@ -277,6 +277,100 @@ Future evaluation/publication gates must re-observe current state. Owner-source
 provenance and verifier independence are cooperative attestations, not identity
 authentication. Coordinators are responsible for faithfully recording them.
 
-Deferred work includes actual baseline/BASE/every-parent tuples, opaque-only
-eligibility, raw nonpass coverage, public-text disposition evaluation and
-publisher integration. None is waived or satisfied by this foundation.
+Public-text disposition evaluation and publisher integration remain deferred.
+Neither is waived or satisfied by this scanner.
+
+
+## Explicit inherited-artifact accounting
+
+`--privacy-policy FILE` (API keyword `privacy_policy`, default `None`) loads the
+private policy using the same single validated matcher snapshot. Legacy handler
+argument objects without `privacy_policy` still select strict behavior. No
+policy is installed or discovered automatically. Implementing this capability
+approves no actual inventory; only an actual owner decision can do that.
+The provenance schemas and `artifact-provenance/v1` descriptor above remain
+unchanged: they bind the inventory and cooperative authority, not eligibility.
+
+Before scanning, every manifest entry must exist at both the immutable baseline
+and resolved BASE with the exact path, mode `100644`, blob OID and size. Actual
+Git blob type and size are checked, even with an empty selection. Baseline must
+remain an ancestor of BASE. Missing or fabricated object IDs cannot authorize
+an entry. No path enters Git argv, and working-tree files never substitute for
+Git objects. Only SHA-1 repositories are supported.
+
+Every selected whole tree and message is still visited. Supported bounded UTF-8
+without NUL is always screened, including inventoried text and new/changed text.
+Only unsupported bodies (size above 1 MiB, NUL or invalid UTF-8) may become
+`approvedUnscanned`. The occurrence must exactly match an inventoried regular
+blob and the same tuple in **every direct parent**, including parents outside
+the selection. Parent facts do not expand the claimed selected scan. A root
+introduction cannot qualify. Rename, copy to a new path, byte/mode changes,
+delete/readd, change/revert and merge-side introductions cannot inherit an
+opaque exemption. Deletion is allowed. A clean HEAD cannot hide a failing
+intermediate selected tree. Trusted callers remain responsible for completeness
+of their ordered selection; endpoints do not attest completeness.
+
+Type/size are checked before reading a body. Above-bound bodies are never loaded;
+bounded bodies are read to determine text support. Git/read/parse errors never
+become opaque eligibility. There is no extension, binary-format, OCR, EXIF,
+archive or secret-discovery claim. Branches, labels, supplied texts, messages,
+paths, directory names and symlink targets retain screening. The existing
+case-sensitive `.lock` exclusion still excludes both name and body. An inventory
+entry under that exclusion cannot establish the required baseline/BASE tuple in
+this version; omit excluded entries from the manifest.
+
+A result with any approved-unscanned occurrence has `ok: false`, action exactly
+`policy-evaluation-required`, and CLI exit 1, even with no text findings. Findings
+are retained when both occur. Findings alone retain the strict action and exit 1.
+A valid policy with neither opaque occurrences nor findings may return scoped raw
+clean/exit 0. Unsupported unapproved content, invalid provenance, bad list,
+missing/corrupt objects or incomplete reads produce sanitized `CommandError`
+(CLI exit 2, empty stdout), including failure after earlier findings or approved
+occurrences. No completed partial report is emitted.
+
+### Coverage schema: artifact-coverage/v1
+
+Only explicit policy mode adds `coverage` to the existing four result fields.
+All keys below are exact; arrays preserve scan/input order.
+
+| Object | Fields |
+|---|---|
+| coverage | version, repository, base, head, commits, selectionDigest, branchDigest, texts, provenance, screened, approvedUnscanned, excluded |
+| texts item | labelDigest, textDigest |
+| screened item | field, commit, file, label, contentDigest |
+| approvedUnscanned item | commit, file, mode, blobOid, size, receiptId, contextDigest, contentScreened |
+| excluded item | commit, file, reason |
+| provenance | receiptId, authorityWorkId, approvalSeq, inventoryContextDigest, contextDigest, policyFileDigest, manifestDigest, receiptDigest, sourceDigest, verificationDigest, policyVersion, policyDigest, listDigest, patternCount, authorityEventCount, authorityCheckpoint, authorityWorkDigest, authorityEventsDigest, observedStart, observedEnd, baseline |
+| authorityCheckpoint | lastSeq, digest |
+
+`version` is exactly `artifact-coverage/v1`. Repository is the canonical origin
+identity. BASE/HEAD/baseline and `commits` bind full immutable SHA-1 IDs; `commits`
+is the exact ordered selection, not the parents consulted. `selectionDigest` is
+SHA-256 of canonical JSON of that ordered array. `branchDigest`, ordered text
+pair digests and each `contentDigest` hash the exact UTF-8 bytes. Every SHA-256
+uses the `sha256:` prefix. List digest retains the canonical pattern-array
+semantics above. Provenance copies the accepted loader snapshot (excluding its
+manifest, repository and base, which are already bound), and adds baseline.
+It includes all input-file, policy, list, context and authority bindings and the
+UTC authority observation window. The checkpoint retains its existing schema.
+
+`screened` records each branch, label, text, message, path and supported body
+actually screened, in finding traversal order, with a content digest even when
+no match occurs. Its field names and nullable commit/file/label follow findings.
+`approvedUnscanned` records every opaque occurrence with exact immutable tuple
+and approval context, always `contentScreened: false`. `excluded` records each
+`.lock` entry with reason exactly `lock-suffix`; it claims no name/body screening.
+Author/committer headers retain their existing exclusion, without separate
+coverage items. Counts are array lengths; `commits` in the outer result remains
+an integer count. No source quotes, source locators or private policy-file paths
+are returned.
+
+Every dynamic coverage string is screened with the same matcher and replaced
+entirely by `[redacted]` if unsafe, including IDs and digests. Consumers must not
+treat a redacted binding or editable saved report as verification evidence.
+Coverage is raw evidence, never `policySatisfied` or publication permission.
+Future evaluator B must rerun the shared core and validate its own scope/evidence;
+publisher C must re-observe current authority and exact publication inputs at
+the gate. Cooperative source provenance is not authentication; the observed
+prefix provides no atomic revocation guarantee after observation. Strict
+publisher behavior remains unchanged until those separate integrations land.

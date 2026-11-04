@@ -8,7 +8,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 import re
 import stat
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from . import cli, identifier_list, jsonio, process, records
 
@@ -115,7 +115,8 @@ def check(args):
             _fail("privacy branch response is invalid")
         branch = _text(raw[len(prefix):-1])
     data = scan_commits(repo, args.local_dir, commits, base=base, head=head,
-                        branch=branch, texts=[(label, _file(path)) for label, path in texts])
+                        branch=branch, texts=[(label, _file(path)) for label, path in texts],
+                        privacy_policy=getattr(args, "privacy_policy", None))
     return cli.Outcome(data, cli.ExitCode.CHECK_FAILED) if not data["ok"] else data
 
 
@@ -148,7 +149,7 @@ def _commit_id(value):
     return value
 
 
-def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
+def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy=None):
     """Screen exactly the ordered SHA-1 commits and labeled decoded texts.
 
     The trusted caller supplies the complete selection; base/head describe its
@@ -194,6 +195,18 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
             _fail("privacy text label is empty")
         pairs.append((label, text))
     findings = []
+    coverage = None
+    if privacy_policy is not None:
+        snapshot = load_artifact_policy(repo, local_dir, privacy_policy, base=base, patterns=patterns)
+        inventory = _artifact_inventory(repo, snapshot)
+        coverage = dict(version='artifact-coverage/v1', repository=snapshot['repository'],
+            base=base, head=head, commits=list(commits), selectionDigest=_canonical_digest(list(commits)),
+            branchDigest=_digest(branch.encode('utf-8')),
+            texts=[dict(labelDigest=_digest(label.encode('utf-8')), textDigest=_digest(text.encode('utf-8')))
+                   for label, text in pairs],
+            provenance={k: v for k, v in snapshot.items() if k not in {'manifest', 'base', 'repository'}},
+            screened=[], approvedUnscanned=[], excluded=[])
+        coverage['provenance']['baseline'] = snapshot['manifest']['baseline']
 
     def match(text):
         return identifier_list.match_identifiers(patterns, text)
@@ -202,6 +215,9 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
         return "[redacted]" if value is not None and match(value) else value
 
     def screen(field, text, commit=None, file=None, label=None):
+        if coverage is not None:
+            coverage['screened'].append(dict(field=field, commit=commit, file=file, label=label,
+                                              contentDigest=_digest(text.encode('utf-8'))))
         lines = match(text)
         if lines:
             findings.append({"field": field, "commit": safe(commit), "file": safe(file),
@@ -217,6 +233,9 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
         if not separator:
             _fail("privacy commit has no message separator")
         screen("message", _text(message), commit=sha)
+        if coverage is not None:
+            _scan_artifact_tree(repo, sha, raw, inventory, snapshot, coverage, screen)
+            continue
         tree = _git(repo, "ls-tree", "-r", "-t", "-z", "--full-tree", sha, "--")
         if tree and not tree.endswith(b"\0"):
             _fail("privacy tree response is invalid")
@@ -236,10 +255,117 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
             screen("file", _text(_object(repo, "blob", blob)), commit=sha, file=filename)
     data = {"ok": not findings, "commits": len(commits), "findings": findings,
             "action": "publication blocked; Corrections or Shawn must resolve matches" if findings else None}
+    if coverage is not None:
+        if coverage['approvedUnscanned']:
+            data.update(ok=False, action='policy-evaluation-required')
+        # Every dynamic output string uses the same captured matcher, including
+        # object IDs/digests. Bindings remain available privately by re-running.
+        def redacted(value):
+            if isinstance(value, str):
+                return safe(value)
+            if isinstance(value, list):
+                return [redacted(v) for v in value]
+            if isinstance(value, Mapping):
+                return {k: redacted(v) for k, v in value.items()}
+            return value
+        data['coverage'] = redacted(coverage)
     return data
 
 
-# Internal provenance foundation. No scanner or publisher consumes this yet.
+def _artifact_tree(repo, sha):
+    """Read exact immutable tree facts; filenames never enter process argv."""
+    raw = _git(repo, 'ls-tree', '-r', '-t', '-z', '--full-tree', sha, '--')
+    _require_policy(not raw or raw.endswith(b'\0'))
+    result = {}
+    for entry in raw[:-1].split(b'\0') if raw else []:
+        metadata, tab, path = entry.partition(b'\t')
+        _require_policy(bool(tab) and bool(path))
+        name = _text(path)
+        _require_policy(name not in result)
+        if name.endswith('.lock'):
+            result[name] = None
+            continue
+        _require_policy(re.fullmatch(rb'(?:(?:100644|100755|120000) blob|040000 tree) [0-9a-f]{40}', metadata))
+        mode, kind, oid = metadata.decode('ascii').split(' ')
+        result[name] = (mode, kind, oid)
+    return result
+
+
+def _artifact_blob_size(repo, oid):
+    raw = _git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)',
+               input=(oid+'\n').encode('ascii'))
+    _require_policy(re.fullmatch((oid+r' blob [0-9]{1,19}\n').encode('ascii'), raw))
+    size = int(raw.split()[2])
+    _require_policy(size <= 2**63 - 1)
+    return size
+
+
+def _artifact_inventory(repo, snapshot):
+    inventory = {entry['path']: entry for entry in snapshot['manifest']['entries']}
+    for sha in dict.fromkeys((snapshot['manifest']['baseline'], snapshot['base'])):
+        tree = _artifact_tree(repo, sha)
+        for name, entry in inventory.items():
+            _require_policy(tree.get(name) == ('100644', 'blob', entry['blobOid']))
+            _require_policy(_artifact_blob_size(repo, entry['blobOid']) == entry['size'])
+    return inventory
+
+
+def _artifact_parents(repo, raw):
+    headers, separator, _ = raw.partition(b'\n\n')
+    _require_policy(bool(separator))
+    parents = []
+    for line in headers.split(b'\n'):
+        if line.startswith(b'parent '):
+            _require_policy(re.fullmatch(rb'parent [0-9a-f]{40}', line))
+            parent = line[7:].decode('ascii')
+            _require_policy(parent not in parents)
+            fact = _git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
+                        input=(parent+'\n').encode('ascii'))
+            _require_policy(fact == (parent+' commit\n').encode('ascii'))
+            parents.append(parent)
+    return parents
+
+
+def _scan_artifact_tree(repo, sha, raw, inventory, snapshot, coverage, screen):
+    tree = _artifact_tree(repo, sha)
+    # Parents are facts for eligibility, never additional selected scan coverage.
+    parent_trees = None
+    for name, fact in tree.items():
+        if fact is None:
+            coverage['excluded'].append(dict(commit=sha, file=name, reason='lock-suffix'))
+            continue
+        mode, kind, oid = fact
+        screen('path', name, commit=sha, file=name)
+        if kind == 'tree':
+            continue
+        size = _artifact_blob_size(repo, oid)
+        text = None
+        if size <= MAX_BYTES:
+            body = _object(repo, 'blob', oid)  # Read failures must propagate.
+            if b'\0' not in body:
+                try:
+                    text = body.decode('utf-8')
+                except UnicodeError:
+                    pass
+        if text is not None:
+            screen('file', text, commit=sha, file=name)
+            continue
+        entry = inventory.get(name)
+        _require_policy(entry is not None and mode == '100644' and
+                        oid == entry['blobOid'] and size == entry['size'])
+        if parent_trees is None:
+            parents = _artifact_parents(repo, raw)
+            _require_policy(bool(parents))
+            parent_trees = [_artifact_tree(repo, parent) for parent in parents]
+        for parent in parent_trees:
+            _require_policy(parent.get(name) == fact)
+            # Exact OID binds the size already checked against the inventory.
+        coverage['approvedUnscanned'].append(dict(commit=sha, file=name, mode=mode,
+            blobOid=oid, size=size, receiptId=snapshot['receiptId'],
+            contextDigest=snapshot['contextDigest'], contentScreened=False))
+
+
+# Cooperative provenance foundation, consumed only by explicit scanner opt-in.
 POLICY_VERSION = 'artifact-provenance/v1'
 _POLICY_DESCRIPTOR = dict(policyVersion=POLICY_VERSION, schemaVersion=1,
                           objectFormat='sha1', authority='owner',
@@ -488,4 +614,5 @@ def register(registry):
     parser.add_argument("--range", required=True)
     parser.add_argument("--branch")
     parser.add_argument("--text-file", action="append", default=[])
+    parser.add_argument("--privacy-policy")
     parser.set_defaults(handler=check)

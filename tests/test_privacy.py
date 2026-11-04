@@ -878,3 +878,259 @@ class OfflineArtifactProvenance(OfflineTestCase):
             # Existing schema requires all resolution fields together; corrupt
             # and partially unresolved streams must fail too.
             target.write_bytes(jsonio.canonical_json(changed)); self.refuse()
+
+
+class OfflineInheritedArtifacts(OfflineTestCase):
+    setUp = OfflinePrivacy.setUp
+    git = OfflinePrivacy.git
+    commit = OfflinePrivacy.commit
+    invoke = OfflinePrivacy.invoke
+    data = OfflinePrivacy.data
+    digest = OfflineArtifactProvenance.digest
+    write = OfflineArtifactProvenance.write
+    fixture = OfflineArtifactProvenance.fixture
+    bind = OfflineArtifactProvenance.bind
+    decision = OfflineArtifactProvenance.decision
+    replace_approval = OfflineArtifactProvenance.replace_approval
+
+    def inventory(self, body=b'\0opaque', name='asset.bin'):
+        self.base = self.commit('inventory baseline', {name: body})
+        oid = self.git('rev-parse', 'HEAD:'+name)
+        def actual():
+            self.manifest['entries'] = [dict(path=name, mode='100644', blobOid=oid, size=len(body))]
+            self.verification['baselineEvidence']['entriesDigest'] = self.digest(self.manifest['entries'])
+            self.verification['inventoryDigest'] = self.write('manifest', self.manifest)
+        self.fixture(actual)
+        return self.commit('inherited')
+
+    def scan(self, commits=None, **options):
+        from t3compose import privacy
+        head = self.git('rev-parse', 'HEAD')
+        args = dict(base=self.base, head=head, branch='main', privacy_policy=self.temp/'policy')
+        args.update(options)
+        return privacy.scan_commits(self.repo, self.local, [head] if commits is None else commits, **args)
+
+    def rejected(self, commits=None, **options):
+        with self.assertRaises(cli.CommandError) as error:
+            self.scan(commits, **options)
+        for private in (str(self.temp), 'syn-secret', 'SYNTHETIC ONLY', 'synthetic:owner'):
+            self.assertNotIn(private, str(error.exception))
+
+    def test_opaque_raw_nonpass_and_bounded_reads(self):
+        from t3compose import privacy, identifier_list
+        for body in (b'\0opaque', b'\xff\xd8'+b'x'*(privacy.MAX_BYTES+1), b'x'*(privacy.MAX_BYTES+1)):
+            with self.subTest(size=len(body)):
+                if (self.repo/'asset.bin').exists():
+                    self.git('remote', 'remove', 'origin')
+                    import shutil
+                    shutil.rmtree(self.local/'repos') if (self.local/'repos').exists() else None
+                    # Each inventory gets its own independent authority namespace.
+                    self.local = self.temp/('state-'+str(len(body))+'-'+str(body[0]))
+                    self.list_file = self.local/'state/private-identifiers.txt'
+                    self.list_file.parent.mkdir(parents=True)
+                    self.list_file.write_text('syn-secret\nsyn-other\n')
+                head = self.inventory(body)
+                original = privacy._git
+                def guarded(repo, *argv, **kw):
+                    if argv[:2] == ('cat-file', 'blob') and len(body) > privacy.MAX_BYTES:
+                        self.fail('oversized body loaded')
+                    return original(repo, *argv, **kw)
+                with patch.object(privacy, '_git', side_effect=guarded), patch.object(
+                        identifier_list, 'load_identifiers', wraps=identifier_list.load_identifiers) as load:
+                    result = self.scan()
+                self.assertEqual(load.call_count, 1)
+                self.assertFalse(result['ok'])
+                self.assertEqual(result['findings'], [])
+                self.assertEqual(result['action'], 'policy-evaluation-required')
+                coverage = result['coverage']
+                opaque = coverage['approvedUnscanned'][0]
+                self.assertEqual(opaque['size'], len(body))
+                self.assertFalse(opaque['contentScreened'])
+                self.assertEqual(coverage['commits'], [head])
+                self.assertEqual(coverage['selectionDigest'], self.digest([head]))
+                self.assertEqual(coverage['provenance']['contextDigest'], self.context)
+                self.rejected(privacy_policy=None)
+
+    def test_supported_inventory_text_and_metadata_are_screened(self):
+        head = self.inventory(b'syn-secret', 'syn-other/asset')
+        self.commit('syn-secret', {'target': 'syn-other', 'ignored.lock': b'\0'})
+        os.symlink('syn-secret', self.repo/'link')
+        head = self.commit('links')
+        result = self.scan(branch='syn-secret', texts=[('syn-other', 'syn-secret')])
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['coverage']['approvedUnscanned'], [])
+        fields = {v['field'] for v in result['findings']}
+        self.assertTrue({'branch','label','text','path','file'} <= fields)
+        encoded = json.dumps(result)
+        self.assertNotIn('syn-secret', encoded)
+        self.assertNotIn('syn-other', encoded)
+        self.assertEqual(result['coverage']['excluded'], [dict(commit=head, file='ignored.lock', reason='lock-suffix')])
+        self.assertTrue(any(v['file'] == 'link' and v['field'] == 'file' for v in result['coverage']['screened']))
+
+    def test_actual_baseline_and_base_inventory_tuples(self):
+        import copy
+        self.inventory()
+        original = copy.deepcopy(self.manifest)
+        for field, value in [('path','absent'), ('blobOid','a'*40), ('size',100)]:
+            self.manifest = copy.deepcopy(original)
+            self.manifest['entries'][0][field] = value
+            self.verification['baselineEvidence']['entriesDigest'] = self.digest(self.manifest['entries'])
+            self.verification['inventoryDigest'] = self.write('manifest', self.manifest)
+            self.bind(); self.replace_approval()
+            self.rejected([])
+        self.manifest = original
+        self.verification['inventoryDigest'] = self.write('manifest', self.manifest)
+        self.verification['baselineEvidence']['entriesDigest'] = self.digest(self.manifest['entries'])
+        self.bind(); self.replace_approval()
+        changed = self.commit('changed base', {'asset.bin': 'safe'})
+        self.rejected([], base=changed)
+
+    def test_transition_matrix_and_intermediate_history(self):
+        self.inventory()
+        anchor = self.git('rev-parse', 'HEAD')
+        for kind in ('byte','mode','rename','copy','delete-readd','change-revert','add-delete'):
+            with self.subTest(kind=kind):
+                self.git('reset','--hard',anchor)
+                first = None
+                if kind == 'byte': self.commit('changed', {'asset.bin': b'\0changed'})
+                elif kind == 'mode':
+                    os.chmod(self.repo/'asset.bin', 0o755); self.commit('mode')
+                elif kind == 'rename':
+                    (self.repo/'asset.bin').rename(self.repo/'renamed'); self.commit('rename')
+                elif kind == 'copy': self.commit('copy', {'copied': b'\0opaque'})
+                elif kind == 'delete-readd':
+                    (self.repo/'asset.bin').unlink(); self.commit('deleted')
+                    self.commit('restored', {'asset.bin': b'\0opaque'})
+                elif kind == 'change-revert':
+                    first = self.commit('changed', {'asset.bin': b'\0changed'})
+                    self.commit('reverted', {'asset.bin': b'\0opaque'})
+                else:
+                    first = self.commit('added', {'unknown': b'\0new'})
+                    (self.repo/'unknown').unlink(); self.commit('removed')
+                self.rejected([first, self.git('rev-parse','HEAD')] if first else None)
+        self.git('reset','--hard',anchor)
+        (self.repo/'asset.bin').unlink(); self.commit('deletion allowed')
+        self.assertTrue(self.scan()['ok'])
+
+    def test_root_and_every_merge_parent_even_outside_selection(self):
+        self.inventory()
+        anchor = self.git('rev-parse','HEAD')
+        self.rejected([self.base])  # inventory introduction is not inheritance
+        for changed in (None, b'\0different'):
+            self.git('checkout','-B','side',anchor)
+            if changed is None: (self.repo/'asset.bin').unlink()
+            else: (self.repo/'asset.bin').write_bytes(changed)
+            side = self.commit('side')
+            self.git('checkout','-B','main',anchor)
+            self.commit('main')
+            # Construct real merge commit retaining main tree; parent side differs.
+            tree = self.git('rev-parse','HEAD^{tree}')
+            merge = self.git('commit-tree',tree,'-p',self.git('rev-parse','HEAD'),'-p',side,
+                             input=b'merge\n')
+            self.rejected([merge], head=merge)
+        # Both exact parents are eligible, even when outside the selection.
+        merge = self.git('commit-tree',tree,'-p',anchor,'-p',self.git('rev-parse','HEAD'),input=b'merge\n')
+        self.assertFalse(self.scan([merge], head=merge)['ok'])
+
+    def test_fresh_authority_list_and_snapshot_binding(self):
+        self.inventory()
+        first = self.scan()
+        reordered = self.scan([], texts=[('a','b'), ('a','c')])
+        self.assertNotEqual(first['coverage']['selectionDigest'], reordered['coverage']['selectionDigest'])
+        self.assertEqual(len(reordered['coverage']['texts']), 2)
+        self.decision('revoke'); self.rejected()
+        self.assertEqual(first['coverage']['provenance']['authorityEventCount'], 1)
+        self.list_file.write_text('different\n'); self.rejected([])
+
+    def test_real_entry_nonpass_and_late_failure_empty_stdout(self):
+        self.inventory()
+        data = self.data(self.invoke('--privacy-policy',str(self.temp/'policy'),entry=True), 1)
+        self.assertEqual(data['action'], 'policy-evaluation-required')
+        self.commit('late syn-secret', {'zz-unknown': b'\0unapproved'})
+        code, out, err = self.invoke('--privacy-policy',str(self.temp/'policy'),entry=True)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, '')
+        self.assertNotIn('syn-secret', err)
+        self.assertNotIn(str(self.temp), err)
+
+    def test_read_failure_is_never_an_opaque_fallback(self):
+        from t3compose import privacy
+        self.inventory()
+        original = privacy._git
+        def failed(repo, *argv, **kw):
+            if argv[:2] == ('cat-file','blob'):
+                raise cli.CommandError('privacy Git read failed')
+            return original(repo, *argv, **kw)
+        with patch.object(privacy, '_git', side_effect=failed): self.rejected()
+
+    def test_coverage_shape_and_digest_bindings(self):
+        from t3compose import privacy
+        head = self.inventory()
+        result = self.scan(texts=[('title','safe'), ('title','changed')])
+        coverage = result['coverage']
+        self.assertEqual(set(coverage), set('version repository base head commits selectionDigest branchDigest texts provenance screened approvedUnscanned excluded'.split()))
+        self.assertEqual(coverage['version'], 'artifact-coverage/v1')
+        self.assertEqual(coverage['base'], self.base)
+        self.assertEqual(coverage['head'], head)
+        self.assertEqual(coverage['branchDigest'], self.digest(b'main'))
+        self.assertEqual(coverage['texts'], [dict(labelDigest=self.digest(b'title'), textDigest=self.digest(v))
+                                              for v in (b'safe',b'changed')])
+        expected = set('receiptId authorityWorkId approvalSeq inventoryContextDigest contextDigest policyFileDigest manifestDigest receiptDigest sourceDigest verificationDigest policyVersion policyDigest listDigest patternCount authorityEventCount authorityCheckpoint authorityWorkDigest authorityEventsDigest observedStart observedEnd baseline'.split())
+        self.assertEqual(set(coverage['provenance']), expected)
+        for item in coverage['screened']:
+            self.assertEqual(set(item), set('field commit file label contentDigest'.split()))
+        self.assertEqual(set(coverage['approvedUnscanned'][0]), set('commit file mode blobOid size receiptId contextDigest contentScreened'.split()))
+        # A second inherited commit makes order independently observable.
+        later = self.commit('later')
+        forward = self.scan([head,later])['coverage']
+        reverse = self.scan([later,head])['coverage']
+        self.assertNotEqual(forward['selectionDigest'], reverse['selectionDigest'])
+        with patch.object(privacy.identifier_list, 'load_identifiers', side_effect=cli.CommandError('invalid list')):
+            self.rejected([])
+
+    def test_supported_new_changed_and_empty_text_remain_screened(self):
+        self.inventory(b'clean inventory')
+        self.commit('new text', {'new':'safe', 'empty':''})
+        self.assertTrue(self.scan()['ok'])
+        self.commit('changed text', {'asset.bin':'syn-secret', 'new':'syn-other'})
+        data = self.scan()
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['coverage']['approvedUnscanned'], [])
+        self.assertEqual({v['file'] for v in data['findings']}, {'asset.bin','new'})
+
+    def test_missing_parent_blob_and_malformed_tree_fail_closed(self):
+        from t3compose import privacy
+        head = self.inventory()
+        tree = self.git('rev-parse','HEAD^{tree}')
+        root = self.git('commit-tree',tree,input=b'root\n')
+        self.rejected([root], head=root)
+        broken = ('tree '+tree+'\nparent '+'a'*40+'\nauthor Synthetic <synthetic@example.invalid> 1 +0000\n'
+                  'committer Synthetic <synthetic@example.invalid> 1 +0000\n\nbroken\n')
+        missing = self.git('hash-object','-t','commit','-w','--stdin',input=broken.encode())
+        self.rejected([missing], head=missing)
+        original = privacy._git
+        def malformed(repo, *argv, **kw):
+            if argv[:1] == ('ls-tree',) and head in argv:
+                return b'invalid\0'
+            return original(repo, *argv, **kw)
+        with patch.object(privacy, '_git', side_effect=malformed): self.rejected()
+        oid = self.manifest['entries'][0]['blobOid']
+        (self.repo/'.git/objects'/oid[:2]/oid[2:]).unlink()
+        self.rejected()
+
+    def test_late_object_failure_has_no_completed_output(self):
+        from t3compose import privacy
+        self.inventory()
+        head = self.commit('syn-secret', {'zz-last':'safe'})
+        last = self.git('rev-parse','HEAD:zz-last')
+        original = privacy._git
+        def unreadable(repo, *argv, **kw):
+            if argv[:2] == ('cat-file','blob') and argv[-1] == last:
+                raise cli.CommandError('privacy Git read failed')
+            return original(repo, *argv, **kw)
+        with patch.object(privacy, '_git', side_effect=unreadable):
+            code, out, err = self.invoke('--privacy-policy',str(self.temp/'policy'),entry=True)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, '')
+        self.assertNotIn('syn-secret', err)
+        self.assertNotIn(str(self.temp), err)
