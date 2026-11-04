@@ -18,7 +18,7 @@ precede `privacy`. Imports and registration perform no process or state I/O.
 
 ## Inputs and selection
 
-`check` and `verify` resolve everything below through one private helper.
+`check` and `verify` resolve this selection through one private helper.
 
 - `--repo-path` is a local checkout or bare repository directory, required.
   Git runs with that working directory; this command never checks out files.
