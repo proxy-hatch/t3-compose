@@ -1134,3 +1134,204 @@ class OfflineInheritedArtifacts(OfflineTestCase):
         self.assertEqual(out, '')
         self.assertNotIn('syn-secret', err)
         self.assertNotIn(str(self.temp), err)
+
+
+class OfflineLiteralProofs(OfflineTestCase):
+    """Synthetic literal evidence only; inherits the offline repository fixture."""
+
+    git = OfflinePrivacy.git
+    commit = OfflinePrivacy.commit
+
+    def proof(self, patterns, text, snapshot=None):
+        from t3compose import privacy
+        return privacy._literal_proofs(self.repo, patterns, text,
+                                       public_commit=snapshot or self.public)
+
+    def setUp(self):
+        OfflinePrivacy.setUp(self)
+        self.public = self.commit('synthetic snapshot', {'product': 'token beta café\n'})
+
+    def test_literal_schema_offsets_alternatives_and_unknown(self):
+        from t3compose import privacy
+        proof = self.proof(['token|gamma', 'café'], 'café\ntoken token gamma')
+        self.assertFalse(proof['complete'])
+        self.assertEqual(proof['reason'], 'missing-witness')
+        self.assertEqual(set(proof), set('proofVersion publicCommit listDigest inputDigest '
+                                       'localeDigest complete occurrences reason'.split()))
+        self.assertEqual(proof['proofVersion'], 'literal-proof/v1')
+        self.assertEqual(proof['inputDigest'], privacy._digest('café\ntoken token gamma'.encode()))
+        self.assertEqual(proof['listDigest'], privacy._canonical_digest(['token|gamma', 'café']))
+        rows = proof['occurrences']
+        self.assertEqual([(r['patternLine'], r['byteOffset'], r['byteLength']) for r in rows],
+                         [(1, 6, 5), (1, 12, 5), (1, 18, 5), (2, 0, 5)])
+        self.assertIsNone(rows[2]['publicBlobOid'])
+        for i in (0, 1, 3):
+            self.assertEqual(rows[i]['publicBlobOid'], self.git('rev-parse', self.public+':product'))
+            self.assertEqual(rows[i]['publicContentDigest'], privacy._digest(b'token beta caf\xc3\xa9\n'))
+        self.assertNotIn('token', json.dumps(proof))
+
+    def test_anchors_lf_and_final_lf(self):
+        for text in ('token', 'token\n', 'beta\ntoken', 'beta\ntoken\n'):
+            proof = self.proof(['^token$'], text)
+            self.assertTrue(proof['complete'])
+            self.assertEqual(proof['occurrences'][0]['byteOffset'], text.index('token'))
+        self.assertEqual(self.proof(['^token$'], 'xtoken')['occurrences'], [])
+
+    def test_unsupported_empty_contextual_and_overlap_refused(self):
+        for patterns in ([''], ['a*'], ['^$'], ['a|'], ['(token)'], ['[ab]'],
+                         [r'\btoken'], ['a.b'], ['token', 'token'], ['aba'],
+                         ['token|tokenbet'], ['ab', 'bc'], ['token\r']):
+            with self.subTest(patterns=patterns):
+                proof = self.proof(patterns, 'token aba tokenbet abc')
+                self.assertFalse(proof['complete'])
+                self.assertEqual(proof['occurrences'], [])
+
+    def test_immutable_snapshot_and_no_list_reload(self):
+        from t3compose import identifier_list
+        with patch.object(identifier_list, 'load_identifiers', side_effect=AssertionError('reload')):
+            self.assertTrue(self.proof(('token',), 'token')['complete'])
+            changed = self.commit('changed', {'product': 'beta'})
+            self.assertFalse(self.proof(['token'], 'token', changed)['complete'])
+            self.assertTrue(self.proof(['token'], 'token')['complete'])
+        for snapshot in ('HEAD', self.public[:8], '0'*40, self.git('rev-parse', self.public+':product')):
+            with self.subTest(snapshot=snapshot):
+                with self.assertRaises(cli.CommandError):
+                    self.proof(['token'], 'token', snapshot)
+
+    def test_opaque_excluded_symlink_and_oversized_not_witnesses(self):
+        (self.repo/'product').unlink()
+        (self.repo/'link').symlink_to('token')
+        snapshot = self.commit('unsupported candidates', {'opaque': b'token\0',
+            'invalid': b'token\xff', 'data.lock': 'token', 'large': b'token'+b'x'*1048576})
+        from t3compose import privacy
+        original = privacy._object
+        def bounded(repo, kind, oid):
+            self.assertNotEqual(oid, self.git('rev-parse', snapshot+':large'))
+            return original(repo, kind, oid)
+        with patch.object(privacy, '_object', side_effect=bounded):
+            self.assertFalse(self.proof(['token'], 'token', snapshot)['complete'])
+
+    def test_private_scratch_argv_modes_cleanup_and_exact_witness(self):
+        from t3compose import privacy
+        import stat
+        original = process.run
+        directories = set()
+        def inspect(argv, **kwargs):
+            if argv[0] == 'grep' and ('-b' in argv or '-F' in argv):
+                self.assertNotIn('token', ' '.join(argv))
+                path = Path(argv[argv.index('-f')+1])
+                directories.add(path.parent)
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+                for child in path.parent.iterdir():
+                    self.assertEqual(stat.S_IMODE(child.stat().st_mode), 0o600)
+                self.assertEqual(path.read_bytes(), b'token\n')
+            return original(argv, **kwargs)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(process, 'run', side_effect=inspect), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            proof = self.proof(['token'], 'token token')
+        self.assertTrue(proof['complete'])
+        self.assertEqual(out.getvalue()+err.getvalue(), '')
+        self.assertTrue(directories)
+        self.assertTrue(all(not path.exists() for path in directories))
+        # A case-folded witness, even if a backend claims success, is not exact.
+        snapshot = self.commit('case differs', {'product': 'TOKEN'})
+        def hostile(argv, **kwargs):
+            if argv[0] == 'grep' and '-F' in argv:
+                return subprocess.CompletedProcess(argv, 0)
+            return original(argv, **kwargs)
+        with patch.object(process, 'run', side_effect=hostile):
+            proof = self.proof(['token'], 'token', snapshot)
+        self.assertFalse(proof['complete'])
+        self.assertEqual(proof['occurrences'], [])
+
+    def test_malformed_grep_output_status_timeout_and_no_partial_proof(self):
+        from t3compose import privacy
+        original = process.run
+        for status, output, diagnostic in ((0, b'', b''), (1, b'0:token\n', b''),
+                (True, b'0:token\n', b''), (2, b'', b'synthetic diagnostic'),
+                (0, b'1:token\n', b''), (0, b'0:token', b''),
+                (0, b'00:token\n', b''), (0, b'0:wrong\n', b''),
+                (0, b'0:token\n0:token\n', b''), (0, b'x'*1048577, b'')):
+            def malformed(argv, **kwargs):
+                if argv[0] == 'grep' and '-b' in argv:
+                    kwargs['stdout'].write(output)
+                    kwargs['stderr'].write(diagnostic)
+                    return subprocess.CompletedProcess(argv, status)
+                return original(argv, **kwargs)
+            with self.subTest(status=status, length=len(output)), patch.object(process, 'run', side_effect=malformed):
+                proof = self.proof(['token'], 'token')
+                self.assertFalse(proof['complete'])
+                self.assertEqual(proof['occurrences'], [])
+        def timeout(argv, **kwargs):
+            if argv[0] == 'grep' and '-F' in argv:
+                raise process.ProcessError('timeout')
+            return original(argv, **kwargs)
+        with patch.object(process, 'run', side_effect=timeout):
+            proof = self.proof(['token'], 'token')
+        self.assertEqual(proof['reason'], 'proof-read-failed')
+        self.assertEqual(proof['occurrences'], [])
+
+    def test_raw_match_coverage_environment_and_bounds(self):
+        from t3compose import privacy, identifier_list
+        with patch.object(identifier_list, 'match_identifiers', return_value=[1, 2]):
+            self.assertEqual(self.proof(['token'], 'token')['reason'], 'unaccounted-match')
+        with patch.dict(os.environ, {'GREP_OPTIONS': '-i'}):
+            self.assertEqual(self.proof(['token'], 'token')['reason'], 'unsupported-environment')
+        with patch.object(privacy, '_literal_environment', side_effect=[{}, {'LANG': 'changed'}]):
+            self.assertEqual(self.proof(['token'], 'token')['reason'], 'environment-changed')
+        for patterns, text in (([], ''), ('token', 'token'), (['token\n'], ''),
+                                (['token'], b'token'), (['token'], 'x'*1048577)):
+            with self.subTest(kind=type(text)), self.assertRaises(cli.CommandError):
+                self.proof(patterns, text)
+        with patch.object(privacy, '_LITERAL_OCCURRENCES', 1):
+            self.assertEqual(self.proof(['token'], 'token token')['reason'], 'proof-limit')
+
+    def test_snapshot_format_type_and_read_failure(self):
+        from t3compose import privacy
+        for repo in (None, '', object(), 'bad\0path'):
+            with self.assertRaises(cli.CommandError):
+                privacy._literal_proofs(repo, ['token'], 'token', public_commit=self.public)
+        original = privacy._git
+        def wrong_format(repo, *args, **kwargs):
+            if args == ('rev-parse', '--show-object-format'):
+                return b'sha256\n'
+            return original(repo, *args, **kwargs)
+        with patch.object(privacy, '_git', side_effect=wrong_format), self.assertRaises(cli.CommandError):
+            self.proof(['token'], 'token')
+        original_object = privacy._object
+        def failed_blob(repo, kind, oid):
+            if kind == 'blob':
+                raise cli.CommandError('synthetic read failure')
+            return original_object(repo, kind, oid)
+        with patch.object(privacy, '_object', side_effect=failed_blob):
+            proof = self.proof(['token'], 'token')
+        self.assertFalse(proof['complete'])
+        self.assertEqual(proof['occurrences'], [])
+
+    def test_unmatched_supported_rows_and_executable_witness(self):
+        (self.repo/'product').chmod(0o755)
+        snapshot = self.commit('executable text')
+        proof = self.proof(['token', 'delta'], 'token', snapshot)
+        self.assertTrue(proof['complete'])
+        self.assertEqual([r['patternLine'] for r in proof['occurrences']], [1])
+        self.assertTrue(self.proof(['token'], '')['complete'])
+
+    def test_omitted_occurrence_and_literal_limits_refuse(self):
+        from t3compose import privacy
+        original = process.run
+        calls = 0
+        def omitted(argv, **kwargs):
+            nonlocal calls
+            if argv[0] == 'grep' and '-b' in argv:
+                calls += 1
+                if calls == 1:
+                    kwargs['stdout'].write(b'0:token\n')
+                    return subprocess.CompletedProcess(argv, 0)
+            return original(argv, **kwargs)
+        with patch.object(process, 'run', side_effect=omitted):
+            proof = self.proof(['token'], 'token token')
+        self.assertEqual(proof['reason'], 'unaccounted-match')
+        self.assertEqual(proof['occurrences'], [])
+        for patterns in (['|'.join('q'+str(i)+'z' for i in range(65))],
+                         ['x'*1024]*9):
+            self.assertFalse(self.proof(patterns, 'token')['complete'])

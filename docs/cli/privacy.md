@@ -374,3 +374,95 @@ publisher C must re-observe current authority and exact publication inputs at
 the gate. Cooperative source provenance is not authentication; the observed
 prefix provides no atomic revocation guarantee after observation. Strict
 publisher behavior remains unchanged until those separate integrations land.
+
+## Private literal evidence foundation
+
+`_literal_proofs(repo, patterns, text, *, public_commit)` is an internal seam;
+there is no CLI, policy evaluator or publisher integration for this evidence.
+The trusted caller supplies the same captured validated pattern list/tuple as
+its scanner. The helper copies it, uses existing list/text bounds, and never
+reloads private state. `text` is decoded UTF-8 without NUL, at most 1 MiB.
+`public_commit` must be a full lowercase SHA-1 naming an actual local commit
+object in a nonshallow SHA-1 repository. No refs, tag peeling or network reads.
+The parameter name does **not** attest that the commit has ever been public.
+
+The conservative proof grammar is a nonempty literal, optionally anchored by
+`^` at its start and `$` at its end, or `|`-separated such branches. Escapes,
+groups, classes, wildcard/quantifier syntax, internal anchors and ASCII control
+characters are unsupported. Limits are 64 total branches and 8,192 literal
+UTF-8 bytes. Duplicate or contained alternatives and any proper suffix/prefix
+overlap (including self overlap) refuse the whole proof, even when anchors or
+actual input would prevent overlap. For example, a literal with the same first
+and last byte is conservatively unsupported. This recognition proves
+non-nullability and excludes matches hidden by greedy nonoverlapping extraction;
+it does not replace ERE matching with Python regexes. Unsupported patterns keep
+their existing raw scanner behavior.
+
+Each row runs separately through system `grep -E -b -o`, under captured inherited
+locale settings, with LF boundaries. Output offsets are byte offsets, validated
+against original bytes and branch anchors. A separate shared raw match verifies
+row coverage. A second ERE extraction over input with extracted spans replaced
+by NUL (outside the supported grammar, preserving LF and byte positions)
+refuses omitted occurrences. Output and occurrences are bounded at 1 MiB per command and 4,096
+respectively. No empty, overlapping, malformed or unaccounted proof completes.
+`GREP_OPTIONS` presence refuses proof. Relevant inherited `LANG`, `LANGUAGE`,
+`LC_*`, and grep environment variables are canonically digested; changes across
+the operation refuse. This detects changes, without promising atomic environment
+stability. Callers must not concurrently mutate process environment.
+
+Witness search reads the pinned recursive tree through hardened Git seams.
+Only modes `100644`/`100755`, supported bounded UTF-8/no-NUL blobs can witness.
+Symlinks, directories and excluded `.lock` paths cannot witness; opaque and
+oversized bodies cannot witness. Size is checked before reading. At most 128
+distinct regular candidates and 8 MiB aggregate bounded body reads are allowed.
+Object type, size and content identity are checked; command/read/malformed-object
+failures cannot yield completed partial evidence. Search is existential, not a
+claim that every byte in that snapshot was screened. Fixed-string grep uses
+private pattern files, forced byte locale and case-sensitive matching, plus an
+independent exact byte containment check. An unknown literal gets no witness.
+
+Patterns go only in atomic mode-0600 files inside a mode-0700 temporary directory;
+text goes on stdin. Private output files capture grep stdout/stderr and are read
+with bounds after exit; this is not a streaming disk-write bound. Scratch is
+removed on success and failure. Grep has a five-second timeout per call; Git
+retains its 30-second timeout and existing response bounds. No aggregate runtime
+bound is claimed. No literal, pattern, source word, path or backend diagnostic is
+returned or sent to stdout/stderr or argv.
+
+The private result is a dictionary with exactly:
+
+- `proofVersion`: string `literal-proof/v1`.
+- `publicCommit`: supplied validated full lowercase SHA-1 string.
+- `listDigest`: `sha256:` plus 64 lowercase hex digits, over canonical JSON of
+  the captured validated pattern array, preserving row order.
+- `inputDigest`: the same digest format, over original UTF-8 bytes.
+- `localeDigest`: the same digest format, over canonical JSON of the relevant
+  inherited environment mapping, including presence/absence.
+- `complete`: boolean describing literal evidence only.
+- `occurrences`: array in pattern-row then byte-offset order. Each object has
+  exactly integer `patternLine` (1-based), `byteOffset` (0-based), positive integer
+  `byteLength`, `literalDigest` (SHA-256 of exact bytes), `publicBlobOid` (actual
+  full lowercase SHA-1 or null) and `publicContentDigest` (SHA-256 of witness
+  bytes or null). Both witness fields are null together.
+- `reason`: null on completion; otherwise a fixed refusal code. Codes are
+  `unsupported-grammar`, `unsupported-environment`, `invalid-match-output`,
+  `unaccounted-match`, `overlapping-match`, `proof-limit`, `invalid-object`,
+  `invalid-witness-output`, `environment-changed`, `proof-read-failed`, or
+  `missing-witness`.
+
+Invalid arguments or snapshot preconditions raise sanitized `CommandError`.
+Operational/unsupported refusals return no partial occurrences. `missing-witness`
+retains complete extraction with nullable witnesses and `complete: false`.
+A supported input with no occurrences can complete vacuously; this grants no
+approval and says nothing about omitted fields.
+
+B2 must rerun shared scanning with the same captured list and locale, collect
+all actual field occurrences, bind exact report/selection/input facts, and join
+actual standing owner authority, approved public-product scope, independently
+attested prior publication, and current nonrevocation. Local object presence or
+literal proof cannot declassify credentials or unrelated private data. B2 also
+owns the evaluator and any verification command; C owns publisher integration
+and publication-gate rechecks. Raw scan results, history coverage, defaults and
+publisher behavior remain unchanged. No real opaque approval or receipt is
+created by this foundation; complete literal proof is never policy satisfaction
+or permission to publish.

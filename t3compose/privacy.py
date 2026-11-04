@@ -616,3 +616,214 @@ def register(registry):
     parser.add_argument("--text-file", action="append", default=[])
     parser.add_argument("--privacy-policy")
     parser.set_defaults(handler=check)
+
+
+# Private evidence only. No caller of the raw scanner or publisher uses this seam.
+_LITERAL_VERSION = 'literal-proof/v1'
+_LITERAL_OCCURRENCES = 4096
+
+
+def _literal_environment():
+    return {k: v for k, v in os.environ.items()
+            if k in {'LANG', 'LANGUAGE', 'GREP_OPTIONS', 'GREP_COLOR', 'GREP_COLORS'}
+            or k.startswith('LC_')}
+
+
+def _literal_grammar(encoded):
+    """Recognize a finite nonnullable subset, never implement an ERE matcher.
+
+    Exclude all potential overlap regardless of anchors: grep -o cannot reveal
+    every overlapping alternative. Refusal may be stricter than actual matches.
+    """
+    rows, literals = [], []
+    for pattern in encoded:
+        branches = []
+        for branch in pattern.decode('utf-8').split('|'):
+            start, end = branch.startswith('^'), branch.endswith('$')
+            literal = branch[int(start):len(branch)-int(end) if end else None]
+            if not literal or any(c in r'\.^$[]()*+?{}|' or ord(c) < 32 or ord(c) == 127
+                                  for c in literal):
+                return None
+            raw = literal.encode('utf-8')
+            branches.append((raw, start, end))
+            literals.append(raw)
+        rows.append(branches)
+    if len(literals) > 64 or sum(map(len, literals)) > 8192:
+        return None
+    for i, left in enumerate(literals):
+        for j, right in enumerate(literals):
+            if i != j and (left in right or right in left):
+                return None
+            if any(left[-n:] == right[:n] for n in range(1, min(len(left), len(right)))):
+                return None
+    return rows
+
+
+def _literal_grep(directory, pattern, data, env, *, fixed=False):
+    """Bound reads after capture; stdout/stderr never enter public diagnostics.
+
+    Like the shared Git seam, this bounds reads, not subprocess disk writes.
+    The timeout bounds execution; scratch is private and always removed.
+    """
+    pattern_path = directory / 'pattern'
+    identifier_list._write_pattern(pattern_path, pattern + b'\n')
+    output_path, error_path = directory / 'output', directory / 'error'
+    for path in (output_path, error_path):
+        identifier_list._write_pattern(path, b'')
+    with output_path.open('wb') as output, error_path.open('wb') as error:
+        result = process.run(['grep', '-F' if fixed else '-E', '--color=never',
+                              '-a', *(['-q'] if fixed else ['-b', '-o']),
+                              '-f', str(pattern_path)], input=data, env=env,
+                             stdout=output, stderr=error, check=False,
+                             timeout=identifier_list.GREP_TIMEOUT_SECONDS)
+    with output_path.open('rb') as stream:
+        raw = stream.read(MAX_BYTES + 1)
+    with error_path.open('rb') as stream:
+        diagnostic = stream.read(1)
+    code = getattr(result, 'returncode', None)
+    if type(code) is not int or code not in {0, 1} or diagnostic or len(raw) > MAX_BYTES:
+        _fail('literal proof command failed')
+    if fixed:
+        if raw:
+            _fail('literal proof command failed')
+    elif (code == 1 and raw) or (code == 0 and not raw):
+        _fail('literal proof command failed')
+    return code, raw
+
+
+def _literal_proofs(repo, patterns, text, *, public_commit):
+    """Return private exact-byte evidence, never authority or a policy verdict.
+
+    Invalid arguments/snapshot raise CommandError. Unsupported grammar, missing
+    witnesses, command/read failures or changed locale return a fixed refusal.
+    Operational refusal discards all partial occurrences. No list is reloaded.
+    """
+    import tempfile
+
+    # Copy before validating so mutation of the caller's list cannot split facts.
+    if not isinstance(patterns, (list, tuple)):
+        _fail('literal proof requires captured patterns')
+    patterns = tuple(patterns)
+    encoded = identifier_list._encode_patterns(patterns)
+    data = identifier_list._encode_text(text)
+    public_commit = _commit_id(public_commit)
+    if not isinstance(repo, (str, os.PathLike)):
+        _fail('literal proof repository is invalid')
+    try:
+        path = os.fsdecode(repo)
+    except (TypeError, ValueError):
+        _fail('literal proof repository is invalid')
+    if not path or '\0' in path:
+        _fail('literal proof repository is invalid')
+    _repository(repo)
+    if _git(repo, 'cat-file', '--batch-check=%(objectname) %(objecttype)',
+            input=(public_commit+'\n').encode('ascii')) != (public_commit+' commit\n').encode('ascii'):
+        _fail('literal proof snapshot is not a commit')
+    commit_body = _object(repo, 'commit', public_commit)
+    if hashlib.sha1(b'commit '+str(len(commit_body)).encode()+b'\0'+commit_body).hexdigest() != public_commit:
+        _fail('literal proof snapshot is invalid')
+    locale = _literal_environment()
+    result = dict(proofVersion=_LITERAL_VERSION, publicCommit=public_commit,
+                  listDigest=_canonical_digest(list(patterns)), inputDigest=_digest(data),
+                  localeDigest=_canonical_digest(locale), complete=False,
+                  occurrences=[], reason=None)
+
+    def refuse(reason):
+        result.update(complete=False, occurrences=[], reason=reason)
+        return result
+
+    grammar = _literal_grammar(encoded)
+    if grammar is None:
+        return refuse('unsupported-grammar')
+    if 'GREP_OPTIONS' in locale:
+        return refuse('unsupported-environment')
+    env = dict(os.environ)
+    fixed_env = dict(env, LC_ALL='C')
+    for key in ('GREP_OPTIONS', 'GREP_COLOR', 'GREP_COLORS'):
+        fixed_env.pop(key, None)
+    occurrences, values = [], []
+    try:
+        with tempfile.TemporaryDirectory(dir='/tmp', prefix='t3c-literal-') as scratch:
+            directory = Path(scratch)
+            os.chmod(directory, 0o700)
+            for row, (pattern, branches) in enumerate(zip(encoded, grammar), 1):
+                code, raw = _literal_grep(directory, pattern, data, env)
+                previous_end = -1
+                remainder = bytearray(data)
+                for record in raw.split(b'\n')[:-1] if raw else []:
+                    offset_raw, sep, literal = record.partition(b':')
+                    if (not sep or not re.fullmatch(rb'0|[1-9][0-9]{0,7}', offset_raw)
+                            or not literal or not raw.endswith(b'\n')):
+                        return refuse('invalid-match-output')
+                    offset = int(offset_raw)
+                    end = offset + len(literal)
+                    if (offset < previous_end or end > len(data) or data[offset:end] != literal
+                            or not any(literal == value
+                                       and (not start or offset == 0 or data[offset-1:offset] == b'\n')
+                                       and (not stop or end == len(data) or data[end:end+1] == b'\n')
+                                       for value, start, stop in branches)):
+                        return refuse('invalid-match-output')
+                    previous_end = end
+                    remainder[offset:end] = b'\0' * len(literal)
+                    occurrences.append(dict(patternLine=row, byteOffset=offset,
+                        byteLength=len(literal), literalDigest=_digest(literal),
+                        publicBlobOid=None, publicContentDigest=None))
+                    values.append(literal)
+                    if len(occurrences) > _LITERAL_OCCURRENCES:
+                        return refuse('proof-limit')
+                if raw and not raw.endswith(b'\n'):
+                    return refuse('invalid-match-output')
+                # NUL is outside this grammar. Preserve LF and byte positions:
+                # any remaining match proves extraction omitted an occurrence.
+                residual_code, _ = _literal_grep(directory, pattern, bytes(remainder), env)
+                if residual_code == 0:
+                    return refuse('unaccounted-match')
+            # A separate raw matcher verifies row coverage under inherited semantics.
+            expected = identifier_list.match_identifiers(patterns, text)
+            if expected != sorted({o['patternLine'] for o in occurrences}):
+                return refuse('unaccounted-match')
+            intervals = sorted((o['byteOffset'], o['byteOffset']+o['byteLength']) for o in occurrences)
+            if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
+                return refuse('overlapping-match')
+            witnesses, seen, read_bytes = {}, set(), 0
+            for fact in _artifact_tree(repo, public_commit).values():
+                if fact is None or fact[0] not in {'100644', '100755'}:
+                    continue
+                oid = fact[2]
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                if len(seen) > 128:
+                    return refuse('proof-limit')
+                size = _artifact_blob_size(repo, oid)
+                if size > MAX_BYTES:
+                    continue
+                read_bytes += size
+                if read_bytes > 8 * MAX_BYTES:
+                    return refuse('proof-limit')
+                body = _object(repo, 'blob', oid)
+                if (len(body) != size or hashlib.sha1(b'blob '+str(size).encode()+b'\0'+body).hexdigest() != oid):
+                    return refuse('invalid-object')
+                try:
+                    _text(body)
+                except cli.CommandError:
+                    continue  # Opaque bytes cannot supply text evidence.
+                for literal in dict.fromkeys(values):
+                    if literal in witnesses:
+                        continue
+                    code, _ = _literal_grep(directory, literal, body, fixed_env, fixed=True)
+                    if (code == 0) != (literal in body):
+                        return refuse('invalid-witness-output')
+                    if code == 0:
+                        witnesses[literal] = (oid, _digest(body))
+            if _literal_environment() != locale:
+                return refuse('environment-changed')
+            for occurrence, literal in zip(occurrences, values):
+                if literal in witnesses:
+                    occurrence['publicBlobOid'], occurrence['publicContentDigest'] = witnesses[literal]
+            complete = all(o['publicBlobOid'] is not None for o in occurrences)
+            result.update(complete=complete, occurrences=occurrences,
+                          reason=None if complete else 'missing-witness')
+            return result
+    except (cli.CommandError, process.ProcessError, OSError, ValueError):
+        return refuse('proof-read-failed')
