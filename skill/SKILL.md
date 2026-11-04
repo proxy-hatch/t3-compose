@@ -530,6 +530,7 @@ Every registered command, once. Specs: `<root>/docs/cli/*.md`.
 | `t3c brief check` | Check a rendered brief against its template's rules; prints its digest. |
 | `t3c brief check-escalation` | Validate a Worker's `<ESCALATION_REQUEST>` block; prints its fields and digest. |
 | `t3c privacy check` | Screen a commit range, branch and texts against the identifier list. |
+| `t3c privacy verify` | Evaluate an explicit privacy policy; prints policySatisfied and counts, never a clean claim. |
 | `t3c publish check` | Mint and revoke a token to test the App setup. |
 | `t3c publish push` | Push the reviewed commit as the Worker App. |
 | `t3c publish pr` | Create or reuse the pull request and verify it. |
