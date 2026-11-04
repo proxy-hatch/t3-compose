@@ -459,3 +459,422 @@ class OfflinePrivacy(OfflineTestCase):
         self.assertEqual(kwargs["base"], self.base)
         self.assertEqual(kwargs["head"], head)
         self.assertEqual(kwargs["branch"], "main")
+
+
+class OfflineArtifactProvenance(OfflineTestCase):
+    # Removing any join or replacing the fresh authority load with cached state
+    # must break these synthetic authorizations. No real decision is represented.
+    setUp = OfflinePrivacy.setUp
+    git = OfflinePrivacy.git
+    commit = OfflinePrivacy.commit
+    invoke = OfflinePrivacy.invoke
+
+    def digest(self, value):
+        import hashlib
+        from t3compose.jsonio import canonical_json
+        raw = value if isinstance(value, bytes) else canonical_json(value)
+        return 'sha256:' + hashlib.sha256(raw).hexdigest()
+
+    def write(self, name, value):
+        from t3compose.jsonio import canonical_json
+        target = self.temp / name
+        target.write_bytes(canonical_json(value))
+        return self.digest(target.read_bytes())
+
+    def fixture(self, change=None):
+        from t3compose import privacy, records
+        self.assertTrue(callable(getattr(privacy, 'load_artifact_policy', None)),
+                        'missing internal provenance loader')
+        self.git('remote', 'add', 'origin', 'https://example.invalid/team/repo.git')
+        self.patterns = ['syn-secret', 'syn-other']
+        self.manifest = dict(schemaVersion=1, repository='example.invalid/team/repo',
+                             objectFormat='sha1', baseline=self.base,
+                             entries=[dict(path='asset.bin', mode='100644', blobOid='a'*40, size=9)])
+        prep = privacy.prepare_policy_identifiers(self.local)
+        self.receipt = dict(schemaVersion=1, receiptId='synthetic-inventory',
+                            repository=self.manifest['repository'], baseline=self.base,
+                            manifestDigest=self.write('manifest', self.manifest),
+                            policyVersion=prep['policyVersion'], policyDigest=prep['policyDigest'],
+                            listDigest=prep['listDigest'], authorityWorkId='SYNTHETIC', approvalSeq=1,
+                            sourceFile='source', sourceDigest='', verificationFile='verification',
+                            verificationDigest='')
+        self.source = dict(schemaVersion=1, receiptId=self.receipt['receiptId'], contextDigest='',
+                           sourceRef='synthetic:owner-message', date='2026-11-04',
+                           quote='SYNTHETIC ONLY: accept this exact inventory risk.')
+        self.verification = dict(schemaVersion=1, receiptId=self.receipt['receiptId'],
+                                 contextDigest='', verifier='synthetic-independent-reviewer',
+                                 sourceRef='synthetic:inventory-observation', method='git-object-inventory',
+                                 baselineEvidence=dict(repository=self.manifest['repository'],
+                                                       commit=self.base, objectFormat='sha1',
+                                                       entriesDigest=self.digest(self.manifest['entries'])),
+                                 inventoryDigest=self.receipt['manifestDigest'], result='verified')
+        if change:
+            change()
+        self.bind()
+        identity = self.manifest['repository']
+        self.writer = 'manager@' + identity
+        work = dict(workId='SYNTHETIC', linearIssue=None, repository=identity,
+                    targetBranch='main', reviewBase=self.base, scope=['asset.bin'], designRefs=[],
+                    ownedPaths=['asset.bin'], dependencies=[], acceptance=[dict(id='AC', text='Synthetic')],
+                    requiredChecks=[dict(id='CHK', command='synthetic', kind='fast')], writer=self.writer)
+        records.create_work(self.local, identity, 'SYNTHETIC', work, writer=self.writer)
+        self.decision('approve', answer=self.source['quote'], date=self.source['date'])
+
+    def bind(self):
+        self.receipt['manifestDigest'] = self.write('manifest', self.manifest)
+        keys = ('receiptId', 'repository', 'baseline', 'manifestDigest', 'policyVersion',
+                'policyDigest', 'listDigest', 'authorityWorkId')
+        context = dict(schemaVersion=1, **{k: self.receipt[k] for k in keys})
+        for value in (self.source, self.verification):
+            value['contextDigest'] = self.digest(context)
+        self.receipt['sourceDigest'] = self.write('source', self.source)
+        self.receipt['verificationDigest'] = self.write('verification', self.verification)
+        context.update(sourceDigest=self.receipt['sourceDigest'],
+                       verificationDigest=self.receipt['verificationDigest'])
+        self.context = self.digest(context)
+        self.policy = dict(schemaVersion=1, policyVersion=self.receipt['policyVersion'],
+                           manifestFile='manifest', manifestDigest=self.receipt['manifestDigest'],
+                           receiptFile='receipt', receiptDigest=self.write('receipt', self.receipt),
+                           authorityWorkId='SYNTHETIC')
+        self.write('policy', self.policy)
+
+    def decision(self, action, *, context=None, answer='Synthetic decision',
+                 date='2026-11-04', owner='owner', question=None):
+        from t3compose import records
+        return records.append_event(self.local, self.manifest['repository'], 'SYNTHETIC', 'decision',
+            dict(question=question or 'privacy-artifact/v1 ' + action + ' ' +
+                 self.receipt['receiptId'] + ' ' + (context or self.context),
+                 answer=answer, date=date, decidedBy=owner), writer=self.writer)
+
+    def load(self, **kwargs):
+        from t3compose import privacy
+        options = dict(base=self.base, patterns=self.patterns)
+        options.update(kwargs)
+        return privacy.load_artifact_policy(self.repo, self.local, self.temp/'policy', **options)
+
+    def refuse(self, **kwargs):
+        with self.assertRaises(cli.CommandError) as error:
+            self.load(**kwargs)
+        self.assertNotIn(str(self.temp), str(error.exception))
+        self.assertNotIn('SYNTHETIC ONLY', str(error.exception))
+        self.assertNotIn('syn-secret', str(error.exception))
+
+    def test_valid_bound_immutable_observation_and_no_exemption(self):
+        from t3compose import records, privacy
+        self.fixture()
+        result = self.load()
+        self.assertEqual(result['contextDigest'], self.context)
+        self.assertEqual(result['authorityCheckpoint'], records.snapshot(
+            self.local, self.manifest['repository'], 'SYNTHETIC'))
+        self.assertEqual(result['authorityEventCount'], 1)
+        self.assertLessEqual(result['observedStart'], result['observedEnd'])
+        with self.assertRaises(TypeError):
+            result['manifest']['entries'][0]['size'] = 1
+        self.assertNotIn('quote', result)
+        head = self.commit('opaque', {'asset.bin': b'\0'})
+        with self.assertRaises(cli.CommandError):
+            privacy.scan_commits(self.repo, self.local, [head], base=self.base, head=head, branch='main')
+        self.assertEqual(self.invoke('--privacy-policy', str(self.temp/'policy'))[0], 2)
+
+    def test_corrections_origins_never_use_ambient_directory_git(self):
+        from t3compose import records
+        self.fixture()
+        origins = ('https://EXAMPLE.invalid/team/repo.git',
+                   'ssh://git@EXAMPLE.invalid/team/repo.git',
+                   'git@EXAMPLE.invalid:team/repo.git')
+        selectors = dict(GIT_DIR=str(self.repo/'.git'), GIT_WORK_TREE=str(self.temp),
+                         GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='remote.origin.url',
+                         GIT_CONFIG_VALUE_0='https://decoy.invalid/other/repo.git')
+        for origin in origins:
+            self.git('remote', 'set-url', 'origin', origin)
+            collision = self.temp/origin
+            for directory in (False, True):
+                if directory:
+                    collision.mkdir(parents=True)
+                for ambient_env in ({}, selectors):
+                    with self.subTest(origin=origin, directory=directory, selectors=bool(ambient_env)):
+                        with contextlib.chdir(self.temp), patch.dict(os.environ, ambient_env), patch.object(
+                                records, 'git', return_value='https://example.invalid/team/repo.git') as ambient:
+                            result = self.load()
+                        self.assertEqual(ambient.call_count, 0, 'origin normalization performed ambient Git')
+                        self.assertEqual(result['repository'], self.manifest['repository'])
+                        self.assertEqual(result['contextDigest'], self.context)
+        # Preserve the URI grammar as well as the supported forms above.
+        for origin in ('https://example.invalid/team/repo',
+                       'ssh://EXAMPLE.invalid/team/repo.git',
+                       'git@EXAMPLE.invalid:team/repo'):
+            self.git('remote', 'set-url', 'origin', origin)
+            self.assertEqual(self.load()['repository'], self.manifest['repository'])
+        for origin in ('https://user:synthetic-password@example.invalid/team/repo.git',
+                       'https://example.invalid:443/team/repo.git',
+                       'ssh://git@example.invalid:22/team/repo.git',
+                       'https://example.invalid/team/repo.git?query',
+                       'https://example.invalid/team/repo.git#fragment',
+                       'ssh://git@example.invalid/team/repo.git?query',
+                       'ssh://git@example.invalid/team/repo.git#fragment',
+                       'https://[broken/team/repo.git', 'https:///team/repo.git',
+                       'git@example.invalid:22/team/repo.git',
+                       'git@example.invalid:team/repo.git?query',
+                       'git@example.invalid:team/repo.git#fragment',
+                       'file://example.invalid/team/repo.git',
+                       'example.invalid/team/repo', 'git@example.invalid:team//repo.git'):
+            self.git('remote', 'set-url', 'origin', origin)
+            with self.subTest(rejected=origin):
+                with self.assertRaises(cli.CommandError) as error:
+                    self.load()
+                self.assertEqual(str(error.exception), 'invalid artifact provenance input')
+
+    def test_corrections_snapshot_descriptor_ownership_on_setup_failure(self):
+        import errno
+        self.fixture()
+        original_open, original_fdopen = os.open, os.fdopen
+        target = self.temp/'policy'
+        selected = []
+        def opened(path, *args, **kwargs):
+            fd = original_open(path, *args, **kwargs)
+            if path == target:
+                selected.append(fd)
+            return fd
+        def fdopened(fd, *args, **kwargs):
+            if fd in selected:
+                raise OSError('synthetic wrapper setup failure')
+            return original_fdopen(fd, *args, **kwargs)
+        with patch.object(os, 'open', side_effect=opened), patch.object(os, 'fdopen', side_effect=fdopened):
+            with self.assertRaises(cli.CommandError) as error:
+                self.load()
+        self.assertEqual(str(error.exception), 'invalid artifact provenance input')
+        self.assertEqual(len(selected), 1)
+        try:
+            os.fstat(selected[0])
+        except OSError as error:
+            self.assertEqual(error.errno, errno.EBADF)
+        else:
+            os.close(selected[0])  # Clean up the old implementation's leak on red.
+            self.fail('raw policy descriptor remained open after fdopen failure')
+        # A subsequent ordinary read accepts the same bytes and closes its FD.
+        selected.clear()
+        raw = target.read_bytes()
+        with patch.object(os, 'open', side_effect=opened):
+            result = self.load()
+        self.assertEqual(result['policyFileDigest'], self.digest(raw))
+        self.assertEqual(result['contextDigest'], self.context)
+        self.assertEqual(len(selected), 1)
+        with self.assertRaises(OSError) as error:
+            os.fstat(selected[0])
+        self.assertEqual(error.exception.errno, errno.EBADF)
+
+    def test_preparation_semantics_and_missing_invalid_list(self):
+        from t3compose import privacy, identifier_list
+        self.assertTrue(callable(getattr(privacy, 'prepare_policy_identifiers', None)),
+                        'missing counts/digests helper')
+        self.list_file.write_text('x\n\nx\n')
+        result = privacy.prepare_policy_identifiers(self.local)
+        self.assertEqual(set(result), {'policyVersion','policyDigest','listDigest','patternCount'})
+        self.assertEqual(result['patternCount'], 3)
+        self.assertEqual(result['listDigest'], self.digest(['x', '', 'x']))
+        for data in (b'', b'[', b'\xff', b'\0'):
+            self.list_file.write_bytes(data)
+            with self.assertRaises(cli.CommandError):
+                privacy.prepare_policy_identifiers(self.local)
+        self.list_file.unlink()
+        with self.assertRaises(cli.CommandError):
+            privacy.prepare_policy_identifiers(self.local)
+
+    def test_loader_uses_captured_list_not_reloaded_list(self):
+        from t3compose import identifier_list
+        self.fixture()
+        self.list_file.write_text('different\n')
+        with patch.object(identifier_list, 'load_identifiers', side_effect=AssertionError('second load')):
+            self.assertEqual(self.load()['contextDigest'], self.context)
+        self.refuse(patterns=['different'])
+        self.refuse(patterns=['['])
+
+    def test_closed_schema_scalar_and_path_matrix(self):
+        self.fixture()
+        import copy
+        originals = {name: copy.deepcopy(getattr(self, name)) for name in
+                     ('manifest', 'receipt', 'source', 'verification', 'policy')}
+        cases = [('manifest','objectFormat','sha256'), ('manifest','baseline',True),
+                 ('manifest','repository','EXAMPLE.invalid/team/repo'),
+                 ('receipt','approvalSeq',True), ('receipt','approvalSeq',0),
+                 ('receipt','receiptId','bad id'), ('receipt','policyDigest','sha256:'+'0'*64),
+                 ('receipt','listDigest','sha256:'+'0'*64), ('receipt','authorityWorkId','OTHER'),
+                 ('source','date','2026-02-30'), ('source','sourceRef',' '), ('source','quote',''),
+                 ('verification','sourceRef',''), ('verification','verifier',''),
+                 ('verification','method','approved'), ('verification','result','approved'),
+                 ('verification','baselineEvidence',{'commit':self.base})]
+        for name, key, value in cases:
+            with self.subTest(name=name, key=key, value=value):
+                document = copy.deepcopy(originals[name]); document[key] = value
+                self.write(name, document)
+                # Re-pin raw digest to exercise semantics rather than tamper only.
+                if name in ('source','verification'):
+                    receipt = copy.deepcopy(originals['receipt'])
+                    receipt[name+'Digest'] = self.digest((self.temp/name).read_bytes())
+                    self.write('receipt', receipt)
+                    policy = copy.deepcopy(originals['policy'])
+                    policy['receiptDigest'] = self.digest((self.temp/'receipt').read_bytes())
+                    self.write('policy', policy)
+                self.refuse()
+                for n,v in originals.items(): self.write(n,v)
+        for name, original in originals.items():
+            for key in original:
+                document = dict(original); del document[key]
+                self.write(name, document); self.refuse(); self.write(name, original)
+            self.write(name, dict(original, unexpected=True)); self.refuse(); self.write(name, original)
+        for path in ('/absolute','../asset','a//b','a/./b','a/../b','a\\b','a*','a?','a[0]',''):
+            self.manifest = copy.deepcopy(originals['manifest'])
+            self.manifest['entries'][0]['path'] = path
+            self.bind(); self.refuse()
+        for field, values in [('size',[True,-1,2**63,1.5,'9']),
+                              ('mode',['100755','120000','160000',100644]),
+                              ('blobOid',['A'*40,'a'*64,'HEAD'])]:
+            for value in values:
+                self.manifest = copy.deepcopy(originals['manifest'])
+                self.manifest['entries'][0][field] = value
+                self.bind(); self.refuse()
+        self.manifest = copy.deepcopy(originals['manifest'])
+        self.manifest['entries'] *= 2
+        self.bind(); self.refuse()
+
+    def test_regular_bounded_strict_json_snapshots(self):
+        self.fixture()
+        target = self.temp/'policy'; original = target.read_bytes()
+        for raw in (b'{}', b'{"schemaVersion":1,"schemaVersion":1}', b'NaN', b'1e999',
+                    b'\xff', b'"\\ud800"', b'"\\u0000"', b'['*40+b'0'+b']'*40,
+                    b' '*1048577):
+            target.write_bytes(raw); self.refuse()
+        target.unlink(); target.mkdir(); self.refuse(); target.rmdir()
+        os.mkfifo(target); self.refuse(); target.unlink()
+        target.symlink_to('/dev/null'); self.refuse(); target.unlink()
+        target.write_bytes(original)
+        for name in ('manifest','receipt','source','verification'):
+            path = self.temp/name; data = path.read_bytes()
+            path.write_bytes(data+b' '); self.refuse(); path.write_bytes(data)
+            path.unlink(); os.mkfifo(path); self.refuse(); path.unlink(); path.write_bytes(data)
+        for name in ('manifestFile','receiptFile'):
+            policy = dict(self.policy); policy[name] = '/dev/null'
+            self.write('policy',policy); self.refuse()
+        self.write('policy', self.policy)
+        self.assertEqual(self.load()['contextDigest'],self.context)
+
+    def test_owner_source_verification_and_exact_decision_joins(self):
+        self.fixture()
+        from t3compose import records, jsonio
+        _, path = records.location(self.local, self.manifest['repository'], 'SYNTHETIC')
+        event_file = path/'events/1.json'
+        event = json.loads(event_file.read_bytes())
+        import copy
+        for key, values in dict(decidedBy=['manager','coordinator'], answer=['unrelated',{'unknown':'pending'}],
+                                date=['2026-11-03'], question=['generic approval',
+                                'privacy-artifact/v1 approve other '+self.context,
+                                'privacy-artifact/v1 approve '+self.receipt['receiptId']+' sha256:'+'0'*64]).items():
+            for value in values:
+                changed = copy.deepcopy(event); changed['data'][key] = value
+                event_file.write_bytes(jsonio.canonical_json(changed)); self.refuse()
+        event_file.write_bytes(jsonio.canonical_json(event))
+        event_file.unlink(); self.refuse()
+
+    def test_fresh_terminal_revocation_even_after_context_change(self):
+        self.fixture()
+        first = self.load()
+        self.decision('revoke')
+        self.refuse()
+        self.source['sourceRef'] = 'synthetic:changed-source'
+        self.bind()
+        self.receipt['approvalSeq'] = 3
+        self.bind()
+        self.decision('approve', answer=self.source['quote'], date=self.source['date'])
+        self.refuse()
+        self.assertEqual(first['authorityEventCount'], 1)
+
+    def test_unknown_nonowner_and_unresolved_authority_fail_closed(self):
+        self.fixture()
+        self.decision('unknown-action'); self.refuse()
+
+    def test_nonowner_revocation_cannot_be_ignored(self):
+        self.fixture()
+        self.decision('revoke', owner='manager'); self.refuse()
+
+    def test_local_identity_commit_ancestry_and_no_ambient_origin_read(self):
+        from t3compose import privacy, records
+        self.fixture()
+        with patch.object(records, 'git', side_effect=AssertionError('ambient Git')):
+            self.load()
+        for base in ('HEAD','a'*40,True): self.refuse(base=base)
+        self.git('checkout','--orphan','disconnected')
+        other = self.commit('unrelated')
+        self.refuse(base=other)
+        self.git('remote','set-url','origin','https://example.invalid/other/repo.git')
+        self.refuse()
+
+    def replace_approval(self):
+        from t3compose import records, jsonio
+        _, path = records.location(self.local, 'example.invalid/team/repo', 'SYNTHETIC')
+        target = path/'events/1.json'
+        event = json.loads(target.read_bytes())
+        event['data'] = dict(question='privacy-artifact/v1 approve '+self.receipt['receiptId']+' '+self.context,
+                             answer=self.source['quote'], date=self.source['date'], decidedBy='owner')
+        target.write_bytes(jsonio.canonical_json(event))
+
+    def test_repinned_evidence_rejects_semantic_mismatches(self):
+        # Even a matching raw receipt/owner question cannot bless an invalid
+        # verifier or a source referring to a different inventory context.
+        import copy
+        self.fixture()
+        original = copy.deepcopy(self.verification)
+        for key, value in [('result','approved'), ('method','label-only'), ('verifier',' '),
+                           ('sourceRef',''), ('inventoryDigest','sha256:'+'0'*64),
+                           ('baselineEvidence',dict(repository=self.manifest['repository'],
+                            commit='0'*40, objectFormat='sha1', entriesDigest=self.digest(self.manifest['entries'])))]:
+            self.verification = copy.deepcopy(original)
+            self.verification[key] = value
+            self.bind(); self.replace_approval(); self.refuse()
+        self.verification = original
+        source = copy.deepcopy(self.source)
+        for key, value in [('sourceRef',''), ('date','2026-02-30'), ('quote',' '), ('receiptId','other')]:
+            self.source = copy.deepcopy(source); self.source[key] = value
+            self.bind()
+            # malformed date may not be written into valid records; keep the
+            # original decision while asserting the input fails closed.
+            if key != 'date': self.replace_approval()
+            self.refuse()
+        self.source = source
+        self.bind(); self.replace_approval()
+        self.assertEqual(self.load()['contextDigest'], self.context)
+
+    def test_exact_accepted_bytes_and_one_snapshot_per_reference(self):
+        from t3compose import privacy
+        self.fixture()
+        original = privacy._policy_snapshot
+        snapshots = []
+        policy_bytes = (self.temp/'policy').read_bytes()
+        def replaced(path):
+            value = original(path)
+            snapshots.append(Path(path).name)
+            # Replacement after the accepted read cannot alter accepted bytes.
+            Path(path).write_bytes(b'{}')
+            return value
+        with patch.object(privacy, '_policy_snapshot', side_effect=replaced):
+            result = self.load()
+        self.assertEqual(sorted(snapshots), ['manifest','policy','receipt','source','verification'])
+        self.assertEqual(result['policyFileDigest'], self.digest(policy_bytes))
+        self.refuse()
+
+    def test_malformed_or_unresolved_scoped_authority(self):
+        from t3compose import records, jsonio
+        self.fixture()
+        self.decision('approve')
+        _, path = records.location(self.local, self.manifest['repository'], 'SYNTHETIC')
+        target = path/'events/2.json'
+        event = json.loads(target.read_bytes())
+        import copy
+        for question in ('privacy-artifact', 'privacy-artifact/v2 revoke bad',
+                         'privacy-artifact/v1 revoke '+self.receipt['receiptId']):
+            changed = copy.deepcopy(event); changed['data']['question'] = question
+            target.write_bytes(jsonio.canonical_json(changed)); self.refuse()
+        for key in ('answer','decidedBy','date'):
+            changed = copy.deepcopy(event); changed['data'][key] = {'unknown':'pending'}
+            # Existing schema requires all resolution fields together; corrupt
+            # and partially unresolved streams must fail too.
+            target.write_bytes(jsonio.canonical_json(changed)); self.refuse()

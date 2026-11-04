@@ -445,3 +445,60 @@ creation, adopt it, or remove its reservation; preserve artifacts for manual
 reconciliation. Other valid work remains usable. An unsafe directory is not
 traversed. Reports are observations of a cooperative filesystem, not a transaction
 across all works or protection from hostile same-user mutation.
+
+## Artifact provenance source-record recipe
+
+The internal [privacy provenance loader](cli/privacy.md#internal-artifact-provenance-foundation)
+uses existing `decision` events, not a new approval service. Only the owner may
+approve an opaque inventory. A manager/coordinator may record a faithful actual
+owner communication and independently supplied verification; implementation
+assignment, prior publication, pilot launch and public-product-text resolutions
+approve no opaque inventory. No real receipt or approval is installed by this
+foundation. Tests use explicitly synthetic authorizations only.
+
+Prepare a private manifest, independently observed baseline/inventory evidence
+and counts/digests using the documented helper, without exposing patterns. Pick
+a new stable receiptId and one dedicated authorityWorkId for its lifecycle.
+Record the actual owner communication's locator, source date and exact quote in
+the source snapshot. The source and structured verification bind the inventory
+context; the full approval context additionally binds both evidence digests.
+Use the exact closed schemas and hashing order documented in privacy.md.
+The recorder's append timestamp remains its actual current timestamp, even when
+the source decision date is earlier. Never invent a source or label a manager's
+answer as the owner's.
+
+The approval event must have exactly this decision data:
+
+```text
+question: privacy-artifact/v1 approve <receiptId> <fullContextDigest>
+answer: <exact source.quote>
+decidedBy: owner
+date: <exact source.date>
+```
+
+`approvalSeq` references that exact event in the selected repository's current
+authority work stream. A bare owner label, generic approval, unrelated decision,
+wrong answer/date/context, or unattached evidence cannot supply authority. Finish
+the receipt and pin its raw digest in the private policy. Digest changes require
+new bound evidence and a new actual decision; hashes alone are not approval.
+
+Scoped revocation uses `privacy-artifact/v1 revoke <receiptId> <fullContextDigest>`
+in the same stream, with a concrete resolved owner answer/date. Any observed
+revoke for that receiptId is terminal, including a revoke naming an older context.
+Renewal needs a new receiptId; changing evidence or appending another approval
+cannot resurrect the old identity. Other-context approvals for the same identity
+are refused as ambiguous. Malformed/unsupported artifact questions, unresolved
+or nonowner scoped decisions fail closed, rather than being ignored. This
+namespace is reserved for the documented approve/revoke grammar. Non-artifact
+questions confer no artifact authority.
+
+Every load reads current validated history through `records.load_work` and saves
+the observed prefix count/checkpoint, canonical work/events digests, input-file
+digests and UTC observation window. It accepts no caller-supplied detached
+history as current state. Records can be appended after enumeration; there is
+no atomic revocation guarantee extending into later use or token minting.
+Future publication gates must read again. The coordinator must preserve the
+source/evidence and respect the single authoritative stream rather than copying
+old decisions into a replacement stream. These cooperative local records prove
+bindings under that workflow, not who actually spoke or verifier independence.
+The returned inputs do not complete a scan or grant publication permission.
