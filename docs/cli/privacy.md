@@ -452,6 +452,14 @@ evaluator verifies that a recorded decision has the exact grammar, the reserved
 `owner` label, the joined quote, date and context, and no revocation. It cannot
 verify who said it or who recorded it, and a string saying owner is not proof.
 
+The end observation does not require the authority stream to extend the start
+prefix. Valid unrelated event edits or truncation and non-data approval metadata
+changes can pass; changed observed approval data or a current revoke refuse. Changes
+made and undone between observations are invisible. Provenance remains cooperative,
+not authentication, atomic revocation or tamper evidence. Replacing the on-disk list
+during one operation neither changes its captured input nor retroactively invalidates
+that verdict; a publication gate runs a fresh evaluation.
+
 ### Private result: `policy-evaluation/v1`
 
 The result is a `PolicyEvaluation`: read-only, neither a mapping nor JSON
@@ -660,3 +668,83 @@ ones. B2b may count only read candidates (the
 8 MiB bound already limits reading), raise the cap with that bound binding, or
 accept a verified caller-supplied witness path. It must not raise a bound or
 accept an arbitrary witness path silently.
+
+## Public-text dispositions (`public-text/v1`)
+
+`t3compose.privacy_dispositions` defines a second policy kind, `public-text/v1`, that
+asks a different question from artifact accounting: is a text finding covered by the
+owner's standing public-by-design rule, and proven public? This Task adds only that
+pure module. No scanner, evaluator, CLI or publisher path calls it yet: `scan_commits`,
+`evaluate_policy`, `privacy check`, `privacy verify` and the publisher are unchanged and
+every text finding stays unresolved. It is never a global identifier exception. The
+module reads no policy file, runs no process, scans nothing and never imports the
+facade; its only I/O is observing the records stream.
+
+```python
+observe(policy, read, *, local_dir, repository, list_digest)   # evidence and current authority
+resolve(observed, findings, prove, *, locale_digest)           # one private verdict per finding
+```
+
+`read(name, digest)` is the caller's pinned single-read callback; `findings` are the
+scan's own `{field, lines, inputDigest}`; `prove(inputDigest)` returns the shared-list
+literal proof and is called only for in-scope, attested candidates. Invalid, stale or
+revoked evidence raises `Refusal`, a `ValueError` with a constant message.
+
+Files use the artifact rules above (one pinned read, relative names, closed schemas,
+`sha256:` digests; Git IDs are 40-hex). Pins are raw digests of each file.
+
+| Document | Keys |
+| --- | --- |
+| Policy | schemaVersion, policyVersion, authorityWorkId, ruleFile, ruleDigest, publicationFile, publicationDigest, dispositionsFile, dispositionsDigest, artifactPolicyFile, artifactPolicyDigest |
+| Rule | schemaVersion, ruleId, repository, scope, fields, policyVersion, policyDigest, authorityWorkId, approvalSeq, source |
+| Rule source | sourceRef, date, quote |
+| Publication | schemaVersion, ruleId, ruleContext, verifier, sourceRef, method, result, repository, publicCommit |
+| Dispositions | schemaVersion, ruleId, ruleContext, verifier, sourceRef, method, result, publicCommit, listDigest, entries |
+| Entry | field, inputDigest, occurrences (nonempty; at most 256 entries and 4,096 occurrences in all) |
+| Occurrence | patternLine, byteOffset, byteLength, literalDigest, publicBlobOid, publicContentDigest, scope |
+
+The two artifact keys are both `null` (pure public text, which invents no opaque
+inventory) or both set to an artifact policy file name and its raw digest; the module
+validates and returns them for its caller to read. `scope` is `public-product-text`;
+`fields` is a strictly sorted, unique, nonempty subset of `branch`, `file`, `label`,
+`message`, `path`, `text`. `policyDigest` hashes the versioned descriptor `{authority:
+owner, contextVersion: 1, policyVersion, schemaVersion: 1, scope, verification:
+occurrence-attestation}`. `ruleContext` is the canonical digest of the rule without
+`approvalSeq`. The rule's repository, and the publication's, equal the canonical
+origin identity the caller supplies.
+
+**Authority.** The existing `decision` kind in the policy's authority work records
+`privacy-public-text/v1 approve <ruleId> <ruleContext>`, with `answer` the exact
+`source.quote`, `date` its date and `decidedBy` `owner`, at `approvalSeq`. A revoke
+(`... revoke <ruleId> <ruleContext>`) is terminal for the rule, even naming another
+context; an approval of another context is ambiguous; a malformed, unresolved or
+nonowner decision in the `privacy-public-text` namespace refuses. Nothing in the
+`privacy-artifact` namespace, a generic decision, prior publication or an
+assignment grants this authority. See the [records recipe](../records.md#public-text-standing-authority-recipe).
+
+**Evidence.** The publication attests, independently, that `publicCommit` (a full
+SHA-1 commit, not a ref) was actually public; a local object or caller SHA proves
+nothing. Dispositions bind that commit and the one captured list's digest and
+attest each matched occurrence by exact `(field, inputDigest)`: the digest is of
+the input's UTF-8 bytes (a blob, message, path, branch, label or text). An
+occurrence's scope is the reviewer's verified class: `public-product-text`, or an
+exclusion (`credential`, `private-path`, `unrelated`, `ambiguous`) that leaves it
+unresolved. `method` is `prior-publication` or `occurrence-review`; `result` is
+`verified`. Verifier independence and locators are cooperative attestations.
+
+**Join.** `resolve` takes the scan's findings in order and requests a proof for the
+exact input only when its field is in `fields` and an entry exists. A finding
+resolves only if its proof is `literal-proof/v1`, complete, with the pinned
+`publicCommit`, the captured list's digest, the input digest and the captured locale
+digest; its rows equal the finding's `lines`; every occurrence has a public witness;
+its occurrences equal the entry's exactly (every repeat, none extra); and each scope
+is `public-product-text`. A witness is necessary and never sufficient. Unknown or
+uncovered literals, unsupported, empty or overlapping proofs, stale inputs and
+exclusions leave findings unresolved, whatever the snapshot holds. Reasons stay
+private: `out-of-scope`, `unattested`, `proof`, `mismatch`, `excluded`.
+
+**Observation.** `observe` is one observation of cooperative records. It returns
+`bindings` for a caller to compare between a start and an end observation, and gives
+no authentication, atomic revocation or tamper evidence; the
+[window limits](#observation-window) apply. The facade wiring, the private result and
+summary versions, the raw-scan behavior and the CLI follow in the next Task.
