@@ -415,6 +415,10 @@ Only modes `100644`/`100755`, supported bounded UTF-8/no-NUL blobs can witness.
 Symlinks, directories and excluded `.lock` paths cannot witness; opaque and
 oversized bodies cannot witness. Size is checked before reading. At most 128
 distinct regular candidates and 8 MiB aggregate bounded body reads are allowed.
+Search stops once all distinct matched literals have witnesses; limits apply
+to candidates examined before that point, not the total snapshot size. Later
+candidates are not claimed read or screened; unresolved literals still require
+continued search or a bounded refusal.
 Object type, size and content identity are checked; command/read/malformed-object
 failures cannot yield completed partial evidence. Search is existential, not a
 claim that every byte in that snapshot was screened. Fixed-string grep uses
@@ -450,7 +454,8 @@ The private result is a dictionary with exactly:
   `invalid-witness-output`, `environment-changed`, `proof-read-failed`, or
   `missing-witness`.
 
-Invalid arguments or snapshot preconditions raise sanitized `CommandError`.
+Invalid arguments, non-UTF-8-encodable relevant environment data, or snapshot
+preconditions raise sanitized `CommandError`.
 Operational/unsupported refusals return no partial occurrences. `missing-witness`
 retains complete extraction with nullable witnesses and `complete: false`.
 A supported input with no occurrences can complete vacuously; this grants no

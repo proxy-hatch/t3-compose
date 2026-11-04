@@ -1335,3 +1335,30 @@ class OfflineLiteralProofs(OfflineTestCase):
         for patterns in (['|'.join('q'+str(i)+'z' for i in range(65))],
                          ['x'*1024]*9):
             self.assertFalse(self.proof(patterns, 'token')['complete'])
+
+
+    def test_corrections_completed_witness_search_stops_before_unrelated_limits(self):
+        from t3compose import privacy
+        files = {'000-witness': 'token'}
+        files.update({f'z-{i:03}': f'unrelated-{i}' for i in range(129)})
+        snapshot = self.commit('wide synthetic snapshot', files)
+        with patch.object(privacy, '_artifact_blob_size', wraps=privacy._artifact_blob_size) as sizes:
+            proof = self.proof(['token'], 'token', snapshot)
+        self.assertTrue(proof['complete'], proof['reason'])
+        self.assertEqual(sizes.call_count, 1)
+        self.assertEqual(proof['occurrences'][0]['publicBlobOid'],
+                         self.git('rev-parse', snapshot+':000-witness'))
+        unknown = self.proof(['delta'], 'delta', snapshot)
+        self.assertFalse(unknown['complete'])
+        self.assertEqual(unknown['reason'], 'proof-limit')
+        self.assertEqual(unknown['occurrences'], [])
+        with patch.object(privacy, '_artifact_blob_size', side_effect=AssertionError('unneeded body fact')):
+            self.assertTrue(self.proof(['token'], '', snapshot)['complete'])
+
+    def test_corrections_non_utf8_locale_is_a_sanitized_refusal(self):
+        with patch.dict(os.environ, {'LC_SYNTHETIC': 'synthetic-private-\udcff'}):
+            with self.assertRaises(cli.CommandError) as caught:
+                self.proof(['token'], 'token')
+        self.assertNotIn('synthetic-private', str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertTrue(self.proof(['token'], 'token')['complete'])

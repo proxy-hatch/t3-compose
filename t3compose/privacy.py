@@ -723,9 +723,13 @@ def _literal_proofs(repo, patterns, text, *, public_commit):
     if hashlib.sha1(b'commit '+str(len(commit_body)).encode()+b'\0'+commit_body).hexdigest() != public_commit:
         _fail('literal proof snapshot is invalid')
     locale = _literal_environment()
+    try:
+        locale_digest = _canonical_digest(locale)
+    except (UnicodeError, ValueError):
+        _fail('literal proof environment is invalid')
     result = dict(proofVersion=_LITERAL_VERSION, publicCommit=public_commit,
                   listDigest=_canonical_digest(list(patterns)), inputDigest=_digest(data),
-                  localeDigest=_canonical_digest(locale), complete=False,
+                  localeDigest=locale_digest, complete=False,
                   occurrences=[], reason=None)
 
     def refuse(reason):
@@ -786,7 +790,10 @@ def _literal_proofs(repo, patterns, text, *, public_commit):
             if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
                 return refuse('overlapping-match')
             witnesses, seen, read_bytes = {}, set(), 0
+            needed = set(values)
             for fact in _artifact_tree(repo, public_commit).values():
+                if len(witnesses) == len(needed):
+                    break
                 if fact is None or fact[0] not in {'100644', '100755'}:
                     continue
                 oid = fact[2]
