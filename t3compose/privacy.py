@@ -84,7 +84,8 @@ def _file(path):
         _fail("privacy text file is unreadable")
 
 
-def check(args):
+def _selection(args):
+    """Resolve the range, branch and texts once; check and verify must not disagree."""
     value = args.range
     if not isinstance(value, str) or value.count("..") != 1:
         _fail("privacy requires a BASE..HEAD range")
@@ -114,10 +115,22 @@ def check(args):
         if not raw.startswith(prefix) or not raw.endswith(b"\n"):
             _fail("privacy branch response is invalid")
         branch = _text(raw[len(prefix):-1])
-    data = scan_commits(repo, args.local_dir, commits, base=base, head=head,
-                        branch=branch, texts=[(label, _file(path)) for label, path in texts],
+    return repo, commits, dict(base=base, head=head, branch=branch,
+                               texts=[(label, _file(path)) for label, path in texts])
+
+
+def check(args):
+    repo, commits, options = _selection(args)
+    data = scan_commits(repo, args.local_dir, commits, **options,
                         privacy_policy=getattr(args, "privacy_policy", None))
     return cli.Outcome(data, cli.ExitCode.CHECK_FAILED) if not data["ok"] else data
+
+
+def verify(args):
+    repo, commits, options = _selection(args)
+    result = evaluate_policy(repo, args.local_dir, commits, **options, privacy_policy=args.privacy_policy)
+    summary = result.summary()
+    return summary if result.policy_satisfied else cli.Outcome(summary, cli.ExitCode.CHECK_FAILED)
 
 
 def _repository(repo):
@@ -158,6 +171,16 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), priv
     Invalid or incomplete input raises CommandError without a partial report.
     """
     patterns = identifier_list.load_identifiers(local_dir)
+    return _scan(repo, local_dir, patterns, commits, base=base, head=head, branch=branch,
+                 texts=texts, privacy_policy=privacy_policy, private=False)
+
+
+def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, privacy_policy, private):
+    """The shared exact-selection scan over one captured pattern sequence.
+
+    private=False returns the redacted raw report. private=True is for the policy
+    evaluator alone: (raw report, unredacted coverage, provenance snapshot).
+    """
     if not isinstance(repo, (str, os.PathLike)):
         _fail("privacy repository path is invalid")
     try:
@@ -212,7 +235,7 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), priv
         return identifier_list.match_identifiers(patterns, text)
 
     def safe(value):
-        return "[redacted]" if value is not None and match(value) else value
+        return "[redacted]" if not private and value is not None and match(value) else value
 
     def screen(field, text, commit=None, file=None, label=None):
         if coverage is not None:
@@ -258,6 +281,8 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), priv
     if coverage is not None:
         if coverage['approvedUnscanned']:
             data.update(ok=False, action='policy-evaluation-required')
+        if private:
+            return data, coverage, snapshot
         # Every dynamic output string uses the same captured matcher, including
         # object IDs/digests. Bindings remain available privately by re-running.
         def redacted(value):
@@ -608,14 +633,102 @@ def load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
         _fail('invalid artifact provenance input')
 
 
+# Artifact-only policy evaluation: separate from the raw scan, never public-text authority.
+EVALUATION_VERSION = 'policy-evaluation/v1'
+SUMMARY_VERSION = 'policy-verify/v1'
+_UNSATISFIED = 'policy unsatisfied; Corrections or Shawn must resolve text matches'
+_BINDINGS = ('receiptId', 'repository', 'authorityWorkId', 'approvalSeq', 'inventoryContextDigest',
+             'contextDigest', 'policyFileDigest', 'manifestDigest', 'receiptDigest', 'sourceDigest',
+             'verificationDigest', 'policyVersion', 'policyDigest', 'listDigest', 'patternCount',
+             'authorityWorkDigest', 'base')
+_OBSERVED = ('authorityEventCount', 'authorityCheckpoint', 'authorityWorkDigest',
+             'authorityEventsDigest', 'observedStart', 'observedEnd')
+
+
+class PolicyEvaluation:
+    """Process-private exact facts: not a mapping, never printed, pickled or serialized."""
+    __slots__ = ('facts',)
+
+    def __init__(self, facts):
+        object.__setattr__(self, 'facts', _freeze(facts))
+
+    def __setattr__(self, name, value):
+        raise AttributeError('policy evaluation is read-only')
+
+    __delattr__ = __setattr__
+
+    def __repr__(self):
+        return '<PolicyEvaluation private>'
+
+    def __reduce__(self):
+        raise TypeError('policy evaluation is process-private')
+
+    @property
+    def policy_satisfied(self):
+        return self.facts['policySatisfied']
+
+    def summary(self):
+        """The only serializable form: fixed words and counts, nothing that is bound."""
+        raw, coverage = self.facts['raw'], self.facts['coverage']
+        return dict(version=SUMMARY_VERSION, policySatisfied=self.policy_satisfied,
+                    rawStatus=self.facts['rawStatus'], rawExit=0 if raw['ok'] else 1,
+                    commits=raw['commits'], action=None if self.policy_satisfied else _UNSATISFIED,
+                    coverage=dict(screened=len(coverage['screened']), texts=len(coverage['texts']),
+                                  textFindings=len(raw['findings']),
+                                  approvedUnscanned=len(coverage['approvedUnscanned']),
+                                  excluded=len(coverage['excluded'])))
+
+
+def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy):
+    """Rerun the shared scan for an explicit artifact policy; return a private verdict.
+
+    One fresh identifier list serves the scan and both policy observations. Every
+    text finding stays unresolved: no public-text disposition, literal proof or
+    saved report is an input. An invalid, incomplete or changed binding raises
+    CommandError and never yields a partial result. The verdict is read-only: it
+    grants no publication permission and claims no atomic revocation.
+    """
+    if privacy_policy is None:
+        _fail('privacy policy is required')
+    started = datetime.now(timezone.utc).isoformat()
+    patterns = identifier_list.load_identifiers(local_dir)
+    data, coverage, snapshot = _scan(repo, local_dir, patterns, commits, base=base, head=head,
+                                     branch=branch, texts=texts, privacy_policy=privacy_policy,
+                                     private=True)
+    # Observe again from current state with the same captured list: a revocation, a
+    # replaced file or a substituted approval refuses; unrelated appended events do not.
+    current = load_artifact_policy(repo, local_dir, privacy_policy, base=base, patterns=patterns)
+    _require_policy(all(current[key] == snapshot[key] for key in _BINDINGS))
+    entries = {entry['path']: entry for entry in snapshot['manifest']['entries']}
+    for item in coverage['approvedUnscanned']:
+        entry = entries.get(item['file'])
+        _require_policy(entry is not None and item['contentScreened'] is False and
+                        (item['mode'], item['blobOid'], item['size']) ==
+                        (entry['mode'], entry['blobOid'], entry['size']) and
+                        (item['receiptId'], item['contextDigest']) ==
+                        (snapshot['receiptId'], snapshot['contextDigest']))
+    findings = data['findings']
+    status = 'findings' if findings else (
+        'policy-evaluation-required' if coverage['approvedUnscanned'] else 'no-text-findings')
+    return PolicyEvaluation(dict(
+        version=EVALUATION_VERSION, policySatisfied=not findings, rawStatus=status,
+        raw=dict(ok=data['ok'], commits=data['commits'], findings=findings, action=data['action']),
+        coverage=coverage,
+        authority=dict(start={key: snapshot[key] for key in _OBSERVED},
+                       end={key: current[key] for key in _OBSERVED}),
+        observation=dict(start=started, end=datetime.now(timezone.utc).isoformat())))
+
+
 def register(registry):
-    parser = registry.group("privacy").add_parser("check")
-    parser.add_argument("--repo-path", required=True)
-    parser.add_argument("--range", required=True)
-    parser.add_argument("--branch")
-    parser.add_argument("--text-file", action="append", default=[])
-    parser.add_argument("--privacy-policy")
-    parser.set_defaults(handler=check)
+    group = registry.group("privacy")
+    for name, handler in (("check", check), ("verify", verify)):
+        parser = group.add_parser(name)
+        parser.add_argument("--repo-path", required=True)
+        parser.add_argument("--range", required=True)
+        parser.add_argument("--branch")
+        parser.add_argument("--text-file", action="append", default=[])
+        parser.add_argument("--privacy-policy", required=name == "verify")
+        parser.set_defaults(handler=handler)
 
 
 # Private evidence only. No caller of the raw scanner or publisher uses this seam.

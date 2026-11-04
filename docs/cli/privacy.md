@@ -3,16 +3,22 @@
 `t3c privacy check` screens publishable text in any repository against the
 private identifier list. It is a read-only check, not permission to publish.
 It implements the [workflow's privacy rule](../superpowers/specs/2026-10-27-t3-compose-design.md#checks-and-publication).
+`t3c privacy verify` separately evaluates an explicit artifact policy over the
+same selection; see [policy evaluation](#policy-evaluation-and-privacy-verify).
 
 ```text
 t3c [--local-dir PATH] [--text] privacy check --repo-path P --range BASE..HEAD
     [--branch NAME] [--text-file LABEL=FILE ...] [--privacy-policy FILE]
+t3c [--local-dir PATH] [--text] privacy verify --repo-path P --range BASE..HEAD
+    [--branch NAME] [--text-file LABEL=FILE ...] --privacy-policy FILE
 ```
 
 Use the interpreter invocation in the [CLI contract](../cli.md). Global options
 precede `privacy`. Imports and registration perform no process or state I/O.
 
 ## Inputs and selection
+
+`check` and `verify` resolve everything below through one private helper.
 
 - `--repo-path` is a local checkout or bare repository directory, required.
   Git runs with that working directory; this command never checks out files.
@@ -277,6 +283,7 @@ Future evaluation/publication gates must re-observe current state. Owner-source
 provenance and verifier independence are cooperative attestations, not identity
 authentication. Coordinators are responsible for faithfully recording them.
 
+Policy evaluation of these inputs is [specified below](#policy-evaluation-and-privacy-verify).
 Public-text disposition evaluation and publisher integration remain deferred.
 Neither is waived or satisfied by this scanner.
 
@@ -369,11 +376,145 @@ Every dynamic coverage string is screened with the same matcher and replaced
 entirely by `[redacted]` if unsafe, including IDs and digests. Consumers must not
 treat a redacted binding or editable saved report as verification evidence.
 Coverage is raw evidence, never `policySatisfied` or publication permission.
-Future evaluator B must rerun the shared core and validate its own scope/evidence;
-publisher C must re-observe current authority and exact publication inputs at
-the gate. Cooperative source provenance is not authentication; the observed
-prefix provides no atomic revocation guarantee after observation. Strict
+The [artifact evaluator](#policy-evaluation-and-privacy-verify) reruns the shared
+core and validates its own approvals; public-text scope and evidence remain
+future work; publisher C must re-observe current authority and exact publication
+inputs at the gate. Cooperative source provenance is not authentication; the
+observed prefix provides no atomic revocation guarantee after observation. Strict
 publisher behavior remains unchanged until those separate integrations land.
+
+## Policy evaluation and `privacy verify`
+
+`evaluate_policy` and `t3c privacy verify` answer one separate question: is the
+raw scan's only non-text coverage, inherited opaque bytes accounted as
+approved-unscanned, covered by a valid, current, unrevoked owner decision, with
+**zero text findings**? Raw screening and policy satisfaction are different
+verdicts. The raw check of the same selection keeps exiting 1 for any
+approved-unscanned occurrence; the policy verdict never relabels it.
+
+This evaluator is artifact-only. Every text finding in a branch, label, text,
+message, path or file stays unresolved: no public-text disposition, public
+snapshot, [literal proof](#private-literal-evidence-foundation) or saved report
+is an input, and none can change the verdict. The literal-proof seam is not
+called. Standing public-text authority is a later Task (B2b) and publisher
+integration another (C); neither is waived or satisfied here.
+
+```python
+evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy)
+```
+
+Arguments, bounds and exact-selection rules are those of
+[`scan_commits`](#shared-strict-scanner-api): the caller supplies the complete
+ordered selection, which is never recomputed from `base..head`. `privacy_policy`
+is a required keyword-only path with no default; `None` raises a sanitized
+`CommandError`. There is no parameter for a report, pattern list, proof,
+disposition, snapshot or verdict: an unknown keyword is a `TypeError`. The
+function loads the identifier list freshly **once** and uses that captured
+sequence for the shared scan and for both policy observations below; the list is
+never reread. It reruns the same scan core as `scan_commits`, so history,
+parent, metadata and `.lock` rules are identical, but keeps the facts unredacted
+in process. Any invalid, incomplete or changed input raises a sanitized
+`CommandError`; no partial or completed result is returned.
+
+### Observation window
+
+1. `observation.start`: the UTC clock, before the list is read.
+2. The identifier list is captured once.
+3. **Start observation.** The policy, manifest, receipt, source and verification
+   files are each read once and pinned by digest, and the authority stream is
+   loaded and validated (`authority.start`, with its own UTC window).
+4. The exact selection is scanned.
+5. **End observation.** The same policy path is read again and the authority
+   stream reloaded, with the same captured list. It must validate again and be
+   unrevoked, and these facts must equal the start observation exactly:
+   `receiptId`, `repository`, `authorityWorkId`, `approvalSeq`,
+   `inventoryContextDigest`, `contextDigest`, `policyFileDigest`,
+   `manifestDigest`, `receiptDigest`, `sourceDigest`, `verificationDigest`,
+   `policyVersion`, `policyDigest`, `listDigest`, `patternCount`,
+   `authorityWorkDigest` and `base`. A terminal revocation, a re-serialized or
+   replaced file, a substituted receipt or approval, or a replaced authority
+   work record refuses. Unrelated events appended to the stream do not; the
+   count, checkpoint, events digest and timestamps of both observations stay in
+   `authority`. The list-derived facts and `base` are equal by construction
+   under the captured list and the one `base` argument, and are kept for
+   completeness.
+6. `observation.end`: the UTC clock.
+
+Each approved-unscanned occurrence is also compared with the manifest tuple (path,
+mode, blob OID, size) and the start receipt and context digests, and its
+`contentScreened` must be `false`, rather than trusting the scan's own labels.
+
+This is an observation window, not a guarantee. A change after step 5 is not
+detected, and revocation is not atomic across later use or token minting, so the
+publication gate must observe again. The list is captured, not rechecked: a later
+list change is also the gate's concern. Provenance stays cooperative. The
+evaluator verifies that a recorded decision has the exact grammar, the reserved
+`owner` label, the joined quote, date and context, and no revocation. It cannot
+verify who said it or who recorded it, and a string saying owner is not proof.
+
+### Private result: `policy-evaluation/v1`
+
+The result is a `PolicyEvaluation`: read-only, neither a mapping nor JSON
+serializable, with a constant `repr`, and it refuses pickling and copying. It
+holds exact bindings and unredacted facts and is process-private: never write it
+to stdout, a record or GitHub. `facts` is a deeply immutable mapping (lists are
+tuples), `policy_satisfied` a boolean, and `summary()` the only serializable form.
+
+| Key | Value |
+|---|---|
+| version | `policy-evaluation/v1` |
+| policySatisfied | true only when there is no text finding and every check above holds |
+| rawStatus | `findings`; else `policy-evaluation-required` when any approved-unscanned occurrence exists; else `no-text-findings` |
+| raw | `ok`, `commits`, `findings`, `action` of the raw scan; findings keep the real commit, file and label |
+| coverage | the exact [artifact-coverage/v1](#coverage-schema-artifact-coveragev1) object, unredacted; it binds repository, BASE, HEAD, ordered commits, selection, branch, text and provenance digests |
+| authority | `start` and `end`, each with `authorityEventCount`, `authorityCheckpoint`, `authorityWorkDigest`, `authorityEventsDigest`, `observedStart`, `observedEnd` |
+| observation | `start` and `end`, UTC ISO timestamps bracketing steps 1 to 6 |
+
+Every digest here is secret-equivalent: an unsalted hash confirms a guess offline,
+and the matcher's redaction does not recognize a digest. That is why the summary
+carries none, and why a consumer such as the publisher must rerun the evaluator
+instead of trusting saved output.
+
+### `privacy verify`
+
+```text
+t3c [--local-dir PATH] [--text] privacy verify --repo-path P --range BASE..HEAD
+    [--branch NAME] [--text-file LABEL=FILE ...] --privacy-policy FILE
+```
+
+Range, branch and `LABEL=FILE` semantics are those of `check`, resolved by one
+shared private helper so the two commands cannot disagree; only
+`--privacy-policy` differs, being required here. Exit 0: `policySatisfied` is
+true. Exit 1: it is false, because text findings are unresolved. Exit 2: invalid
+or incomplete, such as a missing option, policy, list or provenance, a bad
+selection, a changed or revoked binding, or a late failure; stderr holds one
+sanitized line, stdout is empty and no pass is recorded. Global `--text` renders
+the same summary.
+
+```json
+{"action":null,"commits":1,"coverage":{"approvedUnscanned":1,"excluded":0,"screened":3,"textFindings":0,"texts":0},"policySatisfied":true,"rawExit":1,"rawStatus":"policy-evaluation-required","version":"policy-verify/v1"}
+```
+
+| Key | Meaning |
+|---|---|
+| version | `policy-verify/v1` |
+| policySatisfied | the policy verdict above |
+| rawStatus | `no-text-findings`, `findings` (takes precedence) or `policy-evaluation-required` |
+| rawExit | 0 or 1: what `privacy check` with the same policy exits for this selection |
+| commits | selected commit count |
+| coverage | counts only: `screened` values, supplied `texts`, `textFindings` (one per matching field, all unresolved), `approvedUnscanned` occurrences (never screened) and `excluded` `.lock` entries |
+| action | `null` when satisfied, else `policy unsatisfied; Corrections or Shawn must resolve text matches` |
+
+The summary has no `ok` and makes no claim that all content was screened. It never
+holds a digest, object ID, commit, path, label, repository, quote, source or
+receipt string, policy path, list value or matched text. Approved opaque bytes
+appear only in the `approvedUnscanned` count. The verdict is read-only policy
+assessment, never permission to publish; the publisher stays strict until a later
+Task integrates this evaluator at its gate.
+
+A work adopting an approved inventory requires the exact `privacy verify`
+invocation as its policy check and keeps the raw `privacy check` observation as
+failed evidence; see the [records recipe](../records.md#work-epochs-and-required-checks).
 
 ## Private literal evidence foundation
 
@@ -494,27 +635,28 @@ The whole result, including `literalDigest`, `listDigest` and `inputDigest`, is
 secret-equivalent private evidence. These unsalted hashes let anyone holding them
 confirm a guess of a private value offline. Never write the result to stdout, to
 public or shared evidence, or to GitHub, even after the matcher-based redaction
-used for coverage, which does not recognize a digest. B2 and C keep the exact
+used for coverage, which does not recognize a digest. B2b and C keep the exact
 proof facts in private state and emit nonsecret summaries only.
 
 A witness proves only that the exact bytes occur in one supported regular blob,
 possibly as a substring of unrelated longer text. It does not prove identifier
 identity, field, context or approved scope.
 
-B2 must rerun shared scanning with the same captured list and locale, collect
+B2b must rerun shared scanning with the same captured list and locale, collect
 all actual field occurrences, bind exact report/selection/input facts, and join
 actual standing owner authority, approved public-product scope, independently
 attested prior publication, and current nonrevocation. Local object presence or
-literal proof cannot declassify credentials or unrelated private data. B2 also
-owns the evaluator and any verification command; C owns publisher integration
-and publication-gate rechecks. Raw scan results, history coverage, defaults and
-publisher behavior remain unchanged. No real opaque approval or receipt is
-created by this foundation; complete literal proof is never policy satisfaction
-or permission to publish.
+literal proof cannot declassify credentials or unrelated private data. The
+[artifact-only evaluator and `privacy verify`](#policy-evaluation-and-privacy-verify)
+never call this seam, so every text finding stays unresolved there; B2b extends
+them. C owns publisher integration and publication-gate rechecks. Raw scan
+results, history coverage, defaults and publisher behavior remain unchanged. No
+real opaque approval or receipt is created by this foundation; complete literal
+proof is never policy satisfaction or permission to publish.
 
-Design input for B2, not a change here: the 128-candidate bound depends on Git
+Design input for B2b, not a change here: the 128-candidate bound depends on Git
 tree order and counts candidates that cannot witness, including unread oversized
-ones. B2 may count only read candidates (the
+ones. B2b may count only read candidates (the
 8 MiB bound already limits reading), raise the cap with that bound binding, or
 accept a verified caller-supplied witness path. It must not raise a bound or
 accept an arbitrary witness path silently.
