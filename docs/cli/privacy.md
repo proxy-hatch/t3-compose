@@ -38,7 +38,7 @@ precede `privacy`. Imports and registration perform no process or state I/O.
 
 After parsing, every invocation freshly loads the list using
 `identifier_list.load_identifiers(args.local_dir)`. No personal state path is
-hard-coded. Missing, empty, unreadable, malformed or oversized lists block the
+hard-coded. The shared core captures one validated pattern sequence for all matches. Missing, empty, unreadable, malformed or oversized lists block the
 check, including an empty range. List validation and matching retain PV-1a's
 `grep -E` semantics, 64 KiB list, 512 lines, 1 KiB per pattern, and 5-second
 per-pattern timeout. Only LF delimits lines; regexes are not rewritten.
@@ -63,6 +63,10 @@ and transport protocols are disabled for these reads. No hooks, filters,
 textconv, diff tools, working-tree content substitutes or remote reads run.
 
 ## Supported data and failure behavior
+
+Only SHA-1 Git repositories are supported. The actual repository object format
+is checked explicitly; SHA-256 repositories are refused, including empty ranges.
+No origin identity or network access is required for ordinary checks.
 
 Content must be UTF-8 without NUL, at most 1,048,576 bytes per screened value.
 Binary/non-UTF-8 files and oversized values are invalid; no truncation or
@@ -107,3 +111,47 @@ walk and tree order (message before tree; path before blob). This order is not
 a chronology guarantee. No exception includes raw input or backend output.
 Tests use synthetic state and temporary Git repositories through the real
 `bin/t3c` entry point under the offline guard; see [testing](../testing.md).
+
+## Shared strict scanner API
+
+```python
+scan_commits(repo, local_dir, commits, *, base, head, branch, texts=())
+```
+
+`t3compose.privacy.scan_commits` returns the raw dictionary described above:
+`ok`, `commits`, `findings`, `action`. Findings return `ok: false` directly;
+the CLI alone translates that dictionary to an exit-1 `Outcome`. Invalid or
+incomplete inputs raise a sanitized `cli.CommandError` and return no completed
+report, even if earlier inputs produced findings. This API grants no publication
+permission and performs no approval or policy evaluation.
+
+`repo` is a local repository path (`str` or `os.PathLike`), and `local_dir`
+explicitly selects private state. The identifier list is freshly validated on
+every call, including an empty selection. One captured sequence supplies all
+matches. Existing private Git/object/text readers remain available to legacy
+callers; the publisher's strict behavior is unchanged.
+
+`commits` is an ordered sequence of unique full lowercase 40-hex SHA-1 commit
+object IDs. `base` and `head` must also be full commit IDs. Refs, abbreviations,
+revision expressions, tag/tree/blob IDs, unavailable objects, duplicates and
+unordered collections or iterators are refused. Selection encoding (41 bytes
+per ID including LF) is bounded by the existing 1 MiB enumeration limit.
+Endpoints are verified even for an empty selection. The core does not peel tags,
+resolve refs, sort commits or derive the selection from the endpoints.
+
+The trusted caller must supply the complete set appropriate to its operation.
+A push's exact set can differ from a review range. A clean subset result says
+nothing about omitted commits; endpoints do not attest that the supplied set is
+complete or reachable from HEAD. CLI `check` continues resolving its refs once
+and enumerating every HEAD-not-BASE commit, including merge sides. There is no
+arbitrary-subset CLI option.
+
+`branch` is nonempty decoded text. `texts` is an ordered sequence of two-item
+sequences `(label, decoded_text)`; labels are nonempty, contents may be empty,
+and duplicate labels preserve order. Both values and the branch must be valid
+UTF-8 without NUL and at most 1 MiB each, measured after encoding. Byte strings
+and malformed pairs are refused. The CLI still reads bounded regular files
+for `--text-file` and passes their decoded content to the core. Labels and
+contents never enter process argv. Findings retain supplied commit/text order
+and the existing tree walk order, redaction and `.lock` exclusion. Every selected
+whole tree is screened; inherited binary or oversized blobs still refuse.

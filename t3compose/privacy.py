@@ -2,6 +2,7 @@
 import os
 import re
 import stat
+from collections.abc import Sequence
 
 from . import cli, identifier_list, process
 
@@ -78,7 +79,6 @@ def _file(path):
 
 
 def check(args):
-    patterns = identifier_list.load_identifiers(args.local_dir)
     value = args.range
     if not isinstance(value, str) or value.count("..") != 1:
         _fail("privacy requires a BASE..HEAD range")
@@ -94,8 +94,7 @@ def check(args):
             _fail("privacy text file requires LABEL=FILE")
         texts.append((label, path))
     repo = args.repo_path
-    if _git(repo, "rev-parse", "--is-shallow-repository") != b"false\n":
-        _fail("privacy requires complete repository history")
+    _repository(repo)
     base, head = (_resolve(repo, ref) for ref in refs)
     raw = _git(repo, "rev-list", base + ".." + head, "--")
     commits = _text(raw).split("\n") if raw else []
@@ -109,8 +108,85 @@ def check(args):
         if not raw.startswith(prefix) or not raw.endswith(b"\n"):
             _fail("privacy branch response is invalid")
         branch = _text(raw[len(prefix):-1])
+    data = scan_commits(repo, args.local_dir, commits, base=base, head=head,
+                        branch=branch, texts=[(label, _file(path)) for label, path in texts])
+    return cli.Outcome(data, cli.ExitCode.CHECK_FAILED) if not data["ok"] else data
+
+
+def _repository(repo):
+    if _git(repo, "rev-parse", "--show-object-format") != b"sha1\n":
+        _fail("privacy supports SHA-1 repositories only")
+    if _git(repo, "rev-parse", "--is-shallow-repository") != b"false\n":
+        _fail("privacy requires complete repository history")
+
+
+def _decoded(value):
+    if not isinstance(value, str):
+        _fail("privacy input must be decoded text")
+    try:
+        raw = value.encode("utf-8")
+    except UnicodeError:
+        _fail("privacy input must be bounded UTF-8 text without NUL")
+    return _text(raw)
+
+
+def _sequence(values):
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        _fail("privacy input must be an ordered sequence")
+    return tuple(values)
+
+
+def _commit_id(value):
+    if not isinstance(value, str) or not _SHA.fullmatch(value):
+        _fail("privacy requires full lowercase SHA-1 commit IDs")
+    return value
+
+
+def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=()):
+    """Screen exactly the ordered SHA-1 commits and labeled decoded texts.
+
+    The trusted caller supplies the complete selection; base/head describe its
+    immutable endpoints, not a request to recompute BASE..HEAD. A raw clean
+    report covers only these inputs and grants no publication permission.
+    Invalid or incomplete input raises CommandError without a partial report.
+    """
+    patterns = identifier_list.load_identifiers(local_dir)
+    if not isinstance(repo, (str, os.PathLike)):
+        _fail("privacy repository path is invalid")
+    try:
+        path = os.fsdecode(repo)
+    except (TypeError, ValueError):
+        _fail("privacy repository path is invalid")
+    if not path or "\0" in path:
+        _fail("privacy repository path is invalid")
+    _repository(repo)
+    base, head = _commit_id(base), _commit_id(head)
+    commits = _sequence(commits)
+    for sha in commits:
+        _commit_id(sha)
+    if len(set(commits)) != len(commits):
+        _fail("privacy commit selection contains duplicates")
+    if len(commits) * 41 > MAX_BYTES:
+        _fail("privacy commit selection exceeds byte limit")
+    # Do not peel tags or accept refs here. Verify object identity and type,
+    # including endpoints and empty selections, using immutable IDs on stdin.
+    for sha in dict.fromkeys((base, head, *commits)):
+        raw = _git(repo, "cat-file", "--batch-check=%(objectname) %(objecttype)",
+                   input=(sha + "\n").encode("ascii"))
+        if raw != (sha + " commit\n").encode("ascii"):
+            _fail("privacy selected object is not a commit")
+    branch = _decoded(branch)
     if not branch:
         _fail("privacy branch is empty")
+    pairs = []
+    for pair in _sequence(texts):
+        pair = _sequence(pair)
+        if len(pair) != 2:
+            _fail("privacy text requires a label and decoded text")
+        label, text = (_decoded(value) for value in pair)
+        if not label:
+            _fail("privacy text label is empty")
+        pairs.append((label, text))
     findings = []
 
     def match(text):
@@ -126,9 +202,9 @@ def check(args):
                              "label": safe(label), "lines": lines})
 
     screen("branch", branch)
-    for label, path in texts:
+    for label, text in pairs:
         screen("label", label, label=label)
-        screen("text", _file(path), label=label)
+        screen("text", text, label=label)
     for sha in commits:
         raw = _object(repo, "commit", sha)
         _, separator, message = raw.partition(b"\n\n")
@@ -154,7 +230,7 @@ def check(args):
             screen("file", _text(_object(repo, "blob", blob)), commit=sha, file=filename)
     data = {"ok": not findings, "commits": len(commits), "findings": findings,
             "action": "publication blocked; Corrections or Shawn must resolve matches" if findings else None}
-    return cli.Outcome(data, cli.ExitCode.CHECK_FAILED) if findings else data
+    return data
 
 
 def register(registry):
