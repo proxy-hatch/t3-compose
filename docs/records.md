@@ -504,13 +504,78 @@ bindings under that workflow, not who actually spoke or verifier independence.
 The returned inputs do not complete a scan or grant publication permission.
 
 
+### Normalizing an existing owner decision
+
+An owner decision can already exist elsewhere: in another record stream, an
+earlier work or a communication. Nothing copies or rewrites it. A coordinator
+brings it in by **appending** one current `decision` event, with the exact
+approval grammar above, to the one authority stream the receipt names
+(`authorityWorkId`). A second stream would hide a revocation recorded in the
+first, which is why decisions are never copied into a replacement stream:
+
+- `question`: `privacy-artifact/v1 approve <receiptId> <fullContextDigest>`;
+- `answer`: the exact quote of the original authority, unchanged;
+- `decidedBy`: `owner`, only because the original words are the owner's own;
+- `date`: the original source date, not today's. The event's `at` timestamp
+  records the real append time.
+
+The source snapshot's `sourceRef` locates the **original** authority, and its
+`quote` and `date` equal the original's. Source evidence is not itself a receipt:
+a quote, a locator or a copied decision confers nothing until a receipt binds it
+to the exact inventory context and the approval event above exists in the stream.
+Never edit or relabel a historical event, move an old decision under a new date,
+or ask the owner to approve again what the owner already decided: record what
+exists faithfully, and ask only when no authority exists. A coordinator's own
+judgment, a prior publication and an implementation assignment are not owner
+decisions.
+
+### Preparation artifacts and the helper manifest
+
+Preparation work can produce an inventory in a richer or different schema than
+the closed helper manifest. Keep it as made: preserve its immutable bytes and
+record their digest; never edit it into the helper's shape. Derive a **separate**
+helper manifest in the closed schema (`schemaVersion`, `repository`,
+`objectFormat`, `baseline`, and `entries` of exactly `path`, `mode`, `blobOid`,
+`size`). The independent verification (`result: verified`) attests that the two
+inventories hold exactly the same tuples, in both directions with no extra or
+missing entry, and that they match the Git objects at the baseline. Both digests
+are bound: the preparation artifact's SHA-256 is recorded with its locator in the
+verification's `sourceRef`, and the helper manifest's raw digest is its
+`inventoryDigest`, which the receipt, the full context and the approval event pin.
+The derivation is mechanical: it neither expands nor replaces what the owner
+approved. An entry the owner did not approve cannot be added; a changed inventory
+needs a new receiptId and a new decision.
+
+### Work epochs and required checks
+
+A raw `privacy check` of a selection with approved-unscanned bytes exits 1 and
+stays failed, so a work whose required check is that command cannot pass it.
+Adopting an approved inventory changes the policy check, not the raw outcome:
+
+- Keep every earlier `check` event as written. Never append a pass for the raw
+  command, relabel an old event or record raw exit 1 as success.
+- Require the exact policy check separately. Either start a new work epoch (a
+  new work identifier from the current base) whose required checks name the exact
+  `t3c privacy verify ...` invocation, or replace an existing work's required
+  checks only with a `scope` event whose `decisionRef` names a resolved decision
+  for that change. Evidence counts a check event only when it follows the
+  replacement of a changed requirement, so earlier outcomes are never
+  reinterpreted and the requirement cannot be edited silently.
+- Record the verify check with the command text exactly as required, the final
+  head, a real source and the log of that invocation. Exit 0 is a pass, exit 1 a
+  fail and exit 2 refused or blocked. Keep the raw observation in its own log:
+  it states what was and was not screened. The verify summary holds counts only;
+  keep private bindings and logs out of public records.
+- A blocked epoch and its evidence stay as they are.
+
 The explicit inherited-artifact scanner now consumes this cooperative provenance
 and validates actual baseline/BASE tuples and every selected opaque occurrence's
 direct parents. Its versioned [raw coverage](cli/privacy.md#coverage-schema-artifact-coveragev1)
 binds the observed checkpoint, work/events digests, source/verification and input
-snapshots. Approved-unscanned bodies produce raw nonpass, never a passing check
-or `policySatisfied`. Do not record raw exit 1 as successful required-check
-evidence. A future evaluator must rerun the scanner; publication must re-observe
-current authority. Saving coverage does not authorize an inventory or establish
+snapshots. Approved-unscanned bodies produce raw nonpass, never a passing raw
+check. Do not record raw exit 1 as successful required-check evidence. The
+[policy evaluator](cli/privacy.md#policy-evaluation-and-privacy-verify) reruns the
+scanner and observes current authority again at its end; publication must observe
+again at its gate. Saving coverage does not authorize an inventory or establish
 authentication, verifier independence or atomic nonrevocation. No new event kind
 or actual owner receipt is installed by this capability.

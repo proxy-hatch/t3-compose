@@ -5,6 +5,7 @@ import importlib
 import io
 import json
 import os
+import re
 import runpy
 from pathlib import Path
 import subprocess
@@ -44,9 +45,9 @@ class OfflinePrivacy(OfflineTestCase):
                  input=message.encode())
         return self.git("rev-parse", "HEAD")
 
-    def invoke(self, *extra, revision=None, text=False, entry=False):
+    def invoke(self, *extra, revision=None, text=False, entry=False, command="check"):
         argv = ["--local-dir", str(self.local), *(["--text"] if text else []),
-                "privacy", "check", "--repo-path", str(self.repo),
+                "privacy", command, "--repo-path", str(self.repo),
                 "--range", revision or self.base + "..HEAD", *extra]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -1498,3 +1499,388 @@ class OfflineLiteralProofs(OfflineTestCase):
         self.refused(['token'], 'token', 'proof-limit', self.commit('witness after the cap', files))
         (self.repo / 'a-000').unlink()
         self.assertTrue(self.proof(['token'], 'token', self.commit('witness is the 128th candidate'))['complete'])
+
+    def read_spy(self):
+        from t3compose import privacy
+        reads, original = [], privacy._object
+        def spy(repo, kind, oid):
+            if kind == 'blob':
+                reads.append(oid)
+            return original(repo, kind, oid)
+        return reads, patch.object(privacy, '_object', side_effect=spy)
+
+    def test_carryover_opaque_bounded_reads_charge_the_read_budget(self):
+        (self.repo / 'product').unlink()
+        mebibyte = 1048576
+        files = {f'a-{i}': b'\0' + bytes([65 + i]) * (mebibyte - 1) for i in range(8)}  # eight opaque 1 MiB bodies
+        files['z-witness'] = 'token'
+        eight = self.commit('eight opaque mebibytes before the witness', files)
+        reads, spy = self.read_spy()
+        with spy:
+            self.refused(['token'], 'token', 'proof-limit', eight)
+        # Opaque bodies are read to be classified, spend the 8 MiB budget and cannot witness.
+        self.assertEqual(reads, [self.git('rev-parse', f'{eight}:a-{i}') for i in range(8)])
+        (self.repo / 'a-7').unlink()
+        seven = self.commit('seven opaque mebibytes before the witness')
+        reads, spy = self.read_spy()
+        with spy:
+            self.assertTrue(self.proof(['token'], 'token', seven)['complete'])
+        self.assertEqual(reads, [self.git('rev-parse', f'{seven}:{name}') for name in
+                                 [f'a-{i}' for i in range(7)] + ['z-witness']])
+
+    def test_carryover_oversized_unread_candidates_charge_the_candidate_cap(self):
+        entries = []
+        for i in range(128):  # Git objects only: no 128 MiB working tree
+            oid = self.git('hash-object', '-w', '--stdin', input=b'%03d' % i + b'x' * 1048574)
+            entries.append(b'100644 blob ' + oid.encode() + b'\ta-%03d\n' % i)
+        witness = self.git('hash-object', '-w', '--stdin', input=b'token\n')
+        for count, reason, expected in ((128, 'proof-limit', []), (127, None, [witness])):
+            tree = self.git('mktree', input=b''.join(entries[:count]) + b'100644 blob ' + witness.encode() + b'\tz-witness\n')
+            snapshot = self.git('commit-tree', tree, '-p', self.base, input=b'oversized %d\n' % count)
+            reads, spy = self.read_spy()
+            with self.subTest(oversized=count), spy:
+                proof = self.proof(['token'], 'token', snapshot)
+            # Oversized candidates count toward the 128 without being read.
+            self.assertEqual((proof['reason'], reads), (reason, expected))
+            self.assertEqual(proof['complete'], reason is None)
+
+
+class OfflinePolicyEvaluation(OfflineTestCase):
+    """Synthetic owner decisions only: artifact-only evaluation grants no public-text authority."""
+    setUp = OfflinePrivacy.setUp
+    git = OfflinePrivacy.git
+    commit = OfflinePrivacy.commit
+    invoke = OfflinePrivacy.invoke
+    digest = OfflineArtifactProvenance.digest
+    write = OfflineArtifactProvenance.write
+    fixture = OfflineArtifactProvenance.fixture
+    bind = OfflineArtifactProvenance.bind
+    decision = OfflineArtifactProvenance.decision
+    inventory = OfflineInheritedArtifacts.inventory
+
+    def evaluate(self, commits=None, **options):
+        from t3compose import privacy
+        head = self.git('rev-parse', 'HEAD')
+        args = dict(base=self.base, head=head, branch='main', privacy_policy=self.temp / 'policy')
+        args.update(options)
+        return privacy.evaluate_policy(self.repo, self.local, [head] if commits is None else commits, **args)
+
+    def refused(self, commits=None, **options):
+        with self.assertRaises(cli.CommandError) as error:
+            self.evaluate(commits, **options)
+        for private in (str(self.temp), 'syn-secret', 'SYNTHETIC ONLY', 'synthetic:owner'):
+            self.assertNotIn(private, str(error.exception))
+
+    def mid_run(self, action):
+        # Runs right after the selected tree scan, before the end observation.
+        from t3compose import privacy
+        scanned = privacy._scan_artifact_tree
+        def wrapped(*args):
+            scanned(*args)
+            action()
+        return patch.object(privacy, '_scan_artifact_tree', side_effect=wrapped)
+
+    def verify(self, *extra, text=False, revision=None):
+        return self.invoke('--privacy-policy', str(self.temp / 'policy'), *extra,
+                           command='verify', text=text, revision=revision, entry=True)
+
+    def test_signature_accepts_no_caller_report_list_proof_or_verdict(self):
+        import inspect
+        from t3compose import privacy
+        parameters = inspect.signature(privacy.evaluate_policy).parameters
+        self.assertEqual(list(parameters), ['repo', 'local_dir', 'commits', 'base', 'head', 'branch',
+                                            'texts', 'privacy_policy'])
+        self.assertIs(parameters['privacy_policy'].default, inspect.Parameter.empty)
+        self.assertEqual({n for n, p in parameters.items() if p.kind is inspect.Parameter.KEYWORD_ONLY},
+                         {'base', 'head', 'branch', 'texts', 'privacy_policy'})
+        self.inventory()
+        for name in ('report', 'patterns', 'proof', 'literal_proof', 'verdict', 'dispositions',
+                     'public_commit', 'snapshot', 'saved_report'):
+            with self.subTest(name), self.assertRaises(TypeError):
+                self.evaluate(**{name: {}})
+        with self.assertRaises(TypeError):
+            privacy.evaluate_policy(self.repo, self.local, [], base=self.base, head=self.base, branch='main')
+        with self.assertRaises(cli.CommandError):
+            self.evaluate([], privacy_policy=None)
+
+    def test_valid_owner_inventory_satisfies_policy_while_raw_stays_nonpass(self):
+        from t3compose import privacy
+        head = self.inventory()
+        result = self.evaluate()
+        facts = result.facts
+        self.assertIs(result.policy_satisfied, True)
+        self.assertEqual((facts['version'], facts['policySatisfied'], facts['rawStatus']),
+                         ('policy-evaluation/v1', True, 'policy-evaluation-required'))
+        self.assertEqual((facts['raw']['ok'], facts['raw']['commits'], facts['raw']['findings'],
+                          facts['raw']['action']), (False, 1, (), 'policy-evaluation-required'))
+        coverage = facts['coverage']
+        self.assertEqual((coverage['version'], coverage['commits'], coverage['base'], coverage['head']),
+                         ('artifact-coverage/v1', (head,), self.base, head))
+        self.assertEqual([(o['file'], o['contentScreened']) for o in coverage['approvedUnscanned']],
+                         [('asset.bin', False)])
+        self.assertEqual(coverage['provenance']['contextDigest'], self.context)
+        self.assertEqual(set(facts), {'version', 'policySatisfied', 'rawStatus', 'raw', 'coverage',
+                                      'authority', 'observation'})
+        self.assertEqual(set(facts['raw']), {'ok', 'commits', 'findings', 'action'})
+        self.assertEqual(set(facts['authority']), {'start', 'end'})
+        self.assertEqual(set(facts['authority']['end']), {'authorityEventCount', 'authorityCheckpoint',
+            'authorityWorkDigest', 'authorityEventsDigest', 'observedStart', 'observedEnd'})
+        # The raw scanner is the same code with the same verdict: still ok false.
+        raw = privacy.scan_commits(self.repo, self.local, [head], base=self.base, head=head,
+                                   branch='main', privacy_policy=self.temp / 'policy')
+        self.assertEqual((raw['ok'], raw['action'], raw['findings']), (False, 'policy-evaluation-required', []))
+        # Deleting the asset is allowed; with nothing accounted the raw scan is a text-only pass.
+        (self.repo / 'asset.bin').unlink()
+        clean = self.evaluate([self.commit('asset deleted')])
+        self.assertEqual((clean.policy_satisfied, clean.facts['rawStatus'], clean.facts['raw']['ok'],
+                          clean.summary()['rawExit']), (True, 'no-text-findings', True, 0))
+
+    def test_every_text_finding_is_unresolved_even_when_a_public_snapshot_holds_it(self):
+        from t3compose import privacy
+        self.commit('public snapshot', {'public.txt': 'syn-secret'})
+        self.inventory()
+        self.commit('new text', {'unknown.txt': 'syn-other', 'syn-secret-name.txt': 'safe'})
+        with patch.object(privacy, '_literal_proofs', side_effect=AssertionError('B1 proof is not authority')):
+            result = self.evaluate()
+        self.assertIs(result.policy_satisfied, False)
+        self.assertEqual(result.facts['rawStatus'], 'findings')
+        # Known, public and unknown literals all stay unresolved; the opaque count is separate.
+        found = [(f['field'], f['file']) for f in result.facts['raw']['findings']]
+        self.assertEqual(found, [('file', 'public.txt'), ('path', 'syn-secret-name.txt'), ('file', 'unknown.txt')])
+        self.assertEqual(len(result.facts['coverage']['approvedUnscanned']), 1)
+        # The private facts keep real names; the stdout-shaped scanner redacts the same finding.
+        head = self.git('rev-parse', 'HEAD')
+        raw = privacy.scan_commits(self.repo, self.local, [head], base=self.base, head=head,
+                                   branch='main', privacy_policy=self.temp / 'policy')
+        self.assertEqual([(f['field'], f['file']) for f in raw['findings']],
+                         [('file', 'public.txt'), ('path', '[redacted]'), ('file', 'unknown.txt')])
+
+    def test_missing_invalid_stale_or_revoked_inputs_never_complete(self):
+        self.inventory()
+        policy = self.temp / 'policy'
+        patterns, original = self.list_file.read_bytes(), policy.read_bytes()
+        for content in (b'', b'[\n', b'\xff', b'x\n' * 513):  # even an empty selection needs a valid list
+            self.list_file.write_bytes(content)
+            self.refused([])
+        self.list_file.unlink()
+        self.refused([])
+        self.list_file.write_text('different\n')  # a list the receipt never bound
+        self.refused()
+        self.list_file.write_bytes(patterns)
+        for content in (b'{}', b'[]', b'', original + b'x'):
+            policy.write_bytes(content)
+            self.refused()
+        policy.unlink()
+        self.refused()
+        policy.write_bytes(original)
+        self.assertTrue(self.evaluate().policy_satisfied)  # control: restored inputs pass
+        finding = self.commit('syn-secret early finding')
+        late = self.commit('late', {'zz-unknown': b'\0unapproved'})
+        self.refused()
+        self.refused([finding, late])  # a later failure discards the earlier finding: no partial result
+        self.git('reset', '--hard', 'HEAD~2')
+        self.assertTrue(self.evaluate().policy_satisfied)
+        self.decision('revoke')
+        self.refused([])
+
+    def test_completion_recheck_refuses_replaced_bytes_stream_substituted_receipt_and_revocation(self):
+        import shutil
+        from t3compose import records
+        self.inventory()
+        policy, identity = self.temp / 'policy', self.manifest['repository']
+
+        def recreate():  # the same approval in a different work record: a replaced authority stream
+            shutil.rmtree(records.location(self.local, identity, 'SYNTHETIC')[1])
+            records.create_work(self.local, identity, 'SYNTHETIC', dict(
+                workId='SYNTHETIC', linearIssue=None, repository=identity, targetBranch='main',
+                reviewBase=self.base, scope=['other.bin'], designRefs=[], ownedPaths=['other.bin'],
+                dependencies=[], acceptance=[dict(id='AC', text='Synthetic')],
+                requiredChecks=[dict(id='CHK', command='synthetic', kind='fast')], writer=self.writer),
+                writer=self.writer)
+            self.decision('approve', answer=self.source['quote'], date=self.source['date'])
+
+        def substitute():  # a fully valid approval, but not the one the run started under
+            self.receipt['receiptId'] = self.source['receiptId'] = self.verification['receiptId'] = 'substituted'
+            self.receipt['approvalSeq'] = 2
+            self.bind()
+            self.decision('approve', answer=self.source['quote'], date=self.source['date'])
+        for name, action in (('replaced authority stream', recreate),
+                             ('re-serialized bytes', lambda: policy.write_bytes(policy.read_bytes() + b' ')),
+                             ('valid substituted receipt', substitute),
+                             ('terminal revocation', lambda: self.decision('revoke'))):
+            with self.subTest(name):
+                self.assertTrue(self.evaluate().policy_satisfied)  # the start observation is valid
+                with self.mid_run(action):
+                    self.refused()
+
+    def test_unrelated_append_keeps_the_pass_and_both_observations_are_preserved(self):
+        from datetime import datetime
+        from t3compose import records
+        self.inventory()
+        append = lambda: records.append_event(self.local, self.manifest['repository'], 'SYNTHETIC', 'decision',
+            dict(question='unrelated scheduling question', answer='later', date='2026-11-04',
+                 decidedBy='owner'), writer=self.writer)
+        with self.mid_run(append):
+            result = self.evaluate()
+        facts = result.facts
+        start, end = facts['authority']['start'], facts['authority']['end']
+        self.assertTrue(result.policy_satisfied)
+        self.assertEqual((start['authorityEventCount'], end['authorityEventCount']), (1, 2))
+        self.assertNotEqual(start['authorityCheckpoint']['digest'], end['authorityCheckpoint']['digest'])
+        self.assertEqual(start['authorityWorkDigest'], end['authorityWorkDigest'])
+        self.assertEqual(facts['coverage']['provenance']['authorityEventCount'], 1)
+        window = [datetime.fromisoformat(value) for value in (
+            facts['observation']['start'], start['observedStart'], start['observedEnd'],
+            end['observedStart'], end['observedEnd'], facts['observation']['end'])]
+        self.assertEqual(window, sorted(window))
+
+    def test_one_captured_list_survives_a_mid_run_list_change(self):
+        from t3compose import identifier_list
+        self.inventory()
+        with patch.object(identifier_list, 'load_identifiers', wraps=identifier_list.load_identifiers) as load, \
+                self.mid_run(lambda: self.list_file.write_text('different\n')):
+            result = self.evaluate(branch='syn-secret')
+        self.assertEqual(load.call_count, 1)
+        self.assertFalse(result.policy_satisfied)
+        self.assertEqual([f['field'] for f in result.facts['raw']['findings']], ['branch'])
+        self.assertEqual(result.facts['coverage']['provenance']['listDigest'],
+                         self.digest(['syn-secret', 'syn-other']))
+
+    def test_explicit_ordered_selection_is_evaluated_not_recomputed(self):
+        first = self.inventory()
+        bad = self.commit('syn-secret message')
+        good = self.commit('clean')
+        self.assertTrue(self.evaluate([good]).policy_satisfied)  # the finding commit is not selected
+        self.assertFalse(self.evaluate([bad, good]).policy_satisfied)
+        forward = self.evaluate([first, bad, good], head=good).facts['coverage']
+        reverse = self.evaluate([good, bad, first], head=good).facts['coverage']
+        self.assertEqual((forward['commits'], reverse['commits']), ((first, bad, good), (good, bad, first)))
+        self.assertNotEqual(forward['selectionDigest'], reverse['selectionDigest'])
+        self.assertEqual(self.evaluate([good], head=first).facts['coverage']['head'], first)  # head only binds
+        bound = lambda **options: self.evaluate([good], **options).facts['coverage']
+        self.assertNotEqual(bound(branch='one')['branchDigest'], bound(branch='two')['branchDigest'])
+        self.assertNotEqual(bound(texts=[('title', 'one')])['texts'], bound(texts=[('title', 'two')])['texts'])
+        for selection in ([good, good], iter([good]), good, {good}):  # duplicates, iterator, bare ID, unordered
+            with self.subTest(type(selection).__name__):
+                self.refused(selection)
+
+    def test_history_metadata_and_provenance_controls_hold_in_the_evaluator(self):
+        head = self.inventory()
+        changed = self.commit('changed', {'asset.bin': b'\0changed'})
+        reverted = self.commit('reverted', {'asset.bin': b'\0opaque'})
+        for selection in ([changed], [reverted], [changed, reverted]):  # a clean final tree hides nothing
+            self.refused(selection)
+        self.git('reset', '--hard', head)
+        self.commit('add unknown', {'zz-unknown': b'\0new'})
+        self.refused()
+        self.git('reset', '--hard', head)
+        result = self.evaluate(branch='syn-secret', texts=[('syn-other', 'syn-secret')])
+        self.assertFalse(result.policy_satisfied)  # metadata is screened despite the approval
+        self.assertEqual([f['field'] for f in result.facts['raw']['findings']], ['branch', 'label', 'text'])
+        self.assertEqual(len(result.facts['coverage']['approvedUnscanned']), 1)
+
+    def test_evaluator_revalidates_approved_occurrences_against_the_manifest(self):
+        from t3compose import privacy
+        self.inventory()
+        scanned = privacy._scan_artifact_tree
+        for change in (dict(blobOid='a' * 40), dict(size=1), dict(mode='100755'), dict(file='other.bin'),
+                       dict(receiptId='other'), dict(contextDigest='sha256:' + '0' * 64),
+                       dict(contentScreened=True)):
+            def forged(repo, sha, raw, inventory, snapshot, coverage, screen):
+                scanned(repo, sha, raw, inventory, snapshot, coverage, screen)
+                coverage['approvedUnscanned'][0].update(change)
+            with self.subTest(change), patch.object(privacy, '_scan_artifact_tree', side_effect=forged):
+                self.refused()
+
+    def test_private_result_is_unserializable_and_the_summary_is_the_frozen_allowlist(self):
+        import copy
+        import pickle
+        from t3compose import jsonio
+        self.inventory()
+        result = self.evaluate()
+        for operation in (json.dumps, jsonio.canonical_json, pickle.dumps, copy.copy, copy.deepcopy):
+            with self.subTest(operation.__name__), self.assertRaises(TypeError):
+                operation(result)
+        self.assertEqual((repr(result), str(result)), ('<PolicyEvaluation private>',) * 2)
+        with self.assertRaises(AttributeError):
+            result.facts = {}
+        with self.assertRaises(TypeError):
+            result.facts['policySatisfied'] = False
+        summary = result.summary()
+        self.assertEqual(set(summary), {'version', 'policySatisfied', 'rawStatus', 'rawExit', 'commits',
+                                        'coverage', 'action'})
+        self.assertEqual(set(summary['coverage']), {'screened', 'texts', 'textFindings',
+                                                    'approvedUnscanned', 'excluded'})
+        encoded = json.dumps(summary)
+        for private in ('"ok"', 'sha256:', str(self.temp), 'syn-', 'SYNTHETIC', 'asset.bin', self.base, self.context):
+            self.assertNotIn(private, encoded)
+        self.assertIsNone(re.search('[0-9a-f]{40}', encoded))
+
+    def test_verify_entry_reports_policy_and_raw_status_with_exit_codes_and_no_private_data(self):
+        head = self.inventory()
+        code, out, err = self.verify()
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(json.loads(out), {'version': 'policy-verify/v1', 'policySatisfied': True,
+            'rawStatus': 'policy-evaluation-required', 'rawExit': 1, 'commits': 1, 'action': None,
+            'coverage': {'screened': 3, 'texts': 0, 'textFindings': 0, 'approvedUnscanned': 1, 'excluded': 0}})
+        # The raw check of the same selection stays nonpass: policy and raw are separate verdicts.
+        self.assertEqual(self.invoke('--privacy-policy', str(self.temp / 'policy'), entry=True)[0], 1)
+        for private in ('"ok"', 'sha256:', str(self.temp), 'syn-', 'SYNTHETIC', 'asset.bin', self.base, head):
+            self.assertNotIn(private, out)
+        self.assertIsNone(re.search('[0-9a-f]{40}', out))
+        text_code, text_out, text_err = self.verify(text=True)
+        self.assertEqual((text_code, text_err), (0, ''))
+        self.assertIn('policySatisfied: true', text_out)
+        self.assertNotIn('sha256:', text_out)
+        # A text finding is unresolved: exit 1, counts only, the opaque occurrences still counted.
+        title = self.temp / 'title'
+        title.write_text('public title')
+        self.commit('syn-secret', {'zz-text': 'syn-other', 'ignored.lock': 'x'})
+        code, out, err = self.verify('--text-file', 'title=' + str(title))
+        self.assertEqual((code, err), (1, ''))
+        data = json.loads(out)
+        self.assertEqual((data['policySatisfied'], data['rawStatus'], data['rawExit'], data['commits']),
+                         (False, 'findings', 1, 2))
+        self.assertEqual(data['coverage'], {'screened': 9, 'texts': 1, 'textFindings': 2,
+                                            'approvedUnscanned': 2, 'excluded': 1})
+        self.assertEqual(data['action'], 'policy unsatisfied; Corrections or Shawn must resolve text matches')
+        for private in ('"ok"', 'sha256:', 'syn-', str(self.temp)):
+            self.assertNotIn(private, out)
+
+    def test_verify_invalid_inputs_exit_two_with_empty_stdout(self):
+        self.inventory()
+        self.assertEqual(self.verify()[0], 0)  # control: each refusal below has its own cause
+        calls = [self.invoke(command='verify', entry=True),  # --privacy-policy is required
+                 self.invoke('--privacy-policy', str(self.temp / 'absent'), command='verify', entry=True),
+                 self.verify(revision='--syn-secret..HEAD'),
+                 self.verify('--text-file', 'title=' + str(self.temp / 'absent'))]
+        self.list_file.unlink()
+        calls.append(self.verify())
+        self.list_file.write_text('syn-secret\nsyn-other\n')
+        self.assertEqual(self.verify()[0], 0)
+        self.commit('late', {'zz-unknown': b'\0unapproved'})
+        calls.append(self.verify())
+        self.git('reset', '--hard', 'HEAD~1')
+        self.assertEqual(self.verify()[0], 0)
+        self.decision('revoke')
+        calls.append(self.verify())
+        self.assertEqual(len(calls), 7)
+        for code, out, err in calls:
+            self.assertEqual((code, out), (2, ''))
+            for private in (str(self.temp), 'syn-secret', 'SYNTHETIC ONLY', 'synthetic:owner'):
+                self.assertNotIn(private, err)
+
+    def test_verify_and_check_resolve_one_shared_selection(self):
+        from t3compose import privacy
+        self.inventory()
+        self.commit('second', {'f': 'safe'})
+        policy = ('--privacy-policy', str(self.temp / 'policy'), '--branch', 'publication')
+        with patch.object(privacy, 'scan_commits', wraps=privacy.scan_commits) as scan, \
+                patch.object(privacy, 'evaluate_policy', wraps=privacy.evaluate_policy) as evaluate:
+            self.invoke(*policy)
+            self.invoke(*policy, command='verify')
+        (check_args, check_kwargs), (verify_args, verify_kwargs) = scan.call_args, evaluate.call_args
+        self.assertEqual(list(check_args[2]), list(verify_args[2]))
+        self.assertEqual(len(check_args[2]), 2)
+        for key in ('base', 'head', 'branch', 'texts'):
+            self.assertEqual(check_kwargs[key], verify_kwargs[key])
