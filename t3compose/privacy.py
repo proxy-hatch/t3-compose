@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
+from urllib.parse import urlsplit
 import re
 import stat
 from collections.abc import Sequence
@@ -314,7 +315,12 @@ def _json_tree(value, depth=0):
 def _policy_snapshot(path):
     # Pin the descriptor before testing type. No FIFO open/read can block.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    with os.fdopen(fd, 'rb') as stream:
+    try:
+        stream = os.fdopen(fd, 'rb')
+    except BaseException:
+        os.close(fd)  # fdopen has not taken ownership when setup fails.
+        raise
+    with stream:
         _require_policy(stat.S_ISREG(os.fstat(stream.fileno()).st_mode))
         raw = stream.read(MAX_BYTES + 1)
     _require_policy(len(raw) <= MAX_BYTES)
@@ -394,12 +400,20 @@ def _load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
         _require_policy(receipt[key] == identifiers[key])
     _require_policy(receipt['manifestDigest'] == policy['manifestDigest'])
     _repository(repo)
-    # Normalize a URL obtained through the hardened Git seam, never a directory.
+    # Only the hardened seam reads origin; normalization is pure parsing.
     origin = _text(_git(repo, 'config', '--get', 'remote.origin.url'))
     _require_policy(origin.endswith('\n') and origin.count('\n') == 1)
     origin = origin[:-1]
-    _require_policy('://' in origin or re.fullmatch(r'[^/@:]+@[^/:]+:.+', origin))
-    repository = records.normalize_repository(origin)
+    if '://' in origin:
+        url = urlsplit(origin)
+        _require_policy(url.scheme in {'https', 'ssh'} and url.hostname and not url.query
+                        and not url.fragment and url.password is None and url.port is None)
+        identity = url.hostname.lower() + '/' + url.path.removeprefix('/').removesuffix('.git')
+    else:
+        _require_policy(re.fullmatch(r'[^/@:]+@[^/:]+:.+', origin))
+        host, path = origin.split('@', 1)[1].split(':', 1)
+        identity = host.lower() + '/' + path.removesuffix('.git')
+    repository = records.canonical_identity(identity)
     _require_policy(manifest['repository'] == repository == receipt['repository'] and
                     manifest['objectFormat'] == 'sha1')
     baseline = _commit_id(manifest['baseline'])

@@ -576,6 +576,93 @@ class OfflineArtifactProvenance(OfflineTestCase):
             privacy.scan_commits(self.repo, self.local, [head], base=self.base, head=head, branch='main')
         self.assertEqual(self.invoke('--privacy-policy', str(self.temp/'policy'))[0], 2)
 
+    def test_corrections_origins_never_use_ambient_directory_git(self):
+        from t3compose import records
+        self.fixture()
+        origins = ('https://EXAMPLE.invalid/team/repo.git',
+                   'ssh://git@EXAMPLE.invalid/team/repo.git',
+                   'git@EXAMPLE.invalid:team/repo.git')
+        selectors = dict(GIT_DIR=str(self.repo/'.git'), GIT_WORK_TREE=str(self.temp),
+                         GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='remote.origin.url',
+                         GIT_CONFIG_VALUE_0='https://decoy.invalid/other/repo.git')
+        for origin in origins:
+            self.git('remote', 'set-url', 'origin', origin)
+            collision = self.temp/origin
+            for directory in (False, True):
+                if directory:
+                    collision.mkdir(parents=True)
+                for ambient_env in ({}, selectors):
+                    with self.subTest(origin=origin, directory=directory, selectors=bool(ambient_env)):
+                        with contextlib.chdir(self.temp), patch.dict(os.environ, ambient_env), patch.object(
+                                records, 'git', return_value='https://example.invalid/team/repo.git') as ambient:
+                            result = self.load()
+                        self.assertEqual(ambient.call_count, 0, 'origin normalization performed ambient Git')
+                        self.assertEqual(result['repository'], self.manifest['repository'])
+                        self.assertEqual(result['contextDigest'], self.context)
+        # Preserve the URI grammar as well as the supported forms above.
+        for origin in ('https://example.invalid/team/repo',
+                       'ssh://EXAMPLE.invalid/team/repo.git',
+                       'git@EXAMPLE.invalid:team/repo'):
+            self.git('remote', 'set-url', 'origin', origin)
+            self.assertEqual(self.load()['repository'], self.manifest['repository'])
+        for origin in ('https://user:synthetic-password@example.invalid/team/repo.git',
+                       'https://example.invalid:443/team/repo.git',
+                       'ssh://git@example.invalid:22/team/repo.git',
+                       'https://example.invalid/team/repo.git?query',
+                       'https://example.invalid/team/repo.git#fragment',
+                       'ssh://git@example.invalid/team/repo.git?query',
+                       'ssh://git@example.invalid/team/repo.git#fragment',
+                       'https://[broken/team/repo.git', 'https:///team/repo.git',
+                       'git@example.invalid:22/team/repo.git',
+                       'git@example.invalid:team/repo.git?query',
+                       'git@example.invalid:team/repo.git#fragment',
+                       'file://example.invalid/team/repo.git',
+                       'example.invalid/team/repo', 'git@example.invalid:team//repo.git'):
+            self.git('remote', 'set-url', 'origin', origin)
+            with self.subTest(rejected=origin):
+                with self.assertRaises(cli.CommandError) as error:
+                    self.load()
+                self.assertEqual(str(error.exception), 'invalid artifact provenance input')
+
+    def test_corrections_snapshot_descriptor_ownership_on_setup_failure(self):
+        import errno
+        self.fixture()
+        original_open, original_fdopen = os.open, os.fdopen
+        target = self.temp/'policy'
+        selected = []
+        def opened(path, *args, **kwargs):
+            fd = original_open(path, *args, **kwargs)
+            if path == target:
+                selected.append(fd)
+            return fd
+        def fdopened(fd, *args, **kwargs):
+            if fd in selected:
+                raise OSError('synthetic wrapper setup failure')
+            return original_fdopen(fd, *args, **kwargs)
+        with patch.object(os, 'open', side_effect=opened), patch.object(os, 'fdopen', side_effect=fdopened):
+            with self.assertRaises(cli.CommandError) as error:
+                self.load()
+        self.assertEqual(str(error.exception), 'invalid artifact provenance input')
+        self.assertEqual(len(selected), 1)
+        try:
+            os.fstat(selected[0])
+        except OSError as error:
+            self.assertEqual(error.errno, errno.EBADF)
+        else:
+            os.close(selected[0])  # Clean up the old implementation's leak on red.
+            self.fail('raw policy descriptor remained open after fdopen failure')
+        # A subsequent ordinary read accepts the same bytes and closes its FD.
+        selected.clear()
+        raw = target.read_bytes()
+        with patch.object(os, 'open', side_effect=opened):
+            result = self.load()
+        self.assertEqual(result['policyFileDigest'], self.digest(raw))
+        self.assertEqual(result['contextDigest'], self.context)
+        self.assertEqual(len(selected), 1)
+        with self.assertRaises(OSError) as error:
+            os.fstat(selected[0])
+        self.assertEqual(error.exception.errno, errno.EBADF)
+
     def test_preparation_semantics_and_missing_invalid_list(self):
         from t3compose import privacy, identifier_list
         self.assertTrue(callable(getattr(privacy, 'prepare_policy_identifiers', None)),

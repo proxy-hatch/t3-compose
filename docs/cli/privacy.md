@@ -190,7 +190,9 @@ configuration. There is no network lookup.
 Each policy, manifest, receipt, source and verification file is opened once with
 `O_RDONLY|O_NONBLOCK|O_NOFOLLOW`, checked as regular by `fstat` on that descriptor,
 and read with a 1 MiB plus one limit. Digests hash the same accepted raw bytes,
-including whitespace. FIFOs, devices, directories and oversized inputs refuse.
+including whitespace. The raw descriptor is closed if stream setup fails; after
+setup the stream owns its closure. FIFOs, devices, directories and oversized
+inputs refuse.
 JSON is UTF-8, duplicate-key and nonfinite-number rejecting, with maximum nesting
 32. NUL, surrogates, missing/unknown keys and wrong scalar types refuse. Every
 `schemaVersion` is integer 1, never boolean. Errors carry no input values or
@@ -226,8 +228,11 @@ unique exact paths, mode string `100644`, lowercase SHA-1 `blobOid`, and integer
 modes are unsupported. `objectFormat` is exactly `sha1`. Repository identities
 must equal the canonical local origin identity in manifest, receipt and authority
 work. Origin is read through hardened `privacy._git`, then its returned URL is
-normalized; no ambient directory-based Git lookup runs. HTTPS and SSH origin
-URLs are supported. The repository must be complete and SHA-1. Baseline and BASE
+normalized by pure URI/string parsing and `records.canonical_identity`, without
+filesystem probing or ambient directory-based Git lookup, even when a local
+directory has the same spelling. HTTPS, SSH URI and scp-style SSH origins are
+supported; passwords, explicit ports, nonempty queries/fragments and malformed
+identities refuse. The repository must be complete and SHA-1. Baseline and BASE
 must exist as exact commit objects, and baseline must be an ancestor of BASE.
 This foundation does **not** validate entry tuples against either tree.
 
