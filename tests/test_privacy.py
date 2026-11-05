@@ -2195,12 +2195,38 @@ class OfflinePublicText(OfflineTestCase):
                 with self.mid_run(action):
                     self.refused()
 
+    def combined_change_after_proof(self, mutation):
+        self.inventory()
+        artifact_context = self.context
+        self.build()
+        self.pin(artifact=True)
+        self.assertTrue(self.evaluate().policy_satisfied)
+        policy = self.temp / 'policy'
+        action = (lambda: self.decision('revoke', context=artifact_context)) if mutation == 'revoke' else (
+            lambda: policy.write_bytes(policy.read_bytes() + b' '))
+        with self.mid_run(action) as proof:
+            with self.assertRaisesRegex(cli.CommandError, '^invalid artifact provenance input$'):
+                self.evaluate()
+        self.assertGreater(proof.call_count, 0)
+        with self.assertRaisesRegex(cli.CommandError, '^invalid artifact provenance input$'):
+            self.evaluate()
+
+    def test_combined_policy_refuses_artifact_revocation_after_real_proof(self):
+        self.combined_change_after_proof('revoke')
+
+    def test_combined_policy_refuses_artifact_policy_edit_after_real_proof(self):
+        self.combined_change_after_proof('policy bytes')
+
     def test_approved_opaque_bytes_and_scoped_text_are_both_covered_and_pure_text_invents_no_inventory(self):
         from t3compose import privacy
         self.inventory()
         self.build()
         self.pin(artifact=True)
-        result = self.evaluate()
+        with self.mid_run(lambda: self.decision('approve', question='Synthetic unrelated decision')):
+            result = self.evaluate()
+        authority = result.facts['authority']
+        self.assertEqual(authority['end']['authorityEventCount'], authority['start']['authorityEventCount'] + 1)
+        self.assertNotEqual(authority['start']['authorityCheckpoint'], authority['end']['authorityCheckpoint'])
         coverage = result.facts['coverage']
         self.assertEqual((result.policy_satisfied, result.facts['rawStatus'], coverage['version'],
                           [o['file'] for o in coverage['approvedUnscanned']], sorted(result.facts['authority'])),

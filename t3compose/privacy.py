@@ -812,10 +812,15 @@ def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), p
     data, coverage, snapshot = _scan(repo, local_dir, patterns, commits, base=base, head=head,
                                      branch=branch, texts=texts, privacy_policy=artifact,
                                      private=True, trace=trace)
+    findings = data['findings']
+    if public is not None:
+        selection = _selected(public, trace)
+        context = _canonical_digest(selection)
+        verdicts = _public_text_verdicts(repo, patterns, public, findings, trace, locale, context)
+    # Observe artifact authority after all proof work, before building authority.end.
     pin = None if public is None else public['artifact'][1]
     current = None if snapshot is None else _artifact_end(
         repo, local_dir, artifact, base, patterns, snapshot, coverage, pin)
-    findings = data['findings']
     status = 'findings' if findings else (
         'policy-evaluation-required' if coverage and coverage['approvedUnscanned'] else 'no-text-findings')
     raw = dict(ok=data['ok'], commits=data['commits'], findings=findings, action=data['action'])
@@ -826,9 +831,6 @@ def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), p
             version=EVALUATION_VERSION, policySatisfied=not findings, rawStatus=status, raw=raw,
             coverage=coverage, authority=authority,
             observation=dict(start=started, end=datetime.now(timezone.utc).isoformat())))
-    selection = _selected(public, trace)
-    context = _canonical_digest(selection)
-    verdicts = _public_text_verdicts(repo, patterns, public, findings, trace, locale, context)
     later = _text_policy(repo, local_dir, privacy_policy, patterns)
     _require_policy(later is not None and later['bindings'] == public['bindings'] and _locale_digest() == locale)
     resolved = sum(v['resolved'] for v in verdicts)
