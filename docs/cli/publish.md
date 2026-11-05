@@ -41,11 +41,19 @@ All advertised refs, including tags and HEAD, exclude reachable objects from
 the publication set. Every advertised object must already exist locally;
 shallow or incomplete history, malformed remote facts and read errors stop.
 The command never fetches or writes tracking refs, so fetch beforehand, outside
-it: an advertised object this checkout lacks stops the push. A bounded adapter
-composes PV-1 object readers and the existing identifier-list grep matcher to
-screen exactly the selected commit messages, full trees, paths, UTF-8 blob
-contents and branch. PV-1 byte bounds, unsupported-entry refusal and `.lock`
-screening exception apply. Changes to workflows in selected commits stop with
+it: an advertised object this checkout lacks stops the push. The publisher calls
+`privacy.scan_commits` with that exact ordered publication set, the work's
+immutable review-base/head endpoints and the intended branch. The endpoints do
+not replace the push selection with a review range. The shared strict scanner
+screens selected commit messages, full trees, paths, UTF-8 blob contents and
+branch, including intermediate and merge-side history. Its SHA-1-only,
+complete-history, byte bounds, unsupported-entry and binary refusals and `.lock`
+screening exception apply. There is no publisher policy option or policy verdict
+consumption. Raw findings refuse publication.
+
+An independent `diff-tree --root -m` walk checks workflow transitions for every
+selected commit against every parent, including roots. It does not exclude
+`.lock` paths. Changes to workflows in selected commits stop with
 exit 5: Shawn must push them. Privacy stops name safe next actions without
 matched text: Corrections for unpublished history, coordinator branch
 correction, or report to Shawn for published history. Rewriting published
@@ -127,14 +135,19 @@ without ASCII controls or DEL, and at most 256 UTF-8 bytes. File contents and
 backend errors are never printed. Relative text paths refer to the starting
 repository root. Pass an explicit absolute global local directory.
 
-After exact-head evidence passes, PV-1 screens the entire immutable work
-review-base-to-head range, branch, title and body. This includes already
+After exact-head evidence passes, `privacy.scan_commits` screens the entire
+immutable work review-base-to-head range and intended branch, with ordered
+labeled texts `[("title", captured_title), ("body", captured_body)]`. PR screening
+uses that review range even when push's advertised exclusions make its set
+empty. The independent workflow walk also applies to this range. This includes already
 published commits after Corrections. A stale review/check stops before intent;
 a published privacy match requires a report to Shawn. Only unpublished history
 may receive authorized Corrections. The coordinator fixes its own text/branch.
 The title is captured once and the body is copied into a private mode-0600
-snapshot inside a mode-0700 directory; creation uses those screened bytes even
-if the original files change. Snapshots are removed on return.
+snapshot inside a mode-0700 directory. Creation uses only those captured bytes;
+a persistent change to either original text file during preparation refuses
+before token mint rather than silently replacing the payload. Snapshots are
+removed on return.
 
 A durable `pull-request` intent precedes discovery or creation. Discovery uses
 a bounded read through `process.run`:
@@ -233,3 +246,31 @@ Refused child results show only a validated closed-vocabulary refusal kind
 and a coordinator repair action, never supplied summary text or backend
 diagnostics. Unknown outcomes still require reconciliation; failures stay
 failed. Durable operation/status truth is unchanged.
+
+
+## Final strict write gate
+
+New writes run a second strict gate after earlier preparation: intent persistence,
+push lease reread or PR discovery, status-path creation and PR body snapshot
+creation. Existing recovery and verified no-op paths retain their reconciliation
+rules and do not mint a token.
+
+The gate checks watched configuration, reruns the shared strict scan and independent
+workflow walk on the captured selection and texts, checks current exact-head
+evidence, then reloads the work. Original work, effective work and the complete
+event prefix must agree; only this operation's new intent may have been added.
+This catches changes to requirements, review or assignment even if replacement
+evidence could otherwise pass. Push rereads all advertised refs and compares the
+complete map and ordered publication set, preserving the original target lease.
+PR re-enumerates its immutable review range. Both compare the intended head and
+branch; PR rereads title/body and compares base and captured text bytes. Actual
+checkout HEAD is read at the end, before entering the token runner.
+
+Changed inputs refuse without launching a child or inventing a status summary.
+Read errors remain safe invalid-input failures; retained intent/status support
+reconciliation. The token runner retains its own configuration preconditions,
+App identity, token lifecycle and revocation rules. These are sequential reads,
+not an atomic transaction across inspection, record writes, mint and publication;
+concurrent changes after the relevant final observation are outside this guarantee.
+Policy integration remains a separate follow-up; this foundation grants no policy
+permission and does not change `publish run`.
