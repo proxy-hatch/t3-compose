@@ -274,3 +274,42 @@ not an atomic transaction across inspection, record writes, mint and publication
 concurrent changes after the relevant final observation are outside this guarantee.
 Policy integration remains a separate follow-up; this foundation grants no policy
 permission and does not change `publish run`.
+
+## Dormant canonical verification helpers
+
+Two private helpers provide a directly tested foundation for later integration.
+Neither has a production caller or changes the strict gates above. There is no
+publisher policy flag, permission, saved-report input or evaluation storage here.
+
+`_policy_verify_command(local, repo, base, head, branch, policy, *, text_files=())`
+returns this exact token array, never a shell command:
+
+```text
+["t3c", "--local-dir", LOCAL, "privacy", "verify", "--repo-path", REPO,
+ "--range", BASE + ".." + HEAD, "--branch", BRANCH, "--privacy-policy", POLICY]
+```
+
+Paths accept strings or `Path` objects and become absolute lexical normalized
+paths, without opening files, resolving symlinks or requiring existence. Endpoints
+are full lowercase SHA-1 values. Branches must have valid lexical Git branch
+syntax. Path and branch strings are nonempty UTF-8 without ASCII controls, each
+at most 4096 bytes; encoded command JSON is at most 16384 bytes. Text inputs are
+an empty tuple/list or precisely ordered pairs `title`, `body`; the PR array adds
+`["--text-file", "title=" + TITLE, "--text-file", "body=" + BODY]`.
+Malformed inputs raise sanitized `CommandError` (2).
+
+`_policy_verify_check(local, identity, work, head, command)` accepts only the
+canonical list, loads current validated records itself and returns a Boolean.
+It binds local directory, current effective review base and requested head,
+requires an exact current required-check command and applicable trusted pass
+with concrete evidence, and also requires the complete evidence comparison.
+Malformed inputs or unavailable records raise sanitized `CommandError` (2).
+The future caller must construct the expected command from its actual captured
+repository, branch, policy and ordered text paths; record labels cannot supply
+those invocation arguments. No detached bundle, check or report is an input.
+
+This is cooperative provenance, not authentication. Review-range verification
+cannot attest the actual remote-excluded push set. Projection/storage foundation
+and full integration remain follow-ups: actual selection evaluation, fresh
+policy/list/authority observations and final write gates are still mandatory
+before any policy publication can be enabled.

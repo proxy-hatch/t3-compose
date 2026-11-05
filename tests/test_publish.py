@@ -158,6 +158,123 @@ class OfflinePublish(OfflineTestCase):
                 runpy.run_path(str(ROOT / 'bin/t3c'), run_name='__main__')
         return exit.exception.code, out.getvalue(), err.getvalue()
 
+    def policy_command(self, **overrides):
+        values = dict(local=self.local, repo=self.repo, base=self.base,
+                      head=self.head, branch=self.args.branch, policy=self.temp / 'policy.json')
+        values.update(overrides)
+        return publish._policy_verify_command(**values)
+
+    def policy_requirement(self, command):
+        decision = self.add('decision', {'question': 'Change fixture check?',
+            'answer': 'Use fixture verification command', 'decidedBy': 'manager',
+            'date': '2026-11-01'})
+        self.add('scope', {'decisionRef': decision['seq'],
+            'requiredChecks': [{'id': 'SUITE', 'command': command, 'kind': 'fast'}]})
+
+    def policy_pass(self, expected, **overrides):
+        data = dict(checkId='SUITE', command=expected, commit=self.head,
+                    outcome='pass', source='manager', evidencePath='verify.log')
+        data.update(overrides)
+        return self.add('check', data)
+
+    def policy_join(self, command):
+        return publish._policy_verify_check(self.local, REPO, 'WORK', self.head, command)
+
+    def test_policy_command_arrays_and_no_content_reads(self):
+        expected = ['t3c', '--local-dir', str(self.local), 'privacy', 'verify',
+            '--repo-path', str(self.repo), '--range', self.base + '..' + self.head,
+            '--branch', self.args.branch, '--privacy-policy', str(self.temp / 'policy.json')]
+        with patch.object(Path, 'open', side_effect=AssertionError('content read')):
+            self.assertEqual(self.policy_command(local=self.local / 'unused/..'), expected)
+            texts = [('title', self.temp / 'title'), ('body', self.temp / 'body')]
+            self.assertEqual(self.policy_command(text_files=texts), expected +
+                ['--text-file', 'title=' + str(self.temp / 'title'),
+                 '--text-file', 'body=' + str(self.temp / 'body')])
+
+    def test_policy_command_rejects_untyped_and_invalid_arguments(self):
+        for changes in ({'local': b'path'}, {'repo': ''}, {'policy': 1},
+                {'policy': 'x\0y'}, {'policy': '\ud800'}, {'policy': 'x' * 4097},
+                {'base': 'main'}, {'head': 'A' * 40}, {'branch': '-topic'},
+                {'branch': 'a..b'}, {'branch': 'a b'}, {'branch': 'a.lock'},
+                {'text_files': 'title=x'}, {'text_files': [('body', 'x'), ('title', 'y')]},
+                {'text_files': [('title', 'x')]}, {'text_files': [('title', 'x'), ('body', 2)]}):
+            with self.subTest(changes=changes), self.assertRaises(cli.CommandError):
+                self.policy_command(**changes)
+
+    def test_policy_join_requires_actual_current_requirement_and_whole_evidence(self):
+        command = self.policy_command()
+        self.assertFalse(self.policy_join(command))
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        self.add('scope', {'decisionRef': next(e['data']['decisionRef'] for e in reversed(self.events()) if e['kind'] == 'scope'),
+            'acceptance': [{'id': 'OTHER', 'text': 'Additional fixture evidence'}]})
+        self.assertFalse(self.policy_join(command))
+        self.assertEqual(self.launches, [])
+
+    def test_policy_join_rejects_command_variants_and_diagnostic_fallback(self):
+        command = self.policy_command()
+        self.policy_requirement(command)
+        for changes in ({'commit': self.base}, {'source': 'worker'},
+                {'source': 'feature-lead'}, {'outcome': 'fail'},
+                {'command': ' '.join(command)}):
+            with self.subTest(changes=changes):
+                self.policy_pass(command, **changes)
+                self.assertFalse(self.policy_join(command))
+        # The actual record schema refuses nonconcrete evidence before the
+        # current-record join; detached check dictionaries are not accepted.
+        for missing in ('', None, {'unknown': 'No fixture log'}):
+            with self.assertRaises(ValueError):
+                self.policy_pass(command, evidencePath=missing)
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        changed_local = self.policy_command(local=self.temp / 'other-local')
+        self.assertFalse(self.policy_join(changed_local))
+        self.assertFalse(publish._policy_verify_check(self.local, REPO, 'WORK', self.base, command))
+        for index, replacement in ((6, str(self.temp / 'other-repo')), (8, self.head + '..' + self.head),
+                (10, 'other/topic'), (12, str(self.temp / 'other-policy'))):
+            changed = command.copy()
+            changed[index] = replacement
+            self.assertFalse(self.policy_join(changed))
+        for changed in (' '.join(command), tuple(command), command[:-1], command + ['--extra'],
+                [*command[:3], 'verify', 'privacy', *command[5:]],
+                [*command[:2], str(self.local / 'x/..'), *command[3:]]):
+            with self.subTest(command=changed), self.assertRaises(cli.CommandError):
+                self.policy_join(changed)
+        pr = self.policy_command(text_files=[('title', self.temp / 'title'), ('body', self.temp / 'body')])
+        self.policy_requirement(pr)
+        self.policy_pass(pr)
+        self.assertTrue(self.policy_join(pr))
+        for index in (14, 16):
+            changed = pr.copy()
+            changed[index] += '-changed'
+            self.assertFalse(self.policy_join(changed))
+        with self.assertRaises(cli.CommandError):
+            self.policy_join(pr[:13] + pr[15:] + pr[13:15])
+
+    def test_policy_migration_keeps_raw_failure_and_requires_fresh_check(self):
+        raw = self.policy_pass('fixture-check', outcome='fail')
+        command = self.policy_command()
+        old = self.policy_pass(command)
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        events = self.events()
+        self.assertEqual(events[raw['seq'] - 1], raw)
+        self.assertEqual(events[old['seq'] - 1], old)
+        # A changed requirement invalidates earlier matching observations, even
+        # if the same command later returns under a supported scope decision.
+        self.policy_requirement('fixture-replacement')
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        self.add('lead-assignment', {'thread': 'new-fixture-lead', 'assignedBy': WRITER,
+                 'date': '2026-11-01', 'reason': 'Fixture reassignment'})
+        self.assertFalse(self.policy_join(command))
+
     def test_shared_scan_uses_actual_push_set_and_work_endpoints(self):
         # The remote already has the reviewed tip: the push set is empty,
         # although the work review range is not.

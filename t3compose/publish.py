@@ -28,6 +28,95 @@ def _out(outcome, reason, code=1):
     return cli.Outcome({'outcome': outcome, 'reason': reason}, code)
 
 
+def _policy_verify_command(local, repo, base, head, branch, policy, *, text_files=()):
+    """Build dormant verification argv; normalize spelling without reading files."""
+    def text(value):
+        if (type(value) is not str or not value or
+                any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise ValueError
+        if len(value.encode('utf-8')) > 4096:
+            raise ValueError
+        return value
+
+    def path(value):
+        if not isinstance(value, (str, Path)):
+            raise ValueError
+        return text(os.path.abspath(text(str(value))))
+
+    try:
+        if any(type(v) is not str or not _SHA.fullmatch(v) for v in (base, head)):
+            raise ValueError
+        text(branch)
+        if (branch.startswith(('-', '/')) or branch.endswith(('/', '.')) or
+                '@{' in branch or '..' in branch or branch == '@' or
+                re.search(r'[ ~^:?*\\[ ]', branch) or
+                any(not part or part.startswith('.') or part.endswith('.lock')
+                    for part in branch.split('/'))):
+            raise ValueError
+        if type(text_files) not in (tuple, list) or len(text_files) not in (0, 2):
+            raise ValueError
+        command = ['t3c', '--local-dir', path(local), 'privacy', 'verify',
+                   '--repo-path', path(repo), '--range', base + '..' + head,
+                   '--branch', branch, '--privacy-policy', path(policy)]
+        for item, label in zip(text_files, ('title', 'body')):
+            if type(item) not in (tuple, list) or len(item) != 2 or item[0] != label:
+                raise ValueError
+            command.extend(['--text-file', label + '=' + path(item[1])])
+        if len(json.dumps(command, ensure_ascii=False).encode('utf-8')) > schema.MAX_PAYLOAD_BYTES:
+            raise ValueError
+        return command
+    except (ValueError, TypeError, OSError):
+        _fail('invalid policy verification command')
+
+
+def _policy_verify_check(local, identity, work, head, command):
+    """Join current records only; a matching check never clears another gap.
+
+    Future callers must build expected argv from their captured invocation.
+    Cooperative check provenance is not authentication or policy permission.
+    """
+    try:
+        if (type(command) is not list or len(command) not in (13, 17) or
+                any(type(token) is not str for token in command)):
+            raise ValueError
+        endpoints = command[8].split('..')
+        if len(endpoints) != 2 or type(head) is not str or not _SHA.fullmatch(head):
+            raise ValueError
+        texts = ()
+        if len(command) == 17:
+            if not command[14].startswith('title=') or not command[16].startswith('body='):
+                raise ValueError
+            texts = (('title', command[14][6:]), ('body', command[16][5:]))
+        canonical = _policy_verify_command(command[2], command[6], *endpoints,
+                                            command[10], command[12], text_files=texts)
+        if canonical != command:
+            raise ValueError
+        expected_local = _policy_verify_command(local, command[6], *endpoints,
+                            command[10], command[12], text_files=texts)[2]
+        loaded = records.load_work(local, identity, work)
+        effective = loaded['effectiveWork']
+        if (command[2] != expected_local or endpoints != [effective['reviewBase'], head]):
+            return False
+        (_, checks, _, _, _, _, _, assignments, lead, since, _) = evidence._index(loaded)
+        for requirement in effective['requiredChecks']:
+            if requirement['command'] != command:
+                continue
+            key = requirement['id']
+            boundary = since['requiredChecks'][key]
+            event = evidence._select(checks.get(key, []), boundary, head,
+                                     assignments, lead, command)
+            if event is None:
+                continue
+            data = event['data']
+            if (event['seq'] > boundary and data['commit'] == head and
+                    data['command'] == command and evidence._trusted(event, assignments, lead) and
+                    data['outcome'] == 'pass' and records.concrete(data['evidencePath'])):
+                return evidence._compare(loaded, head, False)['verified'] is True
+        return False
+    except (ValueError, TypeError, OSError, records.RecordError):
+        _fail('invalid policy verification inputs or records')
+
+
 @contextmanager
 def _environment(repo):
     """No ambient credentials, Git selectors, executable paths or user config."""

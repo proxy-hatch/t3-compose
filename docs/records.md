@@ -629,3 +629,25 @@ decisions only. No real rule is installed by the capability.
 The records are cooperative: they bind a decision, evidence and occurrences under this
 workflow, not who spoke or who verified, and they give no atomic revocation. Observation
 is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv2).
+
+### Canonical verification-check foundation
+
+The dormant [publisher helpers](cli/publish.md#dormant-canonical-verification-helpers)
+use an exact token array for both `requiredChecks.command` and `check.command`,
+including absolute normalized local/repository/policy paths, immutable work
+`reviewBase..head`, intended branch and, for PRs, ordered title/body file labels.
+A shell string, matching check ID, changed label or saved summary cannot replace
+that array. Future callers construct it from captured invocation arguments.
+
+The join loads actual current validated records and uses `effectiveWork`, scope
+replacement sequence and current assignment provenance. It explicitly rechecks
+selection's diagnostic fallback: exact head and command, trusted source, pass
+and concrete evidence must all hold. The whole evidence comparison remains
+binding; a privacy pass cannot clear another missing check, criterion or review.
+Current schema validation already refuses empty or non-string check evidence.
+
+Use the supported new-work or resolved-decision/scope migration above and record
+a fresh applicable verification check after a changed requirement. Keep failed
+raw checks and older passes unchanged; neither becomes verification evidence
+through relabeling. These helpers are inactive and grant no policy permission;
+projection/storage and production integration remain separate follow-ups.
