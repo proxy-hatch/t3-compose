@@ -701,3 +701,15 @@ rerun the actual publication-set evaluator. The dormant
 [current-context seal](cli/publish.md#dormant-current-policy-context-seal) prepares
 a future freshness boundary for both contexts; none of these helpers installs
 policy publication or turns a stored observation into permission.
+
+### Dormant lifecycle intent relation
+
+The private [lifecycle composition](cli/publish.md#dormant-policy-lifecycle-composition)
+requires a current actual intent supplied by its caller after preparation.
+Publication and canonical CHECK observations use that intent's `opId` and
+`opId-review`, respectively; PR has only the former. The suffix denotes storage
+for the same intent/result, never a second event. Helpers append no result and
+invent no child status. A caller must record the actual refused or uncertain
+outcome when safe, retaining partial observations if storage failed. Retry needs
+fresh preparation and a real new intent; old observations are neither overwritten
+nor accepted as evidence of permission. No active publisher uses this interface.
