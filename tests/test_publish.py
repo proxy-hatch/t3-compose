@@ -2997,8 +2997,23 @@ class OfflinePolicyLifecycle(OfflineTestCase):
         for command_changes in ({'outcome': 'fail'}, {'commit': f.middle},
                                 {'command': ['different']}, {'source': 'worker'}):
             with self.subTest(change=command_changes):
-                f.policy_requirement(f.context('check').check_command)
-                f.policy_pass(f.context('check').check_command, **command_changes)
+                canonical = f.context('check').check_command
+                history = f.events()
+                # An unchanged requirement retains the earlier applicable pass.
+                f.policy_requirement(canonical)
+                f.policy_pass(canonical, **command_changes)
+                state, stopped = self.prepare(f)
+                if command_changes == {'outcome': 'fail'}:
+                    self.assertIsNone(state)
+                    self.assertEqual(stopped.code, 1)
+                else:
+                    self.assertIsNotNone(state)
+                    self.assertIsNone(stopped)
+                # Changing the definition and restoring it creates a real boundary.
+                f.policy_requirement(['intervening-command'])
+                f.policy_requirement(canonical)
+                self.assertEqual(self.prepare(f)[1].code, 1)  # No post-boundary check.
+                f.policy_pass(canonical, **command_changes)
                 state, stopped = self.prepare(f)
                 self.assertIsNone(state)
                 self.assertEqual(stopped.code, 1)
@@ -3006,6 +3021,7 @@ class OfflinePolicyLifecycle(OfflineTestCase):
                 state, stopped = self.prepare(f)
                 self.assertIsNone(stopped)
                 self.assertIsNotNone(state)
+                self.assertEqual(f.events()[:len(history)], history)
         f.git('config', 'remote.origin.url', 'https://github.com/other/repository.git')
         self.invalid(lambda: self.prepare(f))
         self.assertEqual(f.launches, [])
@@ -3219,7 +3235,10 @@ class OfflinePolicyLifecycle(OfflineTestCase):
                 directory = self.private_parents(f)
                 intent = self.intent(f)
                 actual = publish._write_policy_observation
-                writes, seals = [], []
+                writes, seals, decisions = [], [], []
+                before = f.events()
+                authority_before = {work: records.load_work(f.local, REPO, work)['events']
+                                    for work in ('PUBLIC', 'ARTIFACT')}
                 actual_seal = publish._seal_policy_context
                 def seal(*args, **kwargs):
                     seals.append(str(kwargs['policy']))
@@ -3229,9 +3248,9 @@ class OfflinePolicyLifecycle(OfflineTestCase):
                     writes.append(value)
                     if len(writes) == 2:
                         if mutation == 'public':
-                            f.authority_decision('PUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.rule_context, 'SYNTHETIC ONLY: revoked.')
+                            decisions.append(f.authority_decision('PUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.rule_context, 'SYNTHETIC ONLY: revoked.'))
                         elif mutation == 'artifact':
-                            f.authority_decision('ARTIFACT', 'privacy-artifact/v1 revoke synthetic-inventory ' + f.artifact_context, 'SYNTHETIC ONLY: revoked.')
+                            decisions.append(f.authority_decision('ARTIFACT', 'privacy-artifact/v1 revoke synthetic-inventory ' + f.artifact_context, 'SYNTHETIC ONLY: revoked.'))
                     return value
                 old = None
                 if mutation == 'old-file':
@@ -3251,7 +3270,12 @@ class OfflinePolicyLifecycle(OfflineTestCase):
                     self.assertEqual(seals, [str(f.context(name).policy) for name in ('check', 'push', 'check', 'push')])
                 if old:
                     self.assertEqual(old.read_bytes(), b'old bytes never permission')
-                self.assertEqual(f.events()[-1]['kind'], 'decision' if mutation in ('public', 'artifact') else 'op-intent')
+                self.assertEqual(f.events(), before)
+                self.assertEqual(f.events()[-1], intent)
+                for work, previous in authority_before.items():
+                    expected = previous + decisions if mutation.upper() == work else previous
+                    self.assertEqual(records.load_work(f.local, REPO, work)['events'], expected)
+                self.assertEqual(len(decisions), int(mutation in ('public', 'artifact')))
                 self.assertEqual(f.launches, [])
 
     def test_initial_policy_authority_and_pinned_evidence_fail_closed(self):
