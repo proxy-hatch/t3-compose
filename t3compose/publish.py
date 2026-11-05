@@ -48,7 +48,7 @@ def _policy_verify_command(local, repo, base, head, branch, policy, *, text_file
             raise ValueError
         text(branch)
         if (branch.startswith(('-', '/')) or branch.endswith(('/', '.')) or
-                '@{' in branch or '..' in branch or branch == '@' or
+                '@{' in branch or '..' in branch or branch in {'@', 'HEAD'} or
                 re.search(r'[ ~^:?*\\[ ]', branch) or
                 any(not part or part.startswith('.') or part.endswith('.lock')
                     for part in branch.split('/'))):
@@ -115,6 +115,223 @@ def _policy_verify_check(local, identity, work, head, command):
         return False
     except (ValueError, TypeError, OSError, records.RecordError):
         _fail('invalid policy verification inputs or records')
+
+
+def _policy_observation(result, *, operation, repository, base, head, commits,
+                        branch, texts, check_command, identifiers, list_observed_at):
+    """Project current private facts only; no I/O, authentication or permission.
+
+    The caller captures context and freshly observes identifiers. Stable policy
+    bindings and volatile authority observations deliberately have separate hashes.
+    Never hash unselected facts, findings, paths, verdicts or proof objects.
+    """
+    from datetime import datetime, timezone
+    from types import MappingProxyType
+    from . import jsonio, privacy_dispositions as pd
+
+    def require(condition):
+        if not condition:
+            raise ValueError
+
+    def closed(value, keys):
+        require(type(value) in (dict, MappingProxyType) and set(value) == set(keys.split()))
+        return value
+
+    def text(value, limit=4096):
+        require(type(value) is str and bool(value) and len(value.encode('utf-8')) <= limit
+                and not any(ord(c) < 32 or ord(c) == 127 for c in value))
+        return value
+
+    def digest(value):
+        require(type(value) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', value) is not None)
+        return value
+
+    def sha(value):
+        require(type(value) is str and _SHA.fullmatch(value) is not None)
+        return value
+
+    def count(value):
+        require(type(value) is int and 0 <= value <= 2**31-1)
+        return value
+
+    def sequence(value):
+        require(type(value) in (tuple, list) and len(value) <= privacy.MAX_BYTES)
+        return value
+
+    def time(value):
+        require(type(value) is str and len(value) <= 32 and re.fullmatch(
+            r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)', value))
+        parsed = datetime.fromisoformat(value)
+        require(parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(parsed))
+        return parsed
+
+    def identity(value):
+        text(value)
+        require(records.canonical_identity(value) == value)
+
+    def segment(value):
+        require(type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', value))
+
+    def authority(value):
+        closed(value, 'authorityEventCount authorityCheckpoint authorityWorkDigest authorityEventsDigest '
+                      'observedStart observedEnd')
+        n = count(value['authorityEventCount'])
+        cp = closed(value['authorityCheckpoint'], 'lastSeq digest')
+        require(count(cp['lastSeq']) == n)
+        require(time(value['observedStart']) <= time(value['observedEnd']))
+        return dict(authorityEventCount=n, authorityCheckpoint=dict(lastSeq=n,digest=digest(cp['digest'])),
+            authorityWorkDigest=digest(value['authorityWorkDigest']),
+            authorityEventsDigest=digest(value['authorityEventsDigest']),
+            observedStart=value['observedStart'], observedEnd=value['observedEnd'])
+
+    def authorities(value, work_digest):
+        closed(value, 'start end')
+        start, end = authority(value['start']), authority(value['end'])
+        require(start['authorityWorkDigest'] == end['authorityWorkDigest'] == work_digest)
+        return privacy._canonical_digest(start), privacy._canonical_digest(end)
+
+    try:
+        require(type(result) is privacy.PolicyEvaluation and result.policy_satisfied is True)
+        require(type(operation) is str and operation in {'push', 'pr'})
+        identity(repository)
+        sha(base), sha(head), text(branch)
+        chosen = [sha(item) for item in sequence(commits)]
+        require(len(chosen)*41 <= privacy.MAX_BYTES and len(set(chosen)) == len(chosen))
+        pairs = sequence(texts)
+        require((operation == 'push' and not pairs) or (operation == 'pr' and len(pairs) == 2))
+        projected_texts = []
+        for i, pair in enumerate(pairs):
+            require(len(sequence(pair)) == 2 and pair[0] == ('title','body')[i])
+            label, body = pair
+            text(label)
+            require(type(body) is str and '\0' not in body and len(body.encode('utf-8')) <= privacy.MAX_BYTES)
+            projected_texts.append(dict(labelDigest=privacy._digest(label.encode('utf-8')),
+                                        textDigest=privacy._digest(body.encode('utf-8'))))
+        require(type(check_command) is list and bool(check_command))
+        command = [text(item) for item in check_command]
+        require(len(jsonio.canonical_json(command)) <= 16384)
+        ids = closed(identifiers, 'policyVersion policyDigest listDigest patternCount')
+        require(ids['policyVersion'] == privacy.POLICY_VERSION and
+                digest(ids['policyDigest']) == privacy._canonical_digest(privacy._POLICY_DESCRIPTOR))
+        digest(ids['listDigest']), count(ids['patternCount'])
+        context = dict(version='selection-context/v1', repository=repository, base=base, head=head,
+            commits=chosen, branchDigest=privacy._digest(branch.encode('utf-8')), texts=projected_texts)
+        context_digest, selection_digest = privacy._canonical_digest(context), privacy._canonical_digest(chosen)
+        f = result.facts
+        version = f['version']
+        require(version in {'policy-evaluation/v1','policy-evaluation/v2'})
+        v2 = version == 'policy-evaluation/v2'
+        closed(f, 'version policySatisfied rawStatus raw coverage authority observation' +
+                  (' selection publicText' if v2 else ''))
+        observation = closed(f['observation'], 'start end')
+        started, ended = time(observation['start']), time(observation['end'])
+        require(started <= ended <= time(list_observed_at))
+        raw = closed(f['raw'], 'ok commits findings action')
+        require(type(raw['ok']) is bool and count(raw['commits']) == len(chosen))
+        finding_count = len(sequence(raw['findings']))
+        require(raw['action'] is None or type(raw['action']) is str)
+        stable_artifact, stable_public = None, None
+        artifact_start = artifact_end = public_start = public_end = None
+        coverage, approved_count = f['coverage'], 0
+        if coverage is not None:
+            closed(coverage, 'version repository base head commits selectionDigest branchDigest texts provenance '
+                             'screened approvedUnscanned excluded')
+            require(coverage['version'] == 'artifact-coverage/v1')
+            for key in ('repository','base','head','branchDigest'):
+                require(coverage[key] == context[key])
+            require(list(sequence(coverage['commits'])) == chosen and coverage['selectionDigest'] == selection_digest)
+            got_texts = sequence(coverage['texts'])
+            require(len(got_texts) == len(projected_texts))
+            for got, expected in zip(got_texts, projected_texts):
+                closed(got, 'labelDigest textDigest')
+                require(dict(got) == expected)
+            sequence(coverage['screened']), sequence(coverage['excluded'])
+            approved_count = len(sequence(coverage['approvedUnscanned']))
+            p = closed(coverage['provenance'], 'receiptId authorityWorkId approvalSeq inventoryContextDigest '
+                'contextDigest policyFileDigest manifestDigest receiptDigest sourceDigest verificationDigest '
+                'policyVersion policyDigest listDigest patternCount baseline authorityEventCount authorityCheckpoint '
+                'authorityWorkDigest authorityEventsDigest observedStart observedEnd')
+            segment(p['receiptId']), segment(p['authorityWorkId']), sha(p['baseline'])
+            require(count(p['approvalSeq']) > 0)
+            for key in ids:
+                require(type(p[key]) is type(ids[key]) and p[key] == ids[key])
+            stable_artifact = dict(repository=repository, base=base, receiptId=p['receiptId'],
+                authorityWorkId=p['authorityWorkId'], approvalSeq=p['approvalSeq'], baseline=p['baseline'],
+                policyVersion=p['policyVersion'], patternCount=p['patternCount'])
+            for key in ('inventoryContextDigest','contextDigest','policyFileDigest','manifestDigest','receiptDigest',
+                        'sourceDigest','verificationDigest','policyDigest','listDigest','authorityWorkDigest'):
+                stable_artifact[key] = digest(p[key])
+            a = authority({key:p[key] for key in privacy._OBSERVED})
+            require(p['approvalSeq'] <= a['authorityEventCount'])
+            artifact_start, artifact_end = authorities(f['authority'], p['authorityWorkDigest'])
+        else:
+            require(v2 and f['authority'] is None)
+        if v2:
+            s = closed(f['selection'], 'version repository base head commits branchDigest texts selectionContext '
+                                      'listDigest patternCount localeDigest')
+            require(s['version'] == context['version'])
+            for key in ('repository','base','head','branchDigest'):
+                require(s[key] == context[key])
+            require(list(sequence(s['commits'])) == chosen)
+            rows = sequence(s['texts'])
+            require(len(rows) == len(projected_texts))
+            for got, expected in zip(rows, projected_texts):
+                closed(got, 'labelDigest textDigest')
+                require(dict(got) == expected)
+            require(digest(s['selectionContext']) == context_digest and
+                    digest(s['listDigest']) == ids['listDigest'] and count(s['patternCount']) == ids['patternCount'])
+            locale_digest = digest(s['localeDigest'])
+            public = closed(f['publicText'], 'bindings authority verdicts resolved unresolved')
+            require(count(public['resolved']) == len(sequence(public['verdicts'])) and
+                    count(public['unresolved']) == 0 and public['resolved'] == finding_count)
+            b = closed(public['bindings'], 'ruleId ruleContext repository scope fields policyVersion policyDigest '
+                'authorityWorkId approvalSeq publicCommit listDigest selectionContext artifact ruleDigest '
+                'publicationDigest dispositionsDigest authorityWorkDigest policyFileDigest')
+            segment(b['ruleId']), segment(b['authorityWorkId']), identity(b['repository']), sha(b['publicCommit'])
+            require(b['repository'] == repository and b['scope'] == pd.SCOPE and
+                    b['policyVersion'] == pd.POLICY_VERSION and digest(b['policyDigest']) == pd.digest(pd.DESCRIPTOR)
+                    and count(b['approvalSeq']) > 0)
+            fields = list(sequence(b['fields']))
+            require(bool(fields) and all(type(field) is str for field in fields) and
+                    fields == sorted(set(fields)) and set(fields) <= set(pd.FIELDS))
+            require(digest(b['selectionContext']) == context_digest and digest(b['listDigest']) == ids['listDigest'])
+            pair = sequence(b['artifact'])
+            require(len(pair) == 2)
+            if coverage is None:
+                require(tuple(pair) == (None,None))
+                artifact_pin = [None,None]
+            else:
+                name = text(pair[0])
+                require(not any(c in name for c in '\\*?[]') and
+                        all(p not in {'','.','..'} for p in name.split('/')))
+                require(digest(pair[1]) == stable_artifact['policyFileDigest'])
+                artifact_pin = [privacy._digest(name.encode('utf-8')), pair[1]]
+            stable_public = dict(ruleId=b['ruleId'], repository=repository, scope=b['scope'], fields=fields,
+                policyVersion=b['policyVersion'], authorityWorkId=b['authorityWorkId'], approvalSeq=b['approvalSeq'],
+                publicCommit=b['publicCommit'], artifact=artifact_pin, localeDigest=locale_digest)
+            for key in ('ruleContext','policyDigest','listDigest','selectionContext','ruleDigest','publicationDigest',
+                        'dispositionsDigest','authorityWorkDigest','policyFileDigest'):
+                stable_public[key] = digest(b[key])
+            public_start, public_end = authorities(public['authority'], b['authorityWorkDigest'])
+            require(b['approvalSeq'] <= public['authority']['start']['authorityEventCount'])
+        else:
+            require(finding_count == 0)
+        status = 'findings' if finding_count else ('policy-evaluation-required' if approved_count else 'no-text-findings')
+        require(f['rawStatus'] == status and raw['ok'] is (not finding_count and not approved_count))
+        output = dict(version='publication-policy-observation/v1', operation=operation, base=base, head=head,
+            selectionDigest=selection_digest, contextDigest=context_digest,
+            checkCommandDigest=privacy._canonical_digest(command), listDigest=ids['listDigest'],
+            patternCount=ids['patternCount'], policyBindingDigest=privacy._canonical_digest(dict(
+                version=version, contextDigest=context_digest, artifact=stable_artifact, publicText=stable_public)),
+            artifactAuthorityStartDigest=artifact_start, artifactAuthorityEndDigest=artifact_end,
+            publicAuthorityStartDigest=public_start, publicAuthorityEndDigest=public_end,
+            rawStatus=status, rawExit=0 if raw['ok'] else 1, commitCount=len(chosen), findingCount=finding_count,
+            approvedUnscannedCount=approved_count, policySatisfied=True, observedStart=observation['start'],
+            observedEnd=observation['end'], listObservedAt=list_observed_at)
+        require(len(jsonio.canonical_json(output)) <= 16384)
+        return output
+    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError, cli.CommandError):
+        _fail('invalid private policy observation')
 
 
 @contextmanager
