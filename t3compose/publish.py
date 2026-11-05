@@ -1,6 +1,8 @@
 """Reviewed-head publication; durable facts, never child-output inference."""
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import os
+import copy
+import stat
 import json
 from pathlib import Path
 import re
@@ -748,6 +750,91 @@ def _finalize_policy_gate(state, *, intent):
         _fail('invalid policy lifecycle')
 
 
+def _read_publication_text(path):
+    """Pin a regular final component; parent directory aliases remain supported."""
+    fd = None
+    try:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            initial = os.fstat(fd)
+            if not stat.S_ISREG(initial.st_mode) or initial.st_size > _LIMIT:
+                raise ValueError
+            raw = bytearray()
+            while len(raw) <= _LIMIT:
+                chunk = os.read(fd, _LIMIT + 1 - len(raw))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            text = privacy._text(bytes(raw))
+            final = os.fstat(fd)
+            named = os.stat(path, follow_symlinks=False)
+            def facts(info):
+                return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                        info.st_mtime_ns, info.st_ctime_ns)
+            if (facts(initial) != facts(final) or facts(final) != facts(named)
+                    or final.st_size != len(raw)):
+                raise ValueError
+            closing, fd = fd, None  # Surrender ownership BEFORE a possibly failing close.
+            os.close(closing)
+            return text
+        finally:
+            if fd is not None:
+                closing, fd = fd, None
+                os.close(closing)
+    except (OSError, ValueError, TypeError, cli.CommandError):
+        _fail('publication text unavailable or changed')
+
+
+def _capture_invocation(args, *, pr_mode=False):
+    """Keep original fields separate from operational paths, before any cwd switch."""
+    fields = ('local_dir', 'work', 'head', 'branch')
+    if not pr_mode or hasattr(args, 'repo_path'):
+        fields += ('repo_path',)
+    if pr_mode:
+        fields += ('base', 'title_file', 'body_file')
+    values = {name: copy.deepcopy(getattr(args, name)) for name in fields}
+    operational = SimpleNamespace(**vars(args))
+    operational.local_dir = Path(os.path.abspath(args.local_dir))
+    operational.repo_path = Path.cwd() if pr_mode else Path(os.path.abspath(args.repo_path))
+    files = []
+    if pr_mode:
+        if args.base != 'main':
+            _fail('PR base must be main')
+        for label in ('title', 'body'):
+            spelling = getattr(args, label + '_file')
+            path = Path(os.path.abspath(spelling))
+            text = _read_publication_text(path)
+            files.append((label, spelling, path, text))
+            setattr(operational, label + '_file', path)
+        title = files[0][3]
+        if (not title.strip() or len(title.encode('utf-8')) > 256 or
+                any(ord(c) < 32 or ord(c) == 127 for c in title)):
+            _fail('PR title must be nonempty bounded single-line text')
+    return SimpleNamespace(original=args, values=values, args=operational,
+                           files=tuple(files), config=None, intent=None, pretoken=True)
+
+
+def _guard_invocation(state):
+    if any(getattr(state.original, name, None) != value for name, value in state.values.items()):
+        _fail('publication invocation changed')
+    for label, spelling, path, text in state.files:
+        if _read_publication_text(path) != text:
+            _fail('publication metadata changed')
+    if github_app.load_config(state.args.local_dir / 'github-app.json') != state.config:
+        _fail('publication App configuration changed')
+
+
+class _ResultPersistenceError(cli.CommandError):
+    """Do not retry an append whose persistence is uncertain."""
+
+
+def _pretoken_failure(state, code):
+    local, identity, work, intent = state.intent
+    result = _finish(local, identity, work, intent, 'refused',
+                     confirmation='Publication preparation failed; no token requested; repair inputs before retry')
+    return cli.Outcome(result.data, code)
+
+
 @contextmanager
 def _environment(repo):
     """No ambient credentials, Git selectors, executable paths or user config."""
@@ -871,7 +958,7 @@ def _review_set(repo, base, head):
 
 
 def _final_gate(args, repo, identity, loaded, intent, selected, branch, *,
-                url=None, refs=None, texts=(), metadata=None):
+                url=None, refs=None, texts=(), metadata=None, invocation=None):
     """After preparation, validate captured inputs before entering token_run.
 
     Own intent is the only permitted record addition. No child/status facts
@@ -899,9 +986,11 @@ def _final_gate(args, repo, identity, loaded, intent, selected, branch, *,
             return _out('refused', 'Publication refs or selection changed; no child launched; prepare fresh publication')
     elif _review_set(repo, base, head) != selected:
         return _out('refused', 'Publication selection changed; no child launched')
-    if (args.head != head or args.branch != branch or
-            metadata is not None and (args.base, privacy._file(args.title_file),
-                                      privacy._file(args.body_file)) != metadata):
+    if invocation is not None:
+        _guard_invocation(invocation)
+    elif (args.head != head or args.branch != branch or
+            metadata is not None and (args.base, _read_publication_text(args.title_file),
+                                      _read_publication_text(args.body_file)) != metadata):
         return _out('refused', 'Publication metadata changed; no child launched; prepare fresh publication')
     if _git(repo, 'rev-parse', '--verify', 'HEAD') != (head + '\n').encode():
         return _out('refused', 'Publication HEAD changed; no child launched; restore reviewed checkout')
@@ -954,7 +1043,10 @@ def _finish(local, repo, work, intent, outcome, summary=None, confirmation=None)
         data['confirmation'] = confirmation
     if summary is not None:
         data['statusSummary'] = summary
-    _append(local, repo, work, 'op-result', data)
+    try:
+        _append(local, repo, work, 'op-result', data)
+    except (cli.CommandError, records.RecordError, schema.SchemaError, OSError, ValueError, TypeError):
+        raise _ResultPersistenceError('publication: result persistence failed; preserve files and reconcile before retry', 2) from None
     reason = data['confirmation']
     kind = (summary or {}).get('refusal')
     if outcome == 'refused' and kind in {'missing-status', *token_run._CODES, *token_preconditions.KINDS}:
@@ -992,7 +1084,7 @@ def _valid_summary(result, status):
     return value if value == status else None
 
 
-def _push(args, repo, identity, url):
+def _push(args, repo, identity, url, *, invocation=None):
     local, work, head, branch = args.local_dir, args.work, args.head, args.branch
     checked = evidence.check(local, identity, work, head, pr_ready=False)
     if not checked['verified']:
@@ -1043,6 +1135,8 @@ def _push(args, repo, identity, url):
     intent = _append(local, identity, work, 'op-intent', {
         'opId': uuid.uuid4().hex, 'operation': 'push', 'target': target,
         'commit': head, 'expectedPriorHead': current})
+    if invocation is not None:
+        invocation.intent = (local, identity, work, intent)
     if _remote(repo, url).get(ref, 'absent') != current:
         return _finish(local, identity, work, intent, 'refused')
     if current == head:
@@ -1051,15 +1145,19 @@ def _push(args, repo, identity, url):
     command = ['git', 'push', '--force-with-lease=' + ref + ':' +
                ('' if current == 'absent' else current), url, head + ':' + ref]
     stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
-                          url=url, refs=refs)
+                          url=url, refs=refs, invocation=invocation)
     if stopped:
         refused = _finish(local, identity, work, intent, 'refused',
                           confirmation=stopped.data['reason'])
         return cli.Outcome(refused.data, stopped.code)
     try:
         with _quiet():
+            if invocation is not None:
+                invocation.pretoken = False
             result = token_run.run_command(command, path, local_dir=local)
     except (Exception, KeyboardInterrupt):
+        if invocation is not None and invocation.pretoken:
+            raise
         return _finish(local, identity, work, intent, 'unknown')
     status = _read_status(path)
     summary = _valid_summary(result, status)
@@ -1079,7 +1177,10 @@ def _push(args, repo, identity, url):
 
 def _publish(args, *, pr_mode=False):
     """Public handler. No I/O at import or registration time."""
+    invocation = None
     try:
+        invocation = _capture_invocation(args, pr_mode=pr_mode)
+        args = invocation.args
         info = cli.helper_info()
         dirty = info['dirty']
         if dirty:
@@ -1096,6 +1197,7 @@ def _publish(args, *, pr_mode=False):
         reader_env = dict(os.environ)
         with _environment(repo):
             config = github_app.load_config(Path(args.local_dir) / 'github-app.json')
+            invocation.config = copy.deepcopy(config)
             identity = 'github.com/' + config.full_name
             url = 'https://' + identity + '.git'
             _git(repo, 'check-ref-format', 'refs/heads/' + args.branch)
@@ -1111,13 +1213,23 @@ def _publish(args, *, pr_mode=False):
                                       cwd=str(repo))
             _overrides(repo)
             if pr_mode:
-                return _pr(args, repo, identity, config, reader_env)
-            return _push(args, repo, identity, url)
+                return _pr(args, repo, identity, config, reader_env, invocation=invocation)
+            return _push(args, repo, identity, url, invocation=invocation)
+    except _ResultPersistenceError:
+        raise
     except github_app.ConfigError:
+        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+            return _pretoken_failure(invocation, 2)
         _fail('invalid App configuration; coordinator must repair private configuration', 3)
+    except cli.CommandError as error:
+        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+            return _pretoken_failure(invocation, 1 if error.code == 1 else 2)
+        raise
     except token_preconditions.Refusal:
         return _out('refused', 'unsafe Git configuration; coordinator must repair configuration')
     except (records.RecordError, schema.SchemaError, OSError, ValueError, TypeError):
+        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+            return _pretoken_failure(invocation, 2)
         _fail('invalid inputs or record persistence failed; preserve status and reconcile before retry')
 
 
@@ -1193,11 +1305,12 @@ def _verified_pr(args, config, number, env):
         return False
 
 
-def _pr(args, repo, identity, config, reader_env):
+def _pr(args, repo, identity, config, reader_env, *, invocation=None):
     local, work, head = args.local_dir, args.work, args.head
     if args.base != 'main':
         _fail('PR base must be main')
-    title, body = privacy._file(args.title_file), privacy._file(args.body_file)
+    title, body = (tuple(item[3] for item in invocation.files) if invocation is not None
+                   else (_read_publication_text(args.title_file), _read_publication_text(args.body_file)))
     if (not title.strip() or len(title.encode('utf-8')) > 256 or
             any(ord(c) < 32 or ord(c) == 127 for c in title)):
         _fail('PR title must be nonempty bounded single-line text')
@@ -1224,6 +1337,8 @@ def _pr(args, repo, identity, config, reader_env):
     intent = old if pending else _append(local, identity, work, 'op-intent', {
         'opId': uuid.uuid4().hex, 'operation': 'pull-request', 'target': target,
         'commit': head, 'expectedPriorHead': None})
+    if invocation is not None and not pending:
+        invocation.intent = (local, identity, work, intent)
 
     def finish(outcome, summary=None, number=None, gap=None):
         result = _finish(local, identity, work, intent, outcome, summary,
@@ -1237,6 +1352,8 @@ def _pr(args, repo, identity, config, reader_env):
     try:
         number = _discover(config, args.branch, reader_env)
     except cli.CommandError:
+        if not pending and invocation is not None:
+            return _pretoken_failure(invocation, 2)
         return finish('unknown')
     if pending:
         summary = _read_status(_status_path(local, identity, work, intent))
@@ -1264,14 +1381,18 @@ def _pr(args, repo, identity, config, reader_env):
         command = ['gh', 'pr', 'create', '--repo', config.full_name, '--head', args.branch,
                    '--base', args.base, '--title=' + title, '--body-file', str(body_path)]
         stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
-                              texts=texts, metadata=metadata)
+                              texts=texts, metadata=metadata, invocation=invocation)
         if stopped:
             refused = finish('refused', gap=stopped.data['reason'])
             return cli.Outcome(refused.data, stopped.code)
         try:
             with _quiet():
+                if invocation is not None:
+                    invocation.pretoken = False
                 actual = token_run.run_command(command, path, local_dir=local)
         except (Exception, KeyboardInterrupt):
+            if invocation is not None and invocation.pretoken:
+                raise
             return finish('unknown')
     summary = _valid_summary(actual, _read_status(path))
     if summary is None:

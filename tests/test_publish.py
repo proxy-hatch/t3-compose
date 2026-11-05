@@ -1278,12 +1278,11 @@ class OfflinePublishPR(OfflineTestCase):
     def test_discovery_ambiguity_failure_and_shape_never_create(self):
         for raw in (b'[{},{}]', b'{', b'{}', b'[{"number":true}]',
                     b'x' * (publish._LIMIT + 1), b'[{"number":7,"number":8}]'):
-            # Resolve the synthetic unknown between cases by retained no-start status.
             with patch.object(process, 'run', side_effect=lambda argv, **kw:
                     subprocess.CompletedProcess(argv, 0, raw, b'') if argv[0] == 'gh'
                     else self.original_run(argv, **kw)):
-                self.assertEqual(self.invoke().data['outcome'], 'unknown')
-            self.assertEqual(self.invoke().data['outcome'], 'refused')
+                self.assertEqual(self.invoke().data['outcome'], 'refused')
+            self.assertNotIn('statusSummary', self.events()[-1]['data'])
         self.assertFalse(self.launches)
 
     def test_interrupted_create_reconciles_without_duplicate(self):
@@ -1415,12 +1414,12 @@ class OfflinePublishPR(OfflineTestCase):
     def test_discovery_failed_reads_and_wrong_targets(self):
         for data in ([dict(self.row(), number=True)], [self.row(), self.row()]):
             self.prs = data
-            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+            self.assertEqual(self.invoke().data['outcome'], 'refused')
         self.prs = [self.row()]
         self.prs[0]['head']['ref'] = 'other'
-        self.assertEqual(self.invoke().data['outcome'], 'unknown')
+        self.assertEqual(self.invoke().data['outcome'], 'refused')
         with patch.object(publish, '_discover', side_effect=cli.CommandError('PRIVATE_SENTINEL')):
-            self.assertEqual(self.invoke().data['outcome'], 'unknown')
+            self.assertEqual(self.invoke().data['outcome'], 'refused')
         self.assertFalse(self.launches)
 
     def test_invalid_base_head_and_helper_entry(self):
@@ -3332,3 +3331,438 @@ class OfflinePolicyLifecycle(OfflineTestCase):
                     os.environ['LC_ALL'] = 'C' if os.environ.get('LC_ALL') != 'C' else 'C.UTF-8'
                 self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
                 self.assertFalse(directory.exists())
+
+
+class OfflinePublicationText(OfflineTestCase):
+    def setUp(self):
+        self.path = self.temp / 'metadata'
+        self.path.write_bytes(b'Ordinary public text')
+
+    def read(self):
+        return publish._read_publication_text(self.path)
+
+    def refused(self):
+        with self.assertRaises(cli.CommandError) as raised:
+            self.read()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn(str(self.path), str(raised.exception))
+        self.assertNotIn('PRIVATE_SENTINEL', str(raised.exception))
+
+    def test_regular_empty_and_intermediate_alias(self):
+        self.path.chmod(0o666)
+        self.assertEqual(self.read(), 'Ordinary public text')
+        alias = self.temp / 'alias'
+        alias.symlink_to(self.temp, target_is_directory=True)
+        self.assertEqual(publish._read_publication_text(alias / 'metadata'), self.read())
+        self.path.write_bytes(b'')
+        self.assertEqual(self.read(), '')
+
+    def test_final_symlink_and_substitution_at_open(self):
+        target = self.temp / 'target'
+        target.write_bytes(self.path.read_bytes())
+        self.path.unlink()
+        self.path.symlink_to(target)
+        self.refused()
+        self.path.unlink()
+        self.path.write_bytes(b'public')
+        original = os.open
+        def swapped(path, flags, *a, **kw):
+            self.path.unlink()
+            self.path.symlink_to(target)
+            return original(path, flags, *a, **kw)
+        with patch.object(os, 'open', side_effect=swapped):
+            self.refused()
+
+    def test_nonregular_fifo_nonblocking_and_directory(self):
+        self.path.unlink()
+        os.mkfifo(self.path)
+        original = os.open
+        def opened(path, flags, *a, **kw):
+            self.assertTrue(flags & os.O_NONBLOCK)
+            self.assertTrue(flags & os.O_NOFOLLOW)
+            return original(path, flags, *a, **kw)
+        with patch.object(os, 'open', side_effect=opened):
+            self.refused()
+        self.path.unlink()
+        self.path.mkdir()
+        self.refused()
+
+    def test_bounds_utf8_nul_and_growth(self):
+        for raw in (b'x' * (publish._LIMIT + 1), b'\xff', b'x\0y'):
+            self.path.write_bytes(raw)
+            self.refused()
+        self.path.write_bytes(b'x' * publish._LIMIT)
+        self.assertEqual(len(self.read()), publish._LIMIT)
+        original = os.read
+        self.path.write_bytes(b'public')
+        def grew(fd, size):
+            self.assertLessEqual(size, publish._LIMIT + 1)
+            return b'x' * size
+        with patch.object(os, 'read', side_effect=grew):
+            self.refused()
+
+    def test_named_replacement_and_inplace_mutation(self):
+        original = os.read
+        for replacement in (False, True):
+            self.path.write_bytes(b'public')
+            changed = []
+            def mutate(fd, size):
+                raw = original(fd, size)
+                if not changed:
+                    changed.append(True)
+                    if replacement:
+                        other = self.temp / 'other'
+                        other.write_bytes(b'public')
+                        other.replace(self.path)
+                    else:
+                        self.path.write_bytes(b'changed')
+                return raw
+            with patch.object(os, 'read', side_effect=mutate):
+                self.refused()
+            self.assertTrue(changed)
+
+    def test_setup_read_validation_failures_close_once(self):
+        original_open, original_close = os.open, os.close
+        for stage in ('fstat', 'read', 'validation', 'stat'):
+            opened, closed = [], []
+            def opening(*a, **kw):
+                fd = original_open(*a, **kw)
+                opened.append(fd)
+                return fd
+            def closing(fd):
+                closed.append(fd)
+                return original_close(fd)
+            target = {'fstat': (os, 'fstat'), 'read': (os, 'read'),
+                      'validation': (publish.privacy, '_text'), 'stat': (os, 'stat')}[stage]
+            error = cli.CommandError('PRIVATE_SENTINEL') if stage == 'validation' else OSError('PRIVATE_SENTINEL')
+            with patch.object(os, 'open', side_effect=opening), patch.object(os, 'close', side_effect=closing):
+                with patch.object(*target, side_effect=error):
+                    self.refused()
+            self.assertEqual(opened, closed)
+            self.assertEqual(len(closed), 1)
+        with patch.object(os, 'open', side_effect=OSError('PRIVATE_SENTINEL')), patch.object(os, 'close') as close:
+            self.refused()
+        close.assert_not_called()
+
+    def test_reported_close_error_never_retries_recycled_descriptor(self):
+        original_close, original_open = os.close, os.open
+        closed, recycled = [], []
+        def close(fd):
+            closed.append(fd)
+            original_close(fd)
+            recycled.append(original_open(self.path, os.O_RDONLY))
+            raise OSError('PRIVATE_SENTINEL')
+        try:
+            with patch.object(os, 'close', side_effect=close):
+                self.refused()
+            self.assertEqual(len(closed), 1)
+            os.fstat(recycled[0])
+        finally:
+            for fd in recycled:
+                original_close(fd)
+
+
+class OfflineStrictInvocation(OfflineTestCase):
+    # Fixture methods only: no inherited/repeated baseline test campaign.
+    setUp = OfflinePublishPR.setUp
+    git = OfflinePublish.git
+    add = OfflinePublish.add
+    create_work = OfflinePublish.create_work
+    native = OfflinePublish.native
+    cover = OfflinePublish.cover
+    remote = OfflinePublish.remote
+    run_child = OfflinePublish.run_child
+    events = OfflinePublish.events
+    ops = OfflinePublish.ops
+    read = OfflinePublishPR.read
+    row = OfflinePublishPR.row
+    create = OfflinePublishPR.create
+
+    def invoke(self, mode):
+        cwd = Path.cwd()
+        try:
+            if mode == 'pr':
+                os.chdir(self.repo)
+            return (publish.pr if mode == 'pr' else publish.push)(self.args)
+        finally:
+            os.chdir(cwd)
+
+    def hook(self, mode, action):
+        name = '_discover' if mode == 'pr' else '_status_path'
+        original = getattr(publish, name)
+        reached = []
+        def changed(*a, **kw):
+            value = original(*a, **kw)
+            if not reached:
+                reached.append(True)
+                action()
+            return value
+        self.reached = reached
+        return patch.object(publish, name, side_effect=changed)
+
+    def assert_refused(self, result):
+        self.assertTrue(self.reached)
+        self.assertFalse(self.launches)
+        self.assertEqual(result.data['outcome'], 'refused')
+        data = self.events()[-1]['data']
+        self.assertEqual(self.ops()[-2:], ['op-intent', 'op-result'])
+        self.assertEqual(data['outcome'], 'refused')
+        self.assertNotIn('statusSummary', data)
+        self.assertNotIn('PRIVATE_SENTINEL', str(result.data))
+        self.assertNotIn(str(self.temp), str(result.data))
+
+    def test_original_fields_equal_byte_paths_and_current_bytes(self):
+        for mode in ('push', 'pr'):
+            fields = ['local_dir', 'work', 'head', 'branch', 'repo_path'] if mode == 'push' else [
+                'local_dir', 'work', 'head', 'branch', 'repo_path', 'base', 'title_file', 'body_file',
+                'title_bytes', 'body_bytes']
+            for field in fields:
+                with self.subTest(mode=mode, field=field):
+                    saved = vars(self.args).copy()
+                    def mutate():
+                        if field.endswith('_bytes'):
+                            getattr(self.args, field.replace('_bytes', '_file')).write_text('Changed public text')
+                        elif field.endswith('_file'):
+                            alternate = self.temp / ('alternate-' + field)
+                            alternate.write_bytes(getattr(self.args, field).read_bytes())
+                            setattr(self.args, field, alternate)
+                        else:
+                            setattr(self.args, field, {'local_dir': self.temp / 'unused', 'work': 'OTHER',
+                                'head': self.base, 'branch': 'other/topic', 'base': 'other',
+                                'repo_path': str(self.temp)}[field])
+                    with self.hook(mode, mutate):
+                        result = self.invoke(mode)
+                    vars(self.args).update(saved)
+                    self.assert_refused(result)
+                    self.args.title_file.write_text('Fixture title')
+                    self.args.body_file.write_text('Fixture body\n')
+                    self.cover(self.head)
+
+    def test_current_complete_app_configuration_semantic_guard(self):
+        path = self.local / 'github-app.json'
+        initial = path.read_bytes()
+        for mode in ('push', 'pr'):
+            for section, key, value in (('app', 'appId', 2), ('app', 'slug', 'other-worker'),
+                    ('app', 'keychain', {'service': 'other', 'account': 'other'}),
+                    ('repository', 'permissions', {'contents': 'read'})):
+                with self.subTest(mode=mode, key=key):
+                    def mutate():
+                        data = json.loads(initial)
+                        data[section][key] = value
+                        jsonio.atomic_replace(path, data)
+                    with self.hook(mode, mutate):
+                        result = self.invoke(mode)
+                    self.assert_refused(result)
+                    path.write_bytes(initial)
+                    self.cover(self.head)
+
+    def test_relative_paths_before_dirty_helper_and_repository_cwd(self):
+        original = vars(self.args).copy()
+        cwd = Path.cwd()
+        for mode in ('push', 'pr'):
+            self.args.local_dir = Path(os.path.relpath(self.local, self.repo if mode == 'pr' else cwd))
+            self.args.repo_path = os.path.relpath(self.repo, cwd)
+            self.args.title_file = Path(os.path.relpath(self.temp / 'title.txt', self.repo))
+            self.args.body_file = Path(os.path.relpath(self.temp / 'body.txt', self.repo))
+            self.git('config', 'user.name', 'Fixture')
+            real_git = publish._git
+            def git(repo, *a, **kw):
+                if a == ('status', '--porcelain', '--untracked-files=no'):
+                    return b''
+                return real_git(repo, *a, **kw)
+            with patch.object(cli, 'helper_info', return_value={'commit': 'e'*40, 'dirty': True, 'root': str(self.repo)}), patch.object(publish, '_git', side_effect=git):
+                consumer = self.create if mode == 'pr' else self.run_child
+                with patch.object(token_run, 'run_command', side_effect=consumer):
+                    result = self.invoke(mode)
+            self.assertEqual(result.code, 0)
+            self.assertEqual(len(self.launches), 1)
+            self.assertEqual(vars(self.args)['local_dir'], Path(os.path.relpath(self.local, self.repo if mode == 'pr' else cwd)))
+            self.launches.clear()
+            self.cover(self.head)
+        vars(self.args).update(original)
+
+    def test_pretoken_read_command_and_append_failures(self):
+        config_path = self.local / 'github-app.json'
+        config = config_path.read_bytes()
+        for mode in ('push', 'pr'):
+            for failure in ('read', 'command', 'config', 'append'):
+                with self.subTest(mode=mode, failure=failure):
+                    def mutate():
+                        if failure == 'config':
+                            config_path.write_bytes(b'invalid PRIVATE_SENTINEL')
+                        if failure == 'read' and mode == 'pr':
+                            self.args.body_file.unlink()
+                    def fail(*a, **kw):
+                        if failure == 'command':
+                            raise cli.CommandError('PRIVATE_SENTINEL')
+                        raise OSError('PRIVATE_SENTINEL')
+                    append = publish._append
+                    def writer(*a, **kw):
+                        if a[3] == 'op-result':
+                            raise records.RecordError('PRIVATE_SENTINEL')
+                        return append(*a, **kw)
+                    with self.hook(mode, mutate):
+                        if failure in ('command', 'append') or failure == 'read' and mode == 'push':
+                            with patch.object(publish, '_final_gate', side_effect=fail):
+                                if failure == 'append':
+                                    with patch.object(publish, '_append', side_effect=writer):
+                                        with self.assertRaises(cli.CommandError) as error:
+                                            self.invoke(mode)
+                                    self.assertEqual(error.exception.code, 2)
+                                    self.assertNotIn('PRIVATE_SENTINEL', str(error.exception))
+                                    self.assertTrue(self.reached)
+                                    self.assertEqual(self.events()[-1]['kind'], 'op-intent')
+                                    self.assertTrue(records.uncertain_items(self.events()))
+                                    self.assertFalse(self.launches)
+                                    # Explicit synthetic reconciliation only after checking uncertainty.
+                                    intent = self.events()[-1]
+                                    publish._finish(self.local, REPO, 'WORK', intent, 'refused')
+                                    result = None
+                                else:
+                                    result = self.invoke(mode)
+                        else:
+                            result = self.invoke(mode)
+                    config_path.write_bytes(config)
+                    self.args.body_file.write_text('Fixture body\n')
+                    if result is not None:
+                        self.assert_refused(result)
+                        self.assertEqual(result.code, 2)
+                    self.cover(self.head)
+
+    def test_preintent_invalid_main_missing_metadata_and_symlink(self):
+        for field in ('base', 'missing', 'symlink'):
+            original = vars(self.args).copy()
+            if field == 'base':
+                self.args.base = 'other'
+            elif field == 'missing':
+                self.args.body_file = self.temp / 'missing'
+            else:
+                link = self.temp / 'link'
+                link.symlink_to(self.args.title_file)
+                self.args.title_file = link
+            with self.assertRaises(cli.CommandError):
+                self.invoke('pr')
+            self.assertEqual(self.ops(), [])
+            self.assertFalse(self.launches)
+            vars(self.args).update(original)
+
+
+    def test_capture_precedes_helper_inspection_and_metadata_read_order(self):
+        original_info, original_read = cli.helper_info, publish._read_publication_text
+        order = []
+        def read(path):
+            order.append(Path(path).name)
+            return original_read(path)
+        def info():
+            order.append('helper')
+            if order.count('helper') == 1:
+                self.args.title_file.write_text('Changed during helper inspection')
+            return original_info()
+        with patch.object(publish, '_read_publication_text', side_effect=read), patch.object(cli, 'helper_info', side_effect=info):
+            result = self.invoke('pr')
+        self.assertEqual(order[:3], ['title.txt', 'body.txt', 'helper'])
+        self.assertEqual(result.data['outcome'], 'refused')
+        self.assertFalse(self.launches)
+        self.assertNotIn('statusSummary', self.events()[-1]['data'])
+
+    def test_late_final_symlink_and_read_failure_refuse_actual_pr(self):
+        for failure in ('symlink', 'read'):
+            with self.subTest(failure=failure):
+                path = self.args.title_file
+                def mutate():
+                    if failure == 'symlink':
+                        alternate = self.temp / 'late-target'
+                        alternate.write_bytes(path.read_bytes())
+                        path.unlink()
+                        path.symlink_to(alternate)
+                reader = publish._read_publication_text
+                def read(value):
+                    if failure == 'read' and self.reached:
+                        with patch.object(os, 'read', side_effect=OSError('PRIVATE_SENTINEL')):
+                            return reader(value)
+                    return reader(value)
+                with self.hook('pr', mutate), patch.object(publish, '_read_publication_text', side_effect=read):
+                    result = self.invoke('pr')
+                self.assert_refused(result)
+                if path.is_symlink():
+                    path.unlink()
+                path.write_text('Fixture title')
+                self.cover(self.head)
+
+    def test_strict_payload_config_semantics_and_head_last_without_policy_calls(self):
+        config_path = self.local / 'github-app.json'
+        initial = config_path.read_bytes()
+        for mode in ('push', 'pr'):
+            order = []
+            git, load, guard = publish._git, publish.github_app.load_config, publish._guard_invocation
+            def inspect(repo, *a, **kw):
+                order.append(tuple(a))
+                return git(repo, *a, **kw)
+            def config(path):
+                order.append('config')
+                return load(path)
+            def guarded(state):
+                order.append('guard')
+                return guard(state)
+            consumer = self.run_child if mode == 'push' else self.create
+            def run(*a, **kw):
+                self.assertEqual(order[-1], ('rev-parse', '--verify', 'HEAD'))
+                self.assertEqual(order[-2], 'config')
+                self.assertIn('guard', order)
+                return consumer(*a, **kw)
+            def reserialize():
+                # Semantic equality is allowed; no raw JSON byte binding is claimed.
+                config_path.write_text(json.dumps(json.loads(initial), indent=4) + '\n')
+            with self.hook(mode, reserialize), patch.object(publish, '_git', side_effect=inspect), patch.object(publish.github_app, 'load_config', side_effect=config), patch.object(publish, '_guard_invocation', side_effect=guarded):
+                with patch.object(publish, '_prepare_policy_gate', side_effect=AssertionError('policy activation')), patch.object(publish, '_finalize_policy_gate', side_effect=AssertionError('policy activation')), patch.object(publish.privacy, 'evaluate_policy', side_effect=AssertionError('policy activation')), patch.object(publish, '_write_policy_observation', side_effect=AssertionError('policy activation')):
+                    with patch.object(token_run, 'run_command', side_effect=run):
+                        result = self.invoke(mode)
+            self.assertEqual(result.code, 0)
+            self.assertEqual(len(self.launches), 1)
+            if mode == 'push':
+                self.assertEqual(self.launches[0], ['git', 'push', '--force-with-lease=' + REF + ':', URL, self.head + ':' + REF])
+            self.launches.clear()
+            self.cover(self.head)
+
+
+    def test_removed_original_field_and_early_namespace_mutation_refuse(self):
+        for mode in ('push', 'pr'):
+            saved = self.args.work
+            with self.hook(mode, lambda: delattr(self.args, 'work')):
+                result = self.invoke(mode)
+            self.args.work = saved
+            self.assert_refused(result)
+            self.cover(self.head)
+        info = cli.helper_info
+        def changed():
+            self.args.work = 'OTHER'
+            return info()
+        with patch.object(cli, 'helper_info', side_effect=changed):
+            result = self.invoke('push')
+        self.args.work = saved
+        self.assertEqual(result.data['outcome'], 'refused')
+        self.assertFalse(self.launches)
+
+    def test_actual_postintent_push_remote_read_error_records_refusal(self):
+        reached = []
+        remote = publish._remote
+        def read(repo, url):
+            if self.events()[-1]['kind'] == 'op-intent':
+                reached.append(True)
+                raise cli.CommandError('PRIVATE_SENTINEL backend read error')
+            return remote(repo, url)
+        self.reached = reached
+        with patch.object(publish, '_remote', side_effect=read):
+            result = self.invoke('push')
+        self.assert_refused(result)
+        self.assertEqual(result.code, 2)
+
+
+    def test_containment_setup_failure_is_still_pretoken(self):
+        for mode in ('push', 'pr'):
+            with self.hook(mode, lambda: None):
+                with patch.object(publish, '_quiet', side_effect=OSError('PRIVATE_SENTINEL')):
+                    result = self.invoke(mode)
+            self.assert_refused(result)
+            self.assertEqual(result.code, 2)
+            self.cover(self.head)
