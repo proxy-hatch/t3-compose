@@ -426,6 +426,12 @@ unknown/in-flight reconciliations to reopen resolved items, by sequence or ID;
 a subsequent concrete operation result clears its uncertainty again. Operation
 reconciliations with unknown native/artifact facts also reopen the item.
 Results retain confirmation evidence for caller inspection.
+For a new strict publication attempt, expected preparation failures after its
+actual intent and before the token runner record `refused` without a fabricated
+`statusSummary`, child status or token/revocation facts. Invalid pre-intent input
+creates no operation. If result persistence fails, the helper reports a sanitized
+exit 2 and preserves the actual uncertain intent and retained files; it does not
+claim a recorded refusal. Recovery and post-token status semantics are unchanged.
 The helper never polls T3/Git to resolve an uncertain item. Callers inspect native
 request/task/thread/worktree references and artifacts, then append the facts.
 

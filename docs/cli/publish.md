@@ -133,7 +133,8 @@ be `main`. Both text files must be regular bounded UTF-8 text without NUL,
 at most 1 MiB each. The title additionally must be nonblank, single-line,
 without ASCII controls or DEL, and at most 256 UTF-8 bytes. File contents and
 backend errors are never printed. Relative text paths refer to the starting
-repository root. Pass an explicit absolute global local directory.
+repository root. Relative local-directory and push repository paths also refer to
+the invocation cwd, before helper inspection or temporary HOME/cwd changes.
 
 After exact-head evidence passes, `privacy.scan_commits` screens the entire
 immutable work review-base-to-head range and intended branch, with ordered
@@ -158,7 +159,8 @@ gh api --hostname github.com --method GET repos/OWNER/REPO/pulls?state=all&head=
 
 Query components are URL-encoded. At most one result is accepted; two rows,
 incomplete or malformed responses, mismatched repository/branch, failed reads
-or invalid PR numbers preserve uncertainty and never authorize creation.
+or invalid PR numbers never authorize creation. A new attempt records a safe
+pretoken refusal; recovery preserves uncertainty.
 Closed PRs are discovered too, preventing an accidental duplicate. A single
 existing PR is reused only after verification passes.
 
@@ -262,16 +264,43 @@ event prefix must agree; only this operation's new intent may have been added.
 This catches changes to requirements, review or assignment even if replacement
 evidence could otherwise pass. Push rereads all advertised refs and compares the
 complete map and ordered publication set, preserving the original target lease.
-PR re-enumerates its immutable review range. Both compare the intended head and
-branch; PR rereads title/body and compares base and captured text bytes. Actual
-checkout HEAD is read at the end, before entering the token runner.
+PR re-enumerates its immutable review range. Both then compare the actual original
+Namespace's local directory, work, head, branch and repository path when present;
+PR also compares base and both original file path values. An equal-byte alternate file
+path still refuses. The caller Namespace is never normalized in place.
+
+Before helper inspection or any environment cwd change, the publisher captures
+those values and lexical absolute operational paths. PR captures ordered title
+then body text once, validates main/title constraints before intent, and uses
+only that intended payload. Final ordered rereads detect persistent content
+changes without replacing the payload. The publisher-local reader opens the
+final component with O_NOFOLLOW and O_NONBLOCK, pins a regular descriptor, bounds
+reads to 1 MiB and uses the shared UTF-8/no-NUL validator. It compares initial
+and final descriptor facts with the current nonfollowing named-file facts.
+Setup, read, validation and close errors refuse; each owned descriptor is closed
+once, surrendering ownership before close, even when close reports failure.
+Ordinary public metadata has no private-mode, owner or single-link requirement.
+Intermediate directory aliases remain supported: this is final-component
+nofollow, not parent-ancestry authentication.
+
+After input checks the gate reloads the complete App configuration through the
+normal loader and compares semantic facts with an independent initial copy,
+including permissions and Keychain selectors without reading the key. Equivalent
+JSON reserialization is allowed; no raw configuration-byte binding is claimed.
+Actual checkout HEAD is read last, immediately before entering the token runner.
 
 Changed inputs refuse without launching a child or inventing a status summary.
-Read errors remain safe invalid-input failures; retained intent/status support
-reconciliation. The token runner retains its own configuration preconditions,
+After a real new intent, expected preparation read errors and CommandError
+failures record an actual refused result, with safe exit 1 or 2 and no invented
+child, token, revocation or status-summary facts. Pre-intent invalidity adds no
+operation. If result append fails, exit 2 reports a sanitized persistence error;
+the actual intent stays uncertain and retained files support reconciliation.
+New-attempt PR discovery errors follow this pretoken refusal rule; discovery
+errors during recovery retain the existing uncertainty rule. The token runner retains its own configuration preconditions,
 App identity, token lifecycle and revocation rules. These are sequential reads,
 not an atomic transaction across inspection, record writes, mint and publication;
-concurrent changes after the relevant final observation are outside this guarantee.
+concurrent changes after the relevant final observation, or changes made and
+undone between observations, are outside this guarantee.
 Policy integration remains a separate follow-up; this foundation grants no policy
 permission and does not change `publish run`.
 
