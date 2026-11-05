@@ -334,6 +334,172 @@ def _policy_observation(result, *, operation, repository, base, head, commits,
         _fail('invalid private policy observation')
 
 
+def _encode_policy_observation(observation):
+    """Independently validate the flat private output, never evaluation facts."""
+    from datetime import datetime
+    from . import jsonio
+
+    def require(ok):
+        if not ok:
+            raise ValueError
+
+    try:
+        keys = ('version operation base head selectionDigest contextDigest checkCommandDigest listDigest '
+                'patternCount policyBindingDigest artifactAuthorityStartDigest artifactAuthorityEndDigest '
+                'publicAuthorityStartDigest publicAuthorityEndDigest rawStatus rawExit commitCount '
+                'findingCount approvedUnscannedCount policySatisfied observedStart observedEnd listObservedAt').split()
+        require(type(observation) is dict and set(observation) == set(keys))
+        value = observation.copy()
+        require(type(value['version']) is str and value['version'] == 'publication-policy-observation/v1')
+        require(type(value['operation']) is str and value['operation'] in {'push', 'pr'})
+        require(value['policySatisfied'] is True)
+        for key in ('base', 'head'):
+            require(type(value[key]) is str and _SHA.fullmatch(value[key]))
+        for key in ('selectionDigest', 'contextDigest', 'checkCommandDigest', 'listDigest',
+                    'policyBindingDigest', 'artifactAuthorityStartDigest', 'artifactAuthorityEndDigest',
+                    'publicAuthorityStartDigest', 'publicAuthorityEndDigest'):
+            item = value[key]
+            if key.startswith(('artifactAuthority', 'publicAuthority')) and item is None:
+                continue
+            require(type(item) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', item))
+        for prefix in ('artifact', 'public'):
+            require((value[prefix+'AuthorityStartDigest'] is None) ==
+                    (value[prefix+'AuthorityEndDigest'] is None))
+        artifact, public = value['artifactAuthorityStartDigest'], value['publicAuthorityStartDigest']
+        require(artifact is not None or public is not None)
+        for key in ('patternCount', 'commitCount', 'findingCount', 'approvedUnscannedCount'):
+            require(type(value[key]) is int and 0 <= value[key] <= 2**31-1)
+        require(value['commitCount']*41 <= privacy.MAX_BYTES)
+        findings, approved = value['findingCount'], value['approvedUnscannedCount']
+        require(findings <= privacy.MAX_BYTES and approved <= privacy.MAX_BYTES)
+        require((not findings or public is not None) and (not approved or artifact is not None))
+        status = 'findings' if findings else ('policy-evaluation-required' if approved else 'no-text-findings')
+        require(type(value['rawStatus']) is str and value['rawStatus'] == status)
+        require(type(value['rawExit']) is int and value['rawExit'] == int(bool(findings or approved)))
+        times = []
+        for key in ('observedStart', 'observedEnd', 'listObservedAt'):
+            item = value[key]
+            require(type(item) is str and len(item) <= 32 and re.fullmatch(
+                r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)', item))
+            times.append(datetime.fromisoformat(item))
+        require(times[0] <= times[1] <= times[2])
+        encoded = jsonio.canonical_json(value)
+        require(len(encoded) <= 16384)
+        return encoded
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        _fail('invalid private policy observation storage')
+
+
+def _write_policy_observation(local, identity, work, op_id, observation):
+    """Dormant exclusive private storage; saved bytes never confer permission.
+
+    Partial files are visible during writing. Failure cleanup only unlinks our
+    inode; cleanup failure retains uncertainty. No hostile-same-user guarantee.
+    """
+    from contextlib import ExitStack
+    import stat
+
+    def require(ok):
+        if not ok:
+            raise ValueError
+
+    def private_directory(fd):
+        info = os.fstat(fd)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and
+                stat.S_IMODE(info.st_mode) == 0o700)
+        return info
+
+    def same(left, right):
+        return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+    try:
+        encoded = _encode_policy_observation(observation)  # Before any filesystem creation.
+        require(type(identity) is str and records.canonical_identity(identity) == identity)
+        for component in (work, op_id):
+            require(type(component) is str and
+                    re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', component))
+        _, work_path = records.location(local, identity, work)
+        root = work_path.parents[len(identity.split('/'))+3]
+        name = op_id + '.json'
+        with ExitStack() as stack:
+            current = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, current)
+            for component in root.parts[1:]:
+                require(component not in {'.', '..'})
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=current)
+                stack.callback(os.close, child)
+                current = child
+            private_directory(current)
+            pins = []
+            for component in work_path.relative_to(root).parts:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+                stack.callback(os.close, child)
+                info = private_directory(child)
+                pins.append((current, component, child, info))
+                current = child
+            try:
+                os.mkdir('publication-policy', 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            os.fsync(current)  # An earlier creator may have failed its directory sync.
+            parent = os.open('publication-policy', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            stack.callback(os.close, parent)
+            info = private_directory(parent)
+            pins.append((current, 'publication-policy', parent, info))
+            fd, created, complete = None, None, False
+            try:
+                fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=parent)
+                # Capture identity before any later validation can fail.
+                created = os.fstat(fd)
+                os.fchmod(fd, 0o600)
+                initial = os.fstat(fd)
+                require(same(initial, created) and stat.S_ISREG(initial.st_mode) and
+                        initial.st_uid == os.getuid() and initial.st_nlink == 1)
+                remaining = memoryview(encoded)
+                while remaining:
+                    written = os.write(fd, remaining)
+                    require(type(written) is int and 0 < written <= len(remaining))
+                    remaining = remaining[written:]
+                os.fsync(fd)
+                os.lseek(fd, 0, os.SEEK_SET)
+                readback = bytearray()
+                while len(readback) <= len(encoded):
+                    chunk = os.read(fd, len(encoded)+1-len(readback))
+                    if not chunk:
+                        break
+                    readback.extend(chunk)
+                require(readback == encoded)
+                final = os.fstat(fd)
+                require(same(final, created) and stat.S_ISREG(final.st_mode) and
+                        final.st_uid == os.getuid() and stat.S_IMODE(final.st_mode) == 0o600 and
+                        final.st_nlink == 1 and final.st_size == len(encoded) and
+                        same(final, os.stat(name, dir_fd=parent, follow_symlinks=False)))
+                for ancestor, component, pinned, initial_dir in pins:
+                    require(same(private_directory(pinned), initial_dir) and
+                            same(initial_dir, os.stat(component, dir_fd=ancestor, follow_symlinks=False)))
+                closing, fd = fd, None  # A close failure must never close a recycled descriptor.
+                os.close(closing)
+                os.fsync(parent)
+                complete = True
+            finally:
+                try:
+                    if created is not None and not complete:
+                        try:
+                            if same(created, os.stat(name, dir_fd=parent, follow_symlinks=False)):
+                                os.unlink(name, dir_fd=parent)
+                                os.fsync(parent)
+                        except OSError:
+                            pass  # Retained partial/complete bytes remain exclusive, never reused.
+                finally:
+                    if fd is not None:
+                        os.close(fd)
+        return work_path / 'publication-policy' / name
+    except (OSError, ValueError, TypeError, RecursionError, cli.CommandError):
+        _fail('invalid private policy observation storage')
+
+
 @contextmanager
 def _environment(repo):
     """No ambient credentials, Git selectors, executable paths or user config."""

@@ -670,7 +670,15 @@ findings, proofs, matched paths or owner quotes. Six-field authority observation
 hashes include their nested times. Stable policy bindings exclude volatile
 observation metadata, so unrelated allowed authority appends do not require a
 new policy binding. The fresh list observation follows the evaluation window.
-No record event, stored observation or writer is installed by this foundation.
-A later writer must independently validate closed output, size and filesystem
-safety; complete fresh evaluation/authority/list and ordinary publication gates
-remain required before any token mint. Cooperative provenance is not authentication.
+The dormant [immutable writer](cli/publish.md#dormant-immutable-observation-writer)
+independently validates that closed output and its canonical UTF-8 byte bound
+before creating a private observation. Its only storage is the existing work's
+`publication-policy/<op_id>.json`, under an owned 0700 parent with a new exclusive
+0600 regular single-link file. It neither appends a record event nor installs
+an actual receipt. Existing entries and unsafe ancestors refuse without repair.
+Complete writes, file sync, exact readback, descriptor/name checks, file close and
+directory sync precede success. Failed cleanup can retain partial bytes; late
+close errors can retain complete bytes. Neither retained state is reused.
+Complete fresh evaluation/authority/list and ordinary publication gates remain
+required before any token mint. Cooperative provenance is not authentication;
+this dormant writer grants no policy permission or current revocation verdict.

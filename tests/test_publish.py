@@ -1752,7 +1752,7 @@ class OfflinePolicyObservation(OfflineTestCase):
         for mode in ('artifact','public','combined'):
             self.assertLess(len(json.dumps(self.project(self.facts(mode))).encode()), 2048)
 
-    def test_projection_is_dormant_without_writer_or_production_call(self):
+    def test_projection_and_writer_are_dormant_without_production_call(self):
         import ast
         source=(ROOT/'t3compose/publish.py').read_text()
         module=ast.parse(source)
@@ -1761,7 +1761,9 @@ class OfflinePolicyObservation(OfflineTestCase):
         calls=[node for node in ast.walk(module) if isinstance(node,ast.Call) and
                isinstance(node.func,ast.Name) and node.func.id=='_policy_observation']
         self.assertEqual(calls,[])
-        self.assertFalse(any('write_policy_observation' in name for name in definitions))
+        self.assertIn('_write_policy_observation', definitions)
+        self.assertFalse(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and
+                             n.func.id == '_write_policy_observation' for n in ast.walk(module)))
 
     def test_projection_does_not_invent_authority_prefix_continuity(self):
         for mode in ('artifact','public','combined'):
@@ -1774,3 +1776,329 @@ class OfflinePolicyObservation(OfflineTestCase):
                 group['start'].update(authorityEventCount=2,
                     authorityCheckpoint=dict(lastSeq=2,digest=self.d))
             self.assertEqual(self.project(f)['policyBindingDigest'],original['policyBindingDigest'])
+
+
+class OfflinePolicyObservationWriter(OfflineTestCase):
+    """Catch permissive storage, overwrites, partial-success and descriptor leaks."""
+    def setUp(self):
+        OfflinePolicyObservation.setUp(self)
+        self.local = self.temp / 'observations'
+        self.local.mkdir(mode=0o700)
+        _, self.work_path = records.location(self.local, REPO, 'WORK')
+        self.work_path.mkdir(parents=True, mode=0o700)
+        # pathlib intermediate parents use default permissions; model record dirs.
+        for path in self.work_path.parents:
+            if path == self.local: break
+            path.chmod(0o700)
+        self.parent = self.work_path / 'publication-policy'
+
+    authority = OfflinePolicyObservation.authority
+    facts = OfflinePolicyObservation.facts
+    project = OfflinePolicyObservation.project
+
+    def write(self, value=None, op='operation'):
+        return publish._write_policy_observation(self.local, REPO, 'WORK', op,
+                                                self.project() if value is None else value)
+
+    def refused(self, value=None, op='operation'):
+        with self.assertRaises(cli.CommandError) as caught:
+            self.write(value, op)
+        self.assertEqual(str(caught.exception),
+                         'publication: invalid private policy observation storage')
+
+    def test_writer_stores_current_producer_versions_exactly_and_exclusively(self):
+        for mode in ('artifact', 'public', 'combined'):
+            value = self.project(self.facts(mode))
+            path = self.write(value, mode)
+            self.assertEqual(path, self.parent / (mode + '.json'))
+            expected = json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                  ensure_ascii=False, allow_nan=False).encode('utf-8')
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(path.stat().st_nlink, 1)
+            self.assertEqual(path.stat().st_uid, os.getuid())
+            self.refused(value, mode)
+            self.assertEqual(path.read_bytes(), expected)
+        self.assertEqual(stat.S_IMODE(self.parent.stat().st_mode), 0o700)
+
+    def test_writer_rejects_closed_schema_scalar_and_relational_errors_before_io(self):
+        good = self.project()
+        changes = dict(version=['other', None], operation=['run', [], True],
+            base=['A'*40, 'a'*39, None], head=['b'*64], policySatisfied=[1, False],
+            patternCount=[True, -1, 2**31, 1.0], commitCount=[True, 2**31, 25576],
+            findingCount=[-1, 1048577, 1], approvedUnscannedCount=[1048577, True],
+            rawExit=[True, 0, 2], rawStatus=['no-text-findings', 'findings', None],
+            observedStart=['2026-02-30T00:00:00Z', '2026-11-06T00:00:00Z',
+                           '2026-11-05T00:00:00+01:00', 'x\ud800'],
+            observedEnd=['2026-11-04T00:00:00Z'], listObservedAt=['2026-11-04T00:00:00Z'])
+        for key in ('selectionDigest', 'contextDigest', 'checkCommandDigest', 'listDigest',
+                    'policyBindingDigest', 'artifactAuthorityStartDigest'):
+            changes[key] = [None, 'sha256:'+'A'*64, 'x'*16385, {}]
+        malformed = [dict(good, extra='private'), {k:v for k,v in good.items() if k!='head'},
+                     dict(good, artifactAuthorityStartDigest=None, artifactAuthorityEndDigest=None)]
+        malformed += [dict(good, **{key:value}) for key, values in changes.items() for value in values]
+        for value in malformed:
+            with self.subTest(value=list(value)):
+                self.refused(value)
+                self.assertFalse(self.parent.exists())
+        public = self.project(self.facts('public'))
+        self.refused(dict(public, approvedUnscannedCount=1))
+        self.refused(dict(public, publicAuthorityEndDigest=None))
+        clean = dict(good, approvedUnscannedCount=0, rawExit=0, rawStatus='no-text-findings')
+        self.write(clean)
+
+    def test_writer_encoded_limit_and_encoding_failure_are_independent(self):
+        # All real closed outputs are <2KiB. Inflate only the encoder result,
+        # after a valid shape, to isolate the independent byte-size guard.
+        good = self.project()
+        for size in (16384, 16385):
+            with patch.object(jsonio, 'canonical_json', return_value=b' '*size):
+                if size == 16384:
+                    self.assertEqual(len(publish._encode_policy_observation(good)), size)
+                else:
+                    self.refused(good)
+        with patch.object(jsonio, 'canonical_json', side_effect=UnicodeError('synthetic-private')):
+            self.refused(good)
+        self.assertFalse(self.parent.exists())
+
+    def test_writer_malformed_components_and_symlink_ancestors(self):
+        for op in ('', '.', '..', '../escape', '/escape', 'x/y', 'a'*129, 'a\0', 'é'):
+            self.refused(op=op)
+        self.assertFalse(self.parent.exists())
+        original = self.work_path.with_name('saved')
+        self.work_path.rename(original)
+        self.work_path.symlink_to(original, target_is_directory=True)
+        self.refused()
+        self.assertFalse((original / 'publication-policy').exists())
+        self.work_path.unlink(); original.rename(self.work_path)
+        self.work_path.chmod(0o755)
+        self.refused()
+        self.assertEqual(stat.S_IMODE(self.work_path.stat().st_mode), 0o755)
+
+    def test_writer_preserves_unsafe_parents_and_existing_entries(self):
+        self.parent.mkdir(mode=0o700)
+        self.parent.chmod(0o755)
+        self.refused()
+        self.assertEqual(stat.S_IMODE(self.parent.stat().st_mode), 0o755)
+        self.parent.chmod(0o700)
+        path = self.parent / 'operation.json'
+        target = self.temp / 'target'; target.write_bytes(b'preserve')
+        for kind in ('file', 'link', 'dangling', 'directory', 'hardlink', 'fifo'):
+            with self.subTest(kind=kind):
+                if kind == 'file': path.write_bytes(b'preserve')
+                elif kind == 'link': path.symlink_to(target)
+                elif kind == 'dangling': path.symlink_to(self.temp / 'absent')
+                elif kind == 'directory': path.mkdir()
+                elif kind == 'hardlink': os.link(target, path)
+                else: os.mkfifo(path)
+                before = path.lstat()
+                self.refused()
+                self.assertEqual(path.lstat().st_ino, before.st_ino)
+                self.assertEqual(target.read_bytes(), b'preserve')
+                if kind == 'directory': path.rmdir()
+                else: path.unlink()
+        self.parent.rmdir(); self.parent.symlink_to(self.temp, target_is_directory=True)
+        self.refused()
+        self.assertTrue(self.parent.is_symlink())
+
+    def test_writer_rejects_foreign_owners_without_chown(self):
+        self.parent.mkdir(mode=0o700)
+        real = os.fstat
+        def foreign(fd):
+            info = real(fd)
+            if info.st_ino == self.parent.stat().st_ino:
+                fields = list(info); fields[4] = os.getuid()+1
+                return os.stat_result(fields)
+            return info
+        with patch.object(os, 'fstat', side_effect=foreign): self.refused()
+        self.assertEqual(list(self.parent.iterdir()), [])
+
+    def test_writer_short_writes_complete_and_zero_progress_cleans(self):
+        real = os.write
+        with patch.object(os, 'write', side_effect=lambda fd, data: real(fd, data[:7])):
+            path = self.write()
+        self.assertEqual(json.loads(path.read_bytes()), self.project())
+        with patch.object(os, 'write', return_value=0): self.refused(op='zero')
+        self.assertFalse((self.parent/'zero.json').exists())
+
+    def test_writer_fault_stages_close_descriptors_and_never_return_success(self):
+        self.parent.mkdir(mode=0o700)
+        for stage in ('write', 'file-sync', 'directory-sync', 'read', 'close', 'stat'):
+            opened, closed = [], []
+            real_open, real_close, real_sync = os.open, os.close, os.fsync
+            real_read, real_stat = os.read, os.fstat
+            fired, file_stats = [], []
+            def opening(*args, **kw):
+                fd = real_open(*args, **kw); opened.append(fd); return fd
+            def closing(fd):
+                regular = stat.S_ISREG(real_stat(fd).st_mode)
+                real_close(fd); closed.append(fd)
+                if stage == 'close' and regular and not fired:
+                    fired.append(stage); raise OSError('synthetic-private')
+            def sync(fd):
+                regular = stat.S_ISREG(real_stat(fd).st_mode)
+                if not fired and ((stage=='file-sync' and regular) or
+                                  (stage=='directory-sync' and os.fstat(fd).st_ino == self.parent.stat().st_ino)):
+                    fired.append(stage); raise OSError('synthetic-private')
+                return real_sync(fd)
+            def writing(fd, data):
+                if stage=='write':
+                    real(fd, data[:3]); fired.append(stage); raise OSError('synthetic-private')
+                return real(fd, data)
+            def reading(fd, count):
+                if stage=='read': fired.append(stage); raise OSError('synthetic-private')
+                return real_read(fd, count)
+            def stating(fd):
+                info = real_stat(fd)
+                if stage=='stat' and stat.S_ISREG(info.st_mode):
+                    file_stats.append(fd)
+                    if len(file_stats) == 2:
+                        fired.append(stage); raise OSError('synthetic-private')
+                return info
+            real = os.write
+            with patch.object(os,'open',side_effect=opening), patch.object(os,'close',side_effect=closing), \
+                 patch.object(os,'fsync',side_effect=sync), patch.object(os,'write',side_effect=writing), \
+                 patch.object(os,'read',side_effect=reading), patch.object(os,'fstat',side_effect=stating):
+                self.refused(op=stage)
+            self.assertTrue(fired, stage)
+            self.assertEqual(sorted(opened), sorted(closed), stage)
+            self.assertFalse((self.parent/(stage+'.json')).exists(), stage)
+
+    def test_writer_cleanup_failure_retains_partial_and_refuses_reuse(self):
+        real = os.write
+        def partial(fd, data):
+            real(fd, data[:3]); raise OSError('synthetic-private')
+        with patch.object(os, 'write', side_effect=partial), \
+             patch.object(os, 'unlink', side_effect=OSError('synthetic-private')):
+            self.refused()
+        path = self.parent/'operation.json'
+        self.assertEqual(path.read_bytes(), b'{"a')
+        self.refused()
+        self.assertEqual(path.read_bytes(), b'{"a')
+
+    def test_writer_detects_changed_file_identity_links_and_readback(self):
+        self.parent.mkdir(mode=0o700)
+        real_sync = os.fsync
+        for change in ('replace', 'hardlink', 'mode', 'bytes'):
+            path = self.parent/(change+'.json')
+            fired = []
+            def sync(fd):
+                if stat.S_ISREG(os.fstat(fd).st_mode) and not fired:
+                    fired.append(change)
+                    if change == 'replace':
+                        path.unlink(); path.write_bytes(b'preserve-replacement')
+                    elif change == 'hardlink': os.link(path, self.parent/'alias')
+                    elif change == 'mode': path.chmod(0o644)
+                    else:
+                        with path.open('r+b') as stream: stream.write(b'bad')
+                return real_sync(fd)
+            with patch.object(os, 'fsync', side_effect=sync): self.refused(op=change)
+            self.assertTrue(fired)
+            if change == 'replace':
+                self.assertEqual(path.read_bytes(), b'preserve-replacement')
+            else: self.assertFalse(path.exists())
+            if change == 'hardlink': (self.parent/'alias').unlink()
+
+    def test_writer_directory_close_error_retains_complete_exclusive_bytes(self):
+        self.parent.mkdir(mode=0o700)
+        inode = self.parent.stat().st_ino
+        real_close, real_stat = os.close, os.fstat
+        fired = []
+        def close(fd):
+            info = real_stat(fd)
+            real_close(fd)
+            if info.st_ino == inode and not fired:
+                fired.append(True); raise OSError('synthetic-private')
+        with patch.object(os, 'close', side_effect=close): self.refused()
+        self.assertTrue(fired)
+        path = self.parent/'operation.json'
+        self.assertEqual(json.loads(path.read_bytes()), self.project())
+        self.refused()
+
+    def test_writer_refuses_invalid_identity_work_and_nonexistent_work(self):
+        for identity, work in (('not-an-identity', 'WORK'), (REPO, '..'),
+                               (REPO, 'missing'), (REPO, 'x'*129)):
+            with self.assertRaises(cli.CommandError):
+                publish._write_policy_observation(self.local, identity, work, 'op', self.project())
+        self.assertFalse(self.parent.exists())
+
+    def test_writer_setup_failure_never_creates_file_and_closes_descriptors(self):
+        real_sync = os.fsync
+        fired = []
+        def sync(fd):
+            if os.fstat(fd).st_ino == self.work_path.stat().st_ino:
+                fired.append(True); raise OSError('synthetic-private')
+            return real_sync(fd)
+        with patch.object(os, 'fsync', side_effect=sync): self.refused()
+        self.assertTrue(fired)
+        self.assertTrue(self.parent.is_dir())
+        self.assertEqual(list(self.parent.iterdir()), [])
+        # An existing safe dedicated parent remains usable after setup failure.
+        self.write()
+
+    def test_writer_existing_parent_still_syncs_work_entry_after_failed_creator(self):
+        self.parent.mkdir(mode=0o700)
+        real_sync = os.fsync
+        def sync(fd):
+            if os.fstat(fd).st_ino == self.work_path.stat().st_ino:
+                raise OSError('synthetic-private')
+            return real_sync(fd)
+        with patch.object(os, 'fsync', side_effect=sync): self.refused()
+        self.assertEqual(list(self.parent.iterdir()), [])
+
+    def test_writer_cleanup_never_unlinks_replacement_during_creation(self):
+        self.parent.mkdir(mode=0o700)
+        path = self.parent/'operation.json'
+        real_open = os.open
+        def opening(name, *args, **kwargs):
+            fd = real_open(name, *args, **kwargs)
+            if name == 'operation.json':
+                path.unlink(); path.write_bytes(b'preserve-replacement')
+            return fd
+        with patch.object(os, 'open', side_effect=opening): self.refused()
+        self.assertEqual(path.read_bytes(), b'preserve-replacement')
+
+    def _root_close_fault(self, fail_open):
+        sentinel = self.temp/'root-close-sentinel'
+        sentinel.write_bytes(b'synthetic')
+        value = self.project()
+        real_open, real_close = os.open, os.close
+        opened, attempts, recycled, fired = [], [], [], []
+        def opening(*args, **kwargs):
+            if fail_open and len(opened) == 2:
+                raise OSError('synthetic open failure')
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+        def closing(fd):
+            attempts.append(fd)
+            real_close(fd)
+            if not fired and (fail_open or fd == opened[0]):
+                fired.append(fd)
+                recycled.append(real_open(sentinel, os.O_RDONLY))
+                self.assertEqual(recycled[0], fd)
+                raise OSError('synthetic close after release')
+        try:
+            with patch.object(os, 'open', side_effect=opening), patch.object(
+                    os, 'close', side_effect=closing):
+                self.refused(value)
+            self.assertTrue(fired)
+            self.assertTrue(all(attempts.count(fd) == 1 for fd in attempts), attempts)
+            self.assertEqual(os.fstat(recycled[0]).st_ino, sentinel.stat().st_ino)
+            for fd in set(opened)-set(recycled):
+                with self.assertRaises(OSError): os.fstat(fd)
+            path = self.parent/'operation.json'
+            if fail_open:
+                self.assertFalse(self.parent.exists())
+            else:
+                self.assertEqual(path.read_bytes(), publish._encode_policy_observation(value))
+        finally:
+            for fd in set(opened+recycled):
+                try: real_close(fd)
+                except OSError: pass
+
+    def test_writer_root_entry_failure_owns_all_descriptors(self):
+        self._root_close_fault(True)
+
+    def test_writer_root_close_error_never_retries_recycled_descriptor(self):
+        self._root_close_fault(False)

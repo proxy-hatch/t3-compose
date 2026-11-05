@@ -279,7 +279,8 @@ permission and does not change `publish run`.
 
 Two private helpers provide a directly tested foundation for later integration.
 Neither has a production caller or changes the strict gates above. There is no
-publisher policy flag, permission, saved-report input or evaluation storage here.
+publisher policy flag, permission or saved-report input. Storage is a separate
+dormant helper below.
 
 `_policy_verify_command(local, repo, base, head, branch, policy, *, text_files=())`
 returns this exact token array, never a shell command:
@@ -310,7 +311,7 @@ those invocation arguments. No detached bundle, check or report is an input.
 
 This is cooperative provenance, not authentication. Review-range verification
 cannot attest the actual remote-excluded push set. The dormant projection below
-adds no storage or activation. Actual selection evaluation, fresh policy/list/authority
+adds no activation. Actual selection evaluation, fresh policy/list/authority
 observations and final write gates remain mandatory before policy publication.
 
 ## Dormant private observation projection
@@ -357,6 +358,50 @@ Only typed selected fields are hashed/exported. Findings, verdicts, proofs,
 quotes and whole facts/coverage are never serialized or hashed. Treat private
 digests as secret-equivalent. The constructible Python type is cooperative
 provenance, not authentication; saved observations grant no permission.
-There is no writer, CLI option, production caller or policy activation.
-A separately reviewed private writer and complete fresh evaluator/current
-list/current authority/pre-mint integration remain mandatory follow-ups.
+There is no CLI option, production caller or policy activation. Complete fresh
+evaluator/current list/current authority/pre-mint integration remains mandatory.
+
+
+## Dormant immutable observation writer
+
+`_write_policy_observation(local, identity, work, op_id, observation) -> Path`
+is private and has no production caller. `_encode_policy_observation` independently
+validates the exact flat 23-field projection output and encodes canonical UTF-8
+JSON before any filesystem creation, with a separate 16384-byte cap. It accepts
+no evaluation facts, saved report, proof or permission. Exact scalar types,
+SHA-1 endpoints, SHA-256 digests, paired nullable authorities, bounded counts,
+raw status/exit/count relations and ordered aware UTC times are required.
+Findings require public authority; approved-unscanned counts require artifact
+authority. At least one authority pair is present. All producer v1, public-only
+v2 and combined output forms are supported. The closed fixed-size schema normally
+encodes below 2 KiB; the byte cap is an independent encoding guard.
+
+The canonical repository identity and existing work select
+`state/records/<identity>/work/<work>/publication-policy/<op_id>.json` under local.
+Work and operation components start with an ASCII alphanumeric, contain only
+ASCII alphanumerics, dot, underscore or hyphen, and are at most 128 characters.
+The selected local root, existing record ancestors, work and dedicated parent
+must be owned directories with mode 0700. Descriptor-pinned traversal rejects
+symlinks below the trusted selected root; unsafe existing modes are never repaired.
+Each opened directory is registered for cleanup before traversal continues and
+remains pinned until stack cleanup. Root-acquisition failure unwinds registered
+cleanup; a close error is never retried by the writer. Close uncertainty is
+not an atomic or hostile-same-user guarantee.
+Only the dedicated parent may be created. New final files use descriptor-relative
+exclusive nofollow creation and mode 0600; existing files, links and other entries
+are never overwritten or reused. Regular-file ownership, single link, size,
+readback and pinned name/inode identities are checked before success.
+
+The writer loops over short writes, fsyncs the file, reads back exact bytes,
+closes the file and fsyncs the containing directory before returning its private
+path. The dedicated parent entry is synced through its work directory even when
+already present, because an earlier creator may have failed that sync. Partial bytes
+can be visible while writing. Failures attempt to unlink only the created inode
+and sync cleanup; failed cleanup can retain partial or complete bytes. A directory
+close error after completion retains the complete file and still reports failure.
+Any retained file blocks reuse. All failures raise constant `CommandError` (2):
+`publication: invalid private policy observation storage`. Paths and payloads are
+never diagnostics or public output. There is no atomic revocation, authentication
+or hostile-same-user guarantee. Later C1b integration must compose current actual
+evaluation, list/authority reads, check evidence and final publication gates;
+stored observations never act as a cached pass, receipt or token permission.
