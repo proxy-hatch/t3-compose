@@ -405,3 +405,32 @@ never diagnostics or public output. There is no atomic revocation, authenticatio
 or hostile-same-user guarantee. Later C1b integration must compose current actual
 evaluation, list/authority reads, check evidence and final publication gates;
 stored observations never act as a cached pass, receipt or token permission.
+
+## Dormant current-policy context seal
+
+`_seal_policy_context(result, *, repo, local, policy, operation, repository,
+base, head, commits, branch, texts, check_command)` is a private dormant seam.
+It accepts an actual explicit satisfied evaluator result and the trusted caller's
+exact context. It returns the existing 23-field minimal observation, never a
+publication permission. No command, flag, production caller or writer activation
+uses it. Strict publication behavior is unchanged.
+
+It captures validated patterns, independently rereads identifiers and compares
+all four identifier fields, then uses the existing public evidence loader and
+locale digest. Public bindings must exactly equal the actual result's bindings.
+The optional artifact loader validates every artifact binding against actual
+coverage provenance and the trusted repository/base, including current authority
+and the public policy's artifact pin. A final identifier read must still equal
+the captured patterns and first snapshot. The existing projection validates the
+exact selection, metadata, result shape and current list. Refusals use only
+`publication: invalid current policy context` (exit 2).
+
+The seal performs no scan, evaluator, literal proof, cache or persistence. Reads
+retain the existing loaders' bounds. Public authority is current at its loader's
+read; artifact authority is current at its later loader read; the last list read
+precedes projection. Evaluation and authority timestamps remain those of the
+actual evaluation; only `listObservedAt` describes the seal's fresh list read.
+This cooperative sequence gives no atomic revocation or changes-made-and-undone
+protection. Future activation must seal **both** contexts after **all** proofwork,
+and seal both again after persistence, preserving every final publication gate.
+Sealing one context does not seal another. Full activation remains separate.

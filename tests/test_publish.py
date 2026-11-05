@@ -1758,9 +1758,17 @@ class OfflinePolicyObservation(OfflineTestCase):
         module=ast.parse(source)
         definitions={node.name for node in module.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))}
         self.assertIn('_policy_observation',definitions)
+        seals=[node for node in module.body if isinstance(node, ast.FunctionDef) and
+               node.name == '_seal_policy_context']
+        self.assertEqual(len(seals), 1)
         calls=[node for node in ast.walk(module) if isinstance(node,ast.Call) and
                isinstance(node.func,ast.Name) and node.func.id=='_policy_observation']
-        self.assertEqual(calls,[])
+        seal_calls=[node for node in ast.walk(seals[0]) if isinstance(node,ast.Call) and
+                    isinstance(node.func,ast.Name) and node.func.id=='_policy_observation']
+        self.assertEqual(len(seal_calls), 1)
+        self.assertEqual(calls, seal_calls)
+        self.assertFalse(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and
+                             n.func.id == '_seal_policy_context' for n in ast.walk(module)))
         self.assertIn('_write_policy_observation', definitions)
         self.assertFalse(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and
                              n.func.id == '_write_policy_observation' for n in ast.walk(module)))
@@ -2323,6 +2331,225 @@ class OfflinePublisherPolicyFixtures(OfflineTestCase):
             self.assertEqual(f.launches, [])
 
 
+class OfflinePolicyContextSeal(OfflineTestCase):
+    def test_real_unchanged_modes_without_repeating_expensive_work(self):
+        from t3compose import privacy
+        for mode in ('artifact', 'public', 'combined'):
+            with self.subTest(mode=mode):
+                f = PublisherPolicyFixture(self, mode=mode)
+                for name in ('push', 'pr'):
+                    c = f.context(name)
+                    result = f.evaluate(c)
+                    self.assertIs(result.policy_satisfied, True)
+                    expected = f.observation(c, result)
+                    with patch.object(privacy, '_scan', side_effect=AssertionError('scan')), \
+                         patch.object(privacy, 'scan_commits', side_effect=AssertionError('scan')), \
+                         patch.object(privacy, 'evaluate_policy', side_effect=AssertionError('evaluate')), \
+                         patch.object(privacy, '_literal_proofs', side_effect=AssertionError('proof')):
+                        got = self.seal(c, result)
+                    self.assertEqual(set(got), set(expected))
+                    self.assertGreaterEqual(got.pop('listObservedAt'), expected.pop('listObservedAt'))
+                    self.assertEqual(got, expected)
+                    self.assertEqual(got['rawExit'], 1)
+                self.assertEqual(f.launches, [])
+
+    def test_bad_actual_result_context_list_locale_and_kind_refuse(self):
+        from t3compose import privacy
+        f = PublisherPolicyFixture(self, mode='combined')
+        c = f.context('push')
+        result = f.evaluate(c)
+        for changes in ({'branch': 'different'}, {'commits': list(reversed(f.context('check').commits))},
+                        {'repository': 'github.com/other/repository'}, {'operation': 'pr'},
+                        {'texts': (('body', 'wrong'),)}, {'base': f.middle}):
+            with self.subTest(changes=changes):
+                self.refuses(c, result, **changes)
+        self.refuses(c, result.summary())
+        self.refuses(c, privacy.PolicyEvaluation(dict(result.facts, policySatisfied=1)))
+        with patch.object(privacy, '_locale_digest', return_value='sha256:' + '0'*64):
+            self.refuses(c, result)
+        original = privacy.prepare_policy_identifiers
+        calls = []
+        def changed(local):
+            ids = original(local)
+            calls.append(local)
+            return dict(ids, patternCount=ids['patternCount'] + 1)
+        with patch.object(privacy, 'prepare_policy_identifiers', side_effect=changed):
+            self.refuses(c, result)
+        self.assertTrue(calls)
+        with patch.object(privacy, '_text_policy', return_value=None):
+            self.refuses(c, result)
+        artifact = f.context('check')
+        artifact.policy.write_text('{}')
+        self.refuses(artifact, result)
+        self.assertEqual(f.launches, [])
+
+    def refuses(self, c, result, **overrides):
+        with self.assertRaises(cli.CommandError) as caught:
+            self.seal(c, result, **overrides)
+        self.assertEqual(str(caught.exception), 'publication: invalid current policy context')
+
+    def test_current_binding_and_final_list_read_cutoffs(self):
+        from t3compose import privacy
+        f = PublisherPolicyFixture(self, mode='combined')
+        c = f.context('push')
+        result = f.evaluate(c)
+        original = privacy.load_artifact_policy
+        for key in privacy._BINDINGS:
+            def changed(*args, **kwargs):
+                value = dict(original(*args, **kwargs))
+                value[key] = None
+                return value
+            with self.subTest(binding=key), patch.object(privacy, 'load_artifact_policy', side_effect=changed):
+                self.refuses(c, result)
+        real_ids = privacy.prepare_policy_identifiers
+        calls = []
+        def ids(local):
+            value = real_ids(local)
+            calls.append('list')
+            if len(calls) == 2:
+                value['patternCount'] += 1
+            return value
+        with patch.object(privacy, 'prepare_policy_identifiers', side_effect=ids):
+            self.refuses(c, result)
+        self.assertEqual(calls, ['list', 'list'])
+        order = []
+        def observe(name, function):
+            def wrapped(*args, **kwargs):
+                order.append(name)
+                return function(*args, **kwargs)
+            return wrapped
+        with patch.object(privacy, 'prepare_policy_identifiers', side_effect=observe('list', real_ids)), \
+             patch.object(privacy, '_text_policy', side_effect=observe('public', privacy._text_policy)), \
+             patch.object(privacy, 'load_artifact_policy', side_effect=observe('artifact', original)), \
+             patch.object(publish, '_policy_observation', side_effect=observe('projection', publish._policy_observation)):
+            self.seal(c, result)
+        self.assertEqual(order, ['list', 'public', 'artifact', 'list', 'projection'])
+
+    def test_actual_canonical_command_and_scoped_pr_preparation(self):
+        for mode in ('artifact', 'public', 'combined'):
+            with self.subTest(mode=mode):
+                f = PublisherPolicyFixture(self, mode=mode)
+                check, push = f.context('check'), f.context('push')
+                self.assertEqual(check.commits, [f.head, f.middle])
+                self.assertEqual(push.commits, [f.head])
+                self.assertEqual(check.texts, ())
+                self.assertNotIn('--text-file', check.check_command)
+                self.assertEqual(f.parent, f.middle)
+                results = [e for e in f.events() if e['kind'] == 'result']
+                self.assertTrue(results)
+                self.assertTrue(all(e['data']['parentCommit'] == f.parent for e in results))
+                for path in (f.local, f.local / 'state'):
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+                code, summary = f.execute_check()
+                self.assertEqual(code, 0)
+                self.assertEqual(summary['rawExit'], 1)
+                self.assertIs(f.evaluate(push).policy_satisfied, True)
+                if mode != 'artifact':
+                    mismatched = f.evaluate(push, privacy_policy=check.policy)
+                    self.assertIs(mismatched.policy_satisfied, False)
+                with f.pr_adapter(), patch.object(token_run, 'run_command') as token:
+                    code, out, err = f.pr_entry()
+                self.assertIn(code, (1, 2))
+                token.assert_not_called()
+                self.assertEqual(f.launches, [])
+
+    def test_both_contexts_after_all_proofs_and_after_storage(self):
+        # Each subcase gets independent real evidence; no mutation is undone.
+        from t3compose import privacy
+        for mode in ('artifact', 'public', 'combined'):
+            mutations = ['unchanged', 'policy', 'evidence', 'list', 'artifact-authority']
+            if mode == 'public':
+                mutations.remove('artifact-authority')
+            if mode != 'artifact':
+                mutations += ['public-authority']
+            if mode == 'combined':
+                mutations += ['artifact-evidence']
+            for stage in ('proof', 'persistence'):
+                for mutation in mutations:
+                    with self.subTest(mode=mode, stage=stage, mutation=mutation):
+                        self.both_context_case(mode, stage, mutation)
+
+    def both_context_case(self, mode, stage, mutation):
+        from t3compose import privacy
+        from tempfile import TemporaryDirectory
+        # Fixture paths stay unique across subcases, without inherited suites.
+        with TemporaryDirectory(dir=self.temp) as directory:
+            holder = SimpleNamespace(temp=Path(directory))
+            class Case:
+                temp = holder.temp
+                def __getattr__(_, name):
+                    return getattr(self, name)
+            f = PublisherPolicyFixture(Case(), mode=mode)
+            first, second = f.context('check'), f.context('push')
+            prior = f.evaluate(first)
+            self.seal(first, prior)
+            injected = []
+            def change():
+                if injected:
+                    return
+                injected.append((stage, mutation))
+                if mutation == 'policy':
+                    first.policy.write_bytes(first.policy.read_bytes() + b' ')
+                elif mutation == 'evidence':
+                    name = 'check-source' if mode == 'artifact' else 'check-publication'
+                    path = f.temp / name
+                    path.write_bytes(path.read_bytes() + b' ')
+                elif mutation == 'artifact-evidence':
+                    path = f.temp / 'check-source'
+                    path.write_bytes(path.read_bytes() + b' ')
+                elif mutation == 'list':
+                    (f.local / 'state/private-identifiers.txt').write_text('OTHER_SYNTHETIC\n')
+                elif mutation == 'public-authority':
+                    f.authority_decision('CHECKPUBLIC',
+                        'privacy-public-text/v1 revoke synthetic-product-rule ' + f.check_rule_context,
+                        'SYNTHETIC ONLY: revoked.')
+                elif mutation == 'artifact-authority':
+                    f.authority_decision('CHECKARTIFACT',
+                        'privacy-artifact/v1 revoke synthetic-inventory ' + f.check_artifact_context,
+                        'SYNTHETIC ONLY: revoked.')
+            if stage == 'proof':
+                name = '_scan' if mode == 'artifact' else '_literal_proofs'
+                original = getattr(privacy, name)
+                def boundary(*args, **kwargs):
+                    value = original(*args, **kwargs)
+                    change()
+                    return value
+                with patch.object(privacy, name, side_effect=boundary):
+                    later = f.evaluate(second)
+                self.assertIs(later.policy_satisfied, True)
+            else:
+                later = f.evaluate(second)
+                for c, r in ((first, prior), (second, later)):
+                    self.seal(c, r)
+                # Direct dormant storage, not a production caller or fake event.
+                publish._write_policy_observation(f.local, REPO, 'WORK', 'synthetic-review',
+                                                 f.observation(first, prior))
+                change()
+            self.assertEqual(injected, [(stage, mutation)])
+            with patch.object(privacy, '_scan', side_effect=AssertionError('scan')), \
+                 patch.object(privacy, '_literal_proofs', side_effect=AssertionError('proof')), \
+                 patch.object(privacy, 'evaluate_policy', side_effect=AssertionError('evaluate')):
+                if mutation == 'unchanged':
+                    self.seal(first, prior)
+                    self.seal(second, later)
+                else:
+                    self.refuses(first, prior)
+                    if mutation != 'list':
+                        self.seal(second, later)
+                    else:
+                        self.refuses(second, later)
+            self.assertEqual(f.launches, [])
+
+    @staticmethod
+    def seal(c, result, **overrides):
+        options = dict(repo=c.repo, local=c.local, policy=c.policy,
+            operation='pr' if c.texts else 'push', repository=c.identity,
+            base=c.base, head=c.head, commits=c.commits, branch=c.branch,
+            texts=c.texts, check_command=c.check_command)
+        options.update(overrides)
+        return publish._seal_policy_context(result, **options)
+
+
 class PublisherPolicyFixture:
     """Reusable synthetic preparation; no cached verdict or publication permission.
 
@@ -2333,7 +2560,6 @@ class PublisherPolicyFixture:
     git = OfflinePublish.git
     add = OfflinePublish.add
     create_work = OfflinePublish.create_work
-    native = OfflinePublish.native
     cover = OfflinePublish.cover
     events = OfflinePublish.events
     remote = OfflinePublish.remote
@@ -2356,7 +2582,8 @@ class PublisherPolicyFixture:
         self.allow_program('grep')
         self.repo, self.local = self.temp / 'checkout', self.temp / 'local'
         self.repo.mkdir()
-        (self.local / 'state').mkdir(parents=True)
+        (self.local / 'state').mkdir(parents=True, mode=0o700)
+        self.local.chmod(0o700)
         self.rows = ['SYNTHETIC_PRODUCT']
         (self.local / 'state/private-identifiers.txt').write_text(self.rows[0] + '\n')
         self.git('init', '-q', '-b', 'main')
@@ -2373,6 +2600,7 @@ class PublisherPolicyFixture:
         self.middle = self.commit('Synthetic intermediate')
         (self.repo / 'file.txt').write_text('public fixture\n')
         self.head = self.commit('Synthetic final')
+        self.parent = self.git('rev-parse', self.head + '^').strip()
         self.args = SimpleNamespace(local_dir=self.local, repo_path=str(self.repo),
             head=self.head, work='WORK', branch='fixture/topic')
         self.git('branch', self.args.branch)
@@ -2417,6 +2645,82 @@ class PublisherPolicyFixture:
             if mode != 'artifact':
                 self.prepare_public(operation)
 
+        # A range CHECK has no PR metadata and independent authority/evidence.
+        review = self.contexts['pr']
+        check = SimpleNamespace(**dict(vars(review), texts=(), text_files=(),
+                                      policy=self.temp / 'check-policy'))
+        self.contexts['check'] = check
+        if mode != 'public':
+            self.prepare_artifact(prefix='check-', work='CHECKARTIFACT')
+        if mode == 'artifact':
+            check.policy.write_bytes((self.temp / 'check-artifact-policy').read_bytes())
+        else:
+            rule, context = self.rule, self.rule_context
+            self.authority_work('CHECKPUBLIC')
+            self.rule = dict(rule, authorityWorkId='CHECKPUBLIC')
+            self.rule_context = self.digest({k:v for k,v in self.rule.items() if k != 'approvalSeq'})
+            self.check_rule_context = self.rule_context
+            self.authority_decision('CHECKPUBLIC',
+                'privacy-public-text/v1 approve synthetic-product-rule ' + self.rule_context,
+                self.rule['source']['quote'])
+            attest, publication = self.attest, self.publication
+            self.attest = dict(attest, ruleContext=self.rule_context)
+            self.publication = dict(publication, ruleContext=self.rule_context)
+            self.prepare_public('check')
+            self.rule, self.rule_context, self.attest = rule, context, attest
+            self.publication = publication
+        check.check_command = publish._policy_verify_command(self.local, self.repo,
+            self.base, self.head, self.args.branch, check.policy)
+
+    def execute_check(self):
+        c = self.context('check')
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(c.check_command[1:])
+        self.assertEqual(err.getvalue(), '')
+        return code, json.loads(out.getvalue())
+
+    def pr_adapter(self):
+        """Scoped injected readers and token consumer; never launches gh."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        self.args.base = 'main'
+        self.args.title_file, self.args.body_file = (p for _, p in self.text_files)
+        self.prs, self.reads = [], []
+        self.original_run = process.run
+        stack.enter_context(patch.object(process, 'run', side_effect=self.read))
+        stack.enter_context(patch.object(token_run, 'run_command', side_effect=self.create_pr))
+        return stack
+
+    row = OfflinePublishPR.row
+    read = OfflinePublishPR.read
+    pr_entry = OfflinePublishPR.entry
+
+    def create_pr(self, argv, path, *, local_dir):
+        self.assertEqual(Path.cwd(), self.repo)
+        self.assertEqual(local_dir, self.local)
+        self.assertEqual(argv[:9], ['gh', 'pr', 'create', '--repo',
+            'fixture-org/publish-fixture', '--head', self.args.branch, '--base', 'main'])
+        self.assertEqual(argv[9], '--title=' + self.title)
+        self.assertEqual(argv[10], '--body-file')
+        self.assertEqual(Path(argv[11]).read_text(), self.body)
+        self.assertEqual(stat.S_IMODE(Path(argv[11]).stat().st_mode), 0o600)
+        self.assertEqual(self.events()[-1]['kind'], 'op-intent')
+        self.launches.append(argv)
+        self.prs = [self.row()]
+        result = token_run.RunResult(True, 0, None, 'ok', 0)
+        jsonio.atomic_replace(path, result.record())
+        return result
+
+    def native(self, role, head):
+        append = self.add
+        def actual_parent(kind, data):
+            if kind == 'result':
+                data = dict(data, parentCommit=self.git('rev-parse', head + '^').strip())
+            return append(kind, data)
+        with patch.object(self, 'add', side_effect=actual_parent):
+            return OfflinePublish.native(self, role, head)
+
     def commit(self, message):
         self.git('add', '.')
         self.git('commit', '--allow-empty', '-qm', message)
@@ -2442,17 +2746,17 @@ class PublisherPolicyFixture:
         return records.append_event(self.local, REPO, work, 'decision', dict(
             question=question, answer=answer, date='2026-11-04', decidedBy='owner'), writer=WRITER)
 
-    def prepare_artifact(self):
-        self.authority_work('ARTIFACT')
+    def prepare_artifact(self, *, prefix='', work='ARTIFACT'):
+        self.authority_work(work)
         entries = [dict(path='asset.bin', mode='100644', size=len(self.opaque),
             blobOid=self.git('rev-parse', self.base + ':asset.bin').strip())]
         manifest = dict(schemaVersion=1, repository=REPO, objectFormat='sha1',
                         baseline=self.base, entries=entries)
         receipt = dict(schemaVersion=1, receiptId='synthetic-inventory', repository=REPO,
-            baseline=self.base, manifestDigest=self.write('manifest', manifest),
+            baseline=self.base, manifestDigest=self.write(prefix + 'manifest', manifest),
             **{k: self.identifiers[k] for k in ('policyVersion', 'policyDigest', 'listDigest')},
-            authorityWorkId='ARTIFACT', approvalSeq=1, sourceFile='source', sourceDigest='',
-            verificationFile='verification', verificationDigest='')
+            authorityWorkId=work, approvalSeq=1, sourceFile=prefix + 'source', sourceDigest='',
+            verificationFile=prefix + 'verification', verificationDigest='')
         keys = ('receiptId', 'repository', 'baseline', 'manifestDigest', 'policyVersion',
                 'policyDigest', 'listDigest', 'authorityWorkId')
         context = dict(schemaVersion=1, **{k: receipt[k] for k in keys})
@@ -2465,15 +2769,19 @@ class PublisherPolicyFixture:
             baselineEvidence=dict(repository=REPO, commit=self.base, objectFormat='sha1',
                                   entriesDigest=self.digest(entries)),
             inventoryDigest=receipt['manifestDigest'], result='verified')
-        receipt['sourceDigest'] = self.write('source', source)
-        receipt['verificationDigest'] = self.write('verification', verification)
+        receipt['sourceDigest'] = self.write(prefix + 'source', source)
+        receipt['verificationDigest'] = self.write(prefix + 'verification', verification)
         context.update(sourceDigest=receipt['sourceDigest'], verificationDigest=receipt['verificationDigest'])
-        self.artifact_context = self.digest(context)
-        self.authority_decision('ARTIFACT', 'privacy-artifact/v1 approve synthetic-inventory ' +
-                                self.artifact_context, source['quote'])
-        self.write('artifact-policy', dict(schemaVersion=1, policyVersion=receipt['policyVersion'],
-            manifestFile='manifest', manifestDigest=receipt['manifestDigest'], receiptFile='receipt',
-            receiptDigest=self.write('receipt', receipt), authorityWorkId='ARTIFACT'))
+        artifact_context = self.digest(context)
+        if prefix:
+            self.check_artifact_context = artifact_context
+        else:
+            self.artifact_context = artifact_context
+        self.authority_decision(work, 'privacy-artifact/v1 approve synthetic-inventory ' +
+                                artifact_context, source['quote'])
+        self.write(prefix + 'artifact-policy', dict(schemaVersion=1, policyVersion=receipt['policyVersion'],
+            manifestFile=prefix + 'manifest', manifestDigest=receipt['manifestDigest'], receiptFile=prefix + 'receipt',
+            receiptDigest=self.write(prefix + 'receipt', receipt), authorityWorkId=work))
 
     def prepare_rule(self):
         from t3compose import privacy_dispositions as pd
@@ -2519,15 +2827,16 @@ class PublisherPolicyFixture:
 
     def pin_public(self, operation):
         from t3compose import privacy_dispositions as pd
-        policy = dict(schemaVersion=2, policyVersion=pd.POLICY_VERSION, authorityWorkId='PUBLIC',
+        policy = dict(schemaVersion=2, policyVersion=pd.POLICY_VERSION, authorityWorkId=self.rule['authorityWorkId'],
                       artifactPolicyFile=None, artifactPolicyDigest=None)
         for name, value in (('rule', self.rule), ('publication', self.publication),
                             ('dispositions', self.dispositions[operation])):
             filename = operation + '-' + name
             policy.update({name + 'File': filename, name + 'Digest': self.write(filename, value)})
         if self.mode == 'combined':
-            policy.update(artifactPolicyFile='artifact-policy',
-                artifactPolicyDigest=self.digest((self.temp / 'artifact-policy').read_bytes()))
+            name = 'check-artifact-policy' if operation == 'check' else 'artifact-policy'
+            policy.update(artifactPolicyFile=name,
+                artifactPolicyDigest=self.digest((self.temp / name).read_bytes()))
         self.write(operation + '-policy', policy)
 
     def context(self, operation):

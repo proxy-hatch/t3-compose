@@ -682,3 +682,22 @@ close errors can retain complete bytes. Neither retained state is reused.
 Complete fresh evaluation/authority/list and ordinary publication gates remain
 required before any token mint. Cooperative provenance is not authentication;
 this dormant writer grants no policy permission or current revocation verdict.
+
+### Separate canonical range and publication evidence
+
+Preparation for future policy publication must distinguish the canonical CHECK
+range (`reviewBase..head`, without PR texts for push) from the actual ordered
+remote-excluded push set. Prepare separate public-text dispositions and pinned
+policies when those contexts differ; exact selection and finding-place equality
+remain required. Neither a subset nor a superset substitutes for the selection.
+Artifact-only evidence may serve both selections when all its bindings apply.
+PR preparation instead includes its ordered title/body metadata in the range.
+
+Execute the actual canonical `privacy verify` token array before recording fresh
+applicable check evidence. Synthetic check rows alone do not demonstrate command
+execution. A successful policy command can retain `rawExit: 1`; keep failed raw
+history and use the supported new-work/scope migration above. Independently
+rerun the actual publication-set evaluator. The dormant
+[current-context seal](cli/publish.md#dormant-current-policy-context-seal) prepares
+a future freshness boundary for both contexts; none of these helpers installs
+policy publication or turns a stored observation into permission.
