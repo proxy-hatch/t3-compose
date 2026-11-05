@@ -811,7 +811,8 @@ def _capture_invocation(args, *, pr_mode=False):
                 any(ord(c) < 32 or ord(c) == 127 for c in title)):
             _fail('PR title must be nonempty bounded single-line text')
     return SimpleNamespace(original=args, values=values, args=operational,
-                           files=tuple(files), config=None, intent=None, pretoken=True)
+                           files=tuple(files), config=None, intent=None, pretoken=True,
+                           result_attempted=False)
 
 
 def _guard_invocation(state):
@@ -831,7 +832,8 @@ class _ResultPersistenceError(cli.CommandError):
 def _pretoken_failure(state, code):
     local, identity, work, intent = state.intent
     result = _finish(local, identity, work, intent, 'refused',
-                     confirmation='Publication preparation failed; no token requested; repair inputs before retry')
+                     confirmation='Publication preparation failed; no token requested; repair inputs before retry',
+                     invocation=state)
     return cli.Outcome(result.data, code)
 
 
@@ -1034,7 +1036,8 @@ def _read_status(path):
         return None
 
 
-def _finish(local, repo, work, intent, outcome, summary=None, confirmation=None):
+def _finish(local, repo, work, intent, outcome, summary=None, confirmation=None, *,
+            invocation=None):
     data = {key: intent['data'][key] for key in ('opId', 'operation', 'target', 'commit')}
     data.update(intentRef=intent['seq'], outcome=outcome,
                 confirmation='Exact remote head confirmed' if outcome in {'succeeded', 'no-op'}
@@ -1043,6 +1046,10 @@ def _finish(local, repo, work, intent, outcome, summary=None, confirmation=None)
         data['confirmation'] = confirmation
     if summary is not None:
         data['statusSummary'] = summary
+    # An uncertain append must not be retried, even if cleanup masks its error.
+    # This says nothing about runner entry or successful result persistence.
+    if invocation is not None:
+        invocation.result_attempted = True
     try:
         _append(local, repo, work, 'op-result', data)
     except (cli.CommandError, records.RecordError, schema.SchemaError, OSError, ValueError, TypeError):
@@ -1110,9 +1117,9 @@ def _push(args, repo, identity, url, *, invocation=None):
         status = _read_status(_status_path(local, identity, work, old))
         if status and status.get('childStarted') is True and type(status.get('childStatus')) is int:
             outcome = 'succeeded' if status['childStatus'] == 0 and current == head else 'failed'
-            return _finish(local, identity, work, old, outcome, status)
+            return _finish(local, identity, work, old, outcome, status, invocation=invocation)
         if status and status['childStarted'] is False:
-            return _finish(local, identity, work, old, 'refused', status)
+            return _finish(local, identity, work, old, 'refused', status, invocation=invocation)
         return _out('unknown', 'child status unresolved; reconcile retained status and remote; no second push')
     prior = None
     # A later refused attempt cannot erase an earlier confirmed prior head.
@@ -1138,9 +1145,9 @@ def _push(args, repo, identity, url, *, invocation=None):
     if invocation is not None:
         invocation.intent = (local, identity, work, intent)
     if _remote(repo, url).get(ref, 'absent') != current:
-        return _finish(local, identity, work, intent, 'refused')
+        return _finish(local, identity, work, intent, 'refused', invocation=invocation)
     if current == head:
-        return _finish(local, identity, work, intent, 'no-op')
+        return _finish(local, identity, work, intent, 'no-op', invocation=invocation)
     path = _status_path(local, identity, work, intent)
     command = ['git', 'push', '--force-with-lease=' + ref + ':' +
                ('' if current == 'absent' else current), url, head + ':' + ref]
@@ -1148,7 +1155,7 @@ def _push(args, repo, identity, url, *, invocation=None):
                           url=url, refs=refs, invocation=invocation)
     if stopped:
         refused = _finish(local, identity, work, intent, 'refused',
-                          confirmation=stopped.data['reason'])
+                          confirmation=stopped.data['reason'], invocation=invocation)
         return cli.Outcome(refused.data, stopped.code)
     try:
         with _quiet():
@@ -1158,21 +1165,21 @@ def _push(args, repo, identity, url, *, invocation=None):
     except (Exception, KeyboardInterrupt):
         if invocation is not None and invocation.pretoken:
             raise
-        return _finish(local, identity, work, intent, 'unknown')
+        return _finish(local, identity, work, intent, 'unknown', invocation=invocation)
     status = _read_status(path)
     summary = _valid_summary(result, status)
     if summary is None:
-        return _finish(local, identity, work, intent, 'unknown')
+        return _finish(local, identity, work, intent, 'unknown', invocation=invocation)
     if summary['childStarted'] is False:
-        return _finish(local, identity, work, intent, 'refused', summary)
+        return _finish(local, identity, work, intent, 'refused', summary, invocation=invocation)
     if summary.get('childStatus') is None:
-        return _finish(local, identity, work, intent, 'unknown', summary)
+        return _finish(local, identity, work, intent, 'unknown', summary, invocation=invocation)
     try:
         confirmed = _remote(repo, url).get(ref) == head
     except cli.CommandError:
-        return _finish(local, identity, work, intent, 'unknown', summary)
+        return _finish(local, identity, work, intent, 'unknown', summary, invocation=invocation)
     outcome = 'succeeded' if summary['childStatus'] == 0 and confirmed else 'failed'
-    return _finish(local, identity, work, intent, outcome, summary)
+    return _finish(local, identity, work, intent, outcome, summary, invocation=invocation)
 
 
 def _publish(args, *, pr_mode=False):
@@ -1218,17 +1225,20 @@ def _publish(args, *, pr_mode=False):
     except _ResultPersistenceError:
         raise
     except github_app.ConfigError:
-        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+        if (invocation is not None and invocation.intent is not None
+                and invocation.pretoken and not invocation.result_attempted):
             return _pretoken_failure(invocation, 2)
         _fail('invalid App configuration; coordinator must repair private configuration', 3)
     except cli.CommandError as error:
-        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+        if (invocation is not None and invocation.intent is not None
+                and invocation.pretoken and not invocation.result_attempted):
             return _pretoken_failure(invocation, 1 if error.code == 1 else 2)
         raise
     except token_preconditions.Refusal:
         return _out('refused', 'unsafe Git configuration; coordinator must repair configuration')
     except (records.RecordError, schema.SchemaError, OSError, ValueError, TypeError):
-        if invocation is not None and invocation.intent is not None and invocation.pretoken:
+        if (invocation is not None and invocation.intent is not None
+                and invocation.pretoken and not invocation.result_attempted):
             return _pretoken_failure(invocation, 2)
         _fail('invalid inputs or record persistence failed; preserve status and reconcile before retry')
 
@@ -1344,7 +1354,8 @@ def _pr(args, repo, identity, config, reader_env, *, invocation=None):
         result = _finish(local, identity, work, intent, outcome, summary,
                          gap or ('Exact PR head, base, open state and App author verified'
                                  if outcome in {'succeeded', 'no-op'} else
-                                 'PR not confirmed; reconcile repository PR state and retained status before retry'))
+                                 'PR not confirmed; reconcile repository PR state and retained status before retry'),
+                         invocation=invocation)
         if number is not None:
             result.data.update(number=number, url=f'https://github.com/{config.full_name}/pull/{number}')
         return result

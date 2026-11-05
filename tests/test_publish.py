@@ -1,5 +1,5 @@
 """Guarded publication contract tests; all external writes are injected."""
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import io
 import json
 import os
@@ -3766,3 +3766,153 @@ class OfflineStrictInvocation(OfflineTestCase):
             self.assert_refused(result)
             self.assertEqual(result.code, 2)
             self.cover(self.head)
+
+
+class OfflinePublicationCleanup(OfflineTestCase):
+    setUp = OfflineStrictInvocation.setUp
+    git = OfflineStrictInvocation.git
+    add = OfflineStrictInvocation.add
+    create_work = OfflineStrictInvocation.create_work
+    native = OfflineStrictInvocation.native
+    cover = OfflineStrictInvocation.cover
+    remote = OfflineStrictInvocation.remote
+    run_child = OfflineStrictInvocation.run_child
+    events = OfflineStrictInvocation.events
+    ops = OfflineStrictInvocation.ops
+    read = OfflineStrictInvocation.read
+    row = OfflineStrictInvocation.row
+    create = OfflineStrictInvocation.create
+    invoke = OfflineStrictInvocation.invoke
+
+    @contextmanager
+    def cleanup_failure(self):
+        original = publish._environment
+        self.cleanup_reached = False
+        @contextmanager
+        def environment(repo):
+            before, cwd = dict(os.environ), Path.cwd()
+            try:
+                with original(repo):
+                    yield
+            finally:
+                self.assertEqual(dict(os.environ), before)
+                self.assertEqual(Path.cwd(), cwd)
+                self.cleanup_reached = True
+                raise OSError('PRIVATE_SENTINEL cleanup ' + str(self.temp))
+        with patch.object(publish, '_environment', side_effect=environment):
+            yield
+
+    def cleaned_call(self, mode):
+        # Capture either return shape so RED diagnoses the persisted contradiction.
+        try:
+            with self.cleanup_failure():
+                return self.invoke(mode)
+        except cli.CommandError as error:
+            return error
+
+    def assert_cleanup_error(self, result):
+        self.assertTrue(self.cleanup_reached)
+        self.assertFalse(self.launches)
+        self.assertIsInstance(result, cli.CommandError)
+        self.assertEqual(result.code, 2)
+        self.assertNotIn('PRIVATE_SENTINEL', str(result))
+        self.assertNotIn(str(self.temp), str(result))
+
+    def assert_operation(self, start, outcomes):
+        events = self.events()[start:]
+        self.assertEqual([e['kind'] for e in events],
+                         ['op-intent'] + ['op-result'] * len(outcomes))
+        intent = events[0]
+        self.assertEqual([e['data']['outcome'] for e in events[1:]], outcomes)
+        for event in events[1:]:
+            self.assertEqual(event['data']['intentRef'], intent['seq'])
+            self.assertEqual(event['data']['opId'], intent['data']['opId'])
+            self.assertEqual(event['data']['commit'], self.head)
+            self.assertNotIn('statusSummary', event['data'])
+        self.assertFalse(self.launches)
+
+    def test_push_noop_cleanup_keeps_only_confirmed_result(self):
+        self.refs[REF] = self.head
+        start = len(self.events())
+        result = self.cleaned_call('push')
+        self.assert_operation(start, ['no-op'])
+        self.assert_cleanup_error(result)
+
+    def test_pr_reuse_cleanup_keeps_only_confirmed_result(self):
+        self.prs = [self.row()]
+        start = len(self.events())
+        result = self.cleaned_call('pr')
+        self.assert_operation(start, ['no-op'])
+        self.assert_cleanup_error(result)
+
+    def test_completed_pretoken_refusal_cleanup_has_no_second_result(self):
+        for mode in ('push', 'pr'):
+            with self.subTest(mode=mode):
+                start = len(self.events())
+                with patch.object(publish, '_final_gate', return_value=cli.Outcome(
+                        {'outcome': 'refused', 'reason': 'Fixture refusal'}, 1)):
+                    result = self.cleaned_call(mode)
+                self.assert_operation(start, ['refused'])
+                self.assert_cleanup_error(result)
+                self.cover(self.head)
+
+    def test_unresolved_first_pretoken_failure_still_records_refusal(self):
+        for mode in ('push', 'pr'):
+            with self.subTest(mode=mode):
+                start = len(self.events())
+                with patch.object(publish, '_final_gate', side_effect=OSError('PRIVATE_SENTINEL')):
+                    result = self.cleaned_call(mode)
+                self.assert_operation(start, ['refused'])
+                self.assertTrue(self.cleanup_reached)
+                self.assertEqual(result.code, 2)
+                self.assertEqual(result.data['outcome'], 'refused')
+                self.assertNotIn('PRIVATE_SENTINEL', str(result.data))
+                self.cover(self.head)
+
+    def test_uncertain_result_append_is_not_retried_by_cleanup(self):
+        for mode in ('push', 'pr'):
+            with self.subTest(mode=mode):
+                self.refs[REF] = self.head
+                self.prs = [self.row()]
+                start, attempts = len(self.events()), []
+                original = publish._append
+                def append(*args, **kwargs):
+                    if args[3] == 'op-result':
+                        attempts.append(args[4]['outcome'])
+                        raise OSError('PRIVATE_SENTINEL uncertain append')
+                    return original(*args, **kwargs)
+                with patch.object(publish, '_append', side_effect=append):
+                    result = self.cleaned_call(mode)
+                self.assert_operation(start, [])
+                self.assertEqual(attempts, ['no-op'])
+                self.assertTrue(records.uncertain_items(self.events()))
+                self.assert_cleanup_error(result)
+                # Resolve only the synthetic fixture before the next independent case.
+                intent = self.events()[-1]
+                publish._finish(self.local, REPO, 'WORK', intent, 'refused')
+                self.cover(self.head)
+
+
+    def test_recorded_discovery_refusal_cleanup_is_not_reclassified(self):
+        start = len(self.events())
+        with patch.object(publish, '_discover', side_effect=cli.CommandError('PRIVATE_SENTINEL')):
+            result = self.cleaned_call('pr')
+        self.assert_operation(start, ['refused'])
+        self.assertIn('no token requested', self.events()[-1]['data']['confirmation'])
+        self.assert_cleanup_error(result)
+
+    def test_append_then_error_cleanup_preserves_actual_noop(self):
+        self.refs[REF] = self.head
+        start, attempts = len(self.events()), []
+        original = publish._append
+        def append(*args, **kwargs):
+            event = original(*args, **kwargs)
+            if args[3] == 'op-result':
+                attempts.append(args[4]['outcome'])
+                raise OSError('PRIVATE_SENTINEL after persistence')
+            return event
+        with patch.object(publish, '_append', side_effect=append):
+            result = self.cleaned_call('push')
+        self.assert_operation(start, ['no-op'])
+        self.assertEqual(attempts, ['no-op'])
+        self.assert_cleanup_error(result)
