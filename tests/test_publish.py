@@ -158,6 +158,131 @@ class OfflinePublish(OfflineTestCase):
                 runpy.run_path(str(ROOT / 'bin/t3c'), run_name='__main__')
         return exit.exception.code, out.getvalue(), err.getvalue()
 
+    def test_shared_scan_uses_actual_push_set_and_work_endpoints(self):
+        # The remote already has the reviewed tip: the push set is empty,
+        # although the work review range is not.
+        self.refs[REF] = self.head
+        scanner = publish.privacy.scan_commits
+        with patch.object(publish.privacy, 'scan_commits', wraps=scanner) as scan:
+            self.assertEqual(self.invoke().code, 0)
+        self.assertTrue(scan.called)
+        args, options = scan.call_args
+        self.assertEqual(args, (self.repo, self.local, []))
+        self.assertEqual(options, dict(base=self.base, head=self.head,
+                                      branch=self.args.branch, texts=()))
+
+    def test_late_push_preparation_changes_refuse_without_mint(self):
+        original = publish._status_path
+        for change in ('head', 'refs', 'evidence', 'selection', 'work'):
+            with self.subTest(change=change):
+                # Each subcase has an independent guarded synthetic fixture.
+                def changed(*a):
+                    path = original(*a)
+                    if change == 'head':
+                        self.git('checkout', '--detach', self.base)
+                    elif change == 'refs':
+                        self.refs['refs/tags/late'] = self.head
+                    elif change == 'evidence':
+                        self.add('check', {'checkId': 'SUITE', 'command': 'fixture-check',
+                            'commit': self.head, 'outcome': 'fail', 'source': 'manager',
+                            'evidencePath': 'fixture-failed.log'})
+                    elif change == 'work':
+                        self.add('lead-assignment', {'thread': 'fixture-new-lead',
+                            'assignedBy': WRITER, 'date': '2026-11-01', 'reason': 'Fixture'})
+                    return path
+                with patch.object(publish, '_status_path', side_effect=changed):
+                    if change == 'selection':
+                        selected = publish._publication_set
+                        calls = []
+                        def changed_set(*a):
+                            calls.append(1)
+                            value = selected(*a)
+                            return value if len(calls) == 1 else []
+                        with patch.object(publish, '_publication_set', side_effect=changed_set):
+                            result = self.invoke()
+                    else:
+                        result = self.invoke()
+                self.assertEqual(result.data['outcome'], 'refused')
+                self.assertFalse(self.launches)
+                self.assertNotIn('statusSummary', self.events()[-1]['data'])
+                # Restore only synthetic fixture state for the next subcase.
+                self.git('checkout', '--detach', self.head)
+                self.refs = {'refs/heads/main': self.base}
+                self.cover(self.head)
+
+    def test_shared_scanner_failures_never_mint(self):
+        for kind in ('finding', 'binary', 'unsupported', 'read-error'):
+            with self.subTest(kind=kind):
+                kwargs = ({'return_value': {'ok': False}} if kind == 'finding' else
+                          {'side_effect': cli.CommandError('privacy input refused')})
+                with patch.object(publish.privacy, 'scan_commits', **kwargs) as scan:
+                    if kind == 'finding':
+                        self.assertEqual(self.invoke().data['outcome'], 'refused')
+                    else:
+                        with self.assertRaises(cli.CommandError):
+                            self.invoke()
+                self.assertTrue(scan.called)
+                self.assertFalse(self.launches)
+
+    def test_real_binary_and_gitlink_refuse_without_mint(self):
+        original = self.head
+        for kind in ('binary', 'gitlink'):
+            with self.subTest(kind=kind):
+                if kind == 'binary':
+                    (self.repo / 'opaque.bin').write_bytes(b'\x00\xff')
+                    self.git('add', '.')
+                else:
+                    self.git('update-index', '--add', '--cacheinfo',
+                             '160000,' + self.base + ',external')
+                self.git('commit', '-qm', 'Unsupported fixture')
+                self.head = self.args.head = self.git('rev-parse', 'HEAD').strip()
+                self.cover(self.head)
+                with self.assertRaises(cli.CommandError):
+                    self.invoke()
+                self.assertFalse(self.launches)
+                self.git('reset', '--hard', original)
+                self.head = self.args.head = original
+
+    def test_late_gate_scanner_workflow_and_error_refuse_without_mint(self):
+        scanner, git = publish.privacy.scan_commits, publish._git
+        scans = []
+        def scanned(*a, **kw):
+            scans.append(1)
+            return scanner(*a, **kw)
+        def workflow(repo, *a, **kw):
+            if len(scans) == 2 and a[0] == 'diff-tree':
+                return b'.github/workflows/fixture.lock\0'
+            return git(repo, *a, **kw)
+        with patch.object(publish.privacy, 'scan_commits', side_effect=scanned), \
+                patch.object(publish, '_git', side_effect=workflow):
+            result = self.invoke()
+        self.assertEqual((result.code, result.data['outcome']), (5, 'refused'))
+        self.assertFalse(self.launches)
+        self.assertNotIn('statusSummary', self.events()[-1]['data'])
+
+    def test_independent_workflow_walk_covers_lock_root_and_merge(self):
+        path = self.repo / '.github/workflows/fixture.lock'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'\x00PRIVATE_SENTINEL')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Workflow lock fixture')
+        workflow = self.git('rev-parse', 'HEAD').strip()
+        # Lock contents are excluded by the scanner, never by the workflow guard.
+        self.assertEqual(publish._screen(self.repo, self.local, self.args.branch,
+            [workflow], base=self.base, head=workflow).code, 5)
+        self.git('checkout', '-qb', 'fixture-side', self.base)
+        self.git('merge', '--no-ff', workflow, '-qm', 'Merge workflow fixture')
+        merge = self.git('rev-parse', 'HEAD').strip()
+        for sha in (merge, workflow):
+            self.assertEqual(publish._screen(self.repo, self.local, self.args.branch,
+                [sha], base=self.base, head=merge).code, 5)
+        # A root workflow is also a transition, even without parents.
+        self.git('checkout', '--orphan', 'fixture-root')
+        self.git('commit', '-qm', 'Root workflow fixture')
+        root = self.git('rev-parse', 'HEAD').strip()
+        self.assertEqual(publish._screen(self.repo, self.local, self.args.branch,
+            [root], base=root, head=root).code, 5)
+
     def test_success_entry_and_cd6_push_consumer(self):
         code, out, err = self.entry()
         self.assertEqual(code, 0)
@@ -184,7 +309,7 @@ class OfflinePublish(OfflineTestCase):
             return append(local, repo, work, kind, data)
         with patch.object(evidence, 'check', checked), patch.object(publish, '_append', appended):
             self.assertEqual(self.invoke().code, 0)
-        self.assertEqual(order, ['check', 'op-intent', 'op-result'])
+        self.assertEqual(order, ['check', 'op-intent', 'check', 'op-result'])
 
     def test_noop_without_child_evidence(self):
         self.refs[REF] = self.head
@@ -504,7 +629,7 @@ class OfflinePublish(OfflineTestCase):
         def remote(repo, url):
             nonlocal counter
             counter += 1
-            if counter == 3:
+            if self.launches:
                 raise cli.CommandError('synthetic unavailable')
             return dict(self.refs)
         with patch.object(publish, '_remote', side_effect=remote):
@@ -828,6 +953,57 @@ class OfflinePublishPR(OfflineTestCase):
             self.assertEqual(publish.push(self.args).code, 0)
         self.launches.clear()
 
+    def test_pr_workflow_range_refuses_without_mint(self):
+        path = self.repo / '.github/workflows/fixture.lock'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'\x00')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Workflow fixture')
+        self.head = self.args.head = self.git('rev-parse', 'HEAD').strip()
+        self.cover(self.head)
+        self.assertEqual(self.invoke().code, 5)
+        self.assertFalse(self.launches)
+        self.assertFalse(self.ops())
+
+    def test_shared_pr_scan_range_and_ordered_metadata(self):
+        scanner = publish.privacy.scan_commits
+        with patch.object(publish.privacy, 'scan_commits', wraps=scanner) as scan:
+            self.assertEqual(self.invoke().code, 0)
+        self.assertTrue(scan.called)
+        args, options = scan.call_args
+        self.assertEqual(args, (self.repo, self.local, [self.head]))
+        self.assertEqual(options, dict(base=self.base, head=self.head,
+            branch=self.args.branch, texts=(('title', 'Fixture title'),
+                                           ('body', 'Fixture body\n'))))
+
+    def test_late_pr_discovery_changes_refuse_without_mint(self):
+        discover = publish._discover
+        for change in ('head', 'evidence', 'branch', 'title', 'body'):
+            with self.subTest(change=change):
+                branch = self.args.branch
+                def changed(*a):
+                    result = discover(*a)
+                    if change == 'head':
+                        self.git('checkout', '--detach', self.base)
+                    elif change == 'evidence':
+                        self.add('check', {'checkId': 'SUITE', 'command': 'fixture-check',
+                            'commit': self.head, 'outcome': 'fail', 'source': 'manager',
+                            'evidencePath': 'fixture-failed.log'})
+                    elif change == 'branch':
+                        self.args.branch = 'fixture/changed'
+                    else:
+                        getattr(self.args, change + '_file').write_text('Changed public text')
+                    return result
+                with patch.object(publish, '_discover', side_effect=changed):
+                    self.assertEqual(self.invoke().data['outcome'], 'refused')
+                self.assertFalse(self.launches)
+                self.assertNotIn('statusSummary', self.events()[-1]['data'])
+                self.git('checkout', '--detach', self.head)
+                self.args.branch = branch
+                self.args.title_file.write_text('Fixture title')
+                self.args.body_file.write_text('Fixture body\n')
+                self.cover(self.head)
+
     def test_create_entry_exact_pair_and_order(self):
         self.push_pair()
         order, check, append, verify = [], evidence.check, publish._append, publish.pullrequest.verify
@@ -848,7 +1024,7 @@ class OfflinePublishPR(OfflineTestCase):
         self.assertEqual(json.loads(out), {'outcome': 'succeeded',
             'reason': 'Exact PR head, base, open state and App author verified',
             'number': 7, 'url': 'https://github.com/fixture-org/publish-fixture/pull/7'})
-        self.assertEqual(order, ['check', 'op-intent', 'verify', 'op-result'])
+        self.assertEqual(order, ['check', 'op-intent', 'check', 'verify', 'op-result'])
         self.assertTrue(self.pair()['verified'])
         self.assertEqual(len(self.launches), 1)
         self.assertFalse(Path(self.launches[0][-1]).exists())
@@ -1096,8 +1272,8 @@ class OfflinePublishPR(OfflineTestCase):
             self.args.body_file.write_text('PRIVATE_SENTINEL')
             return discover(*a, **kw)
         with patch.object(publish, '_discover', side_effect=changed):
-            self.assertEqual(self.invoke().code, 0)
-        self.assertEqual(len(self.launches), 1)
+            self.assertEqual(self.invoke().data['outcome'], 'refused')
+        self.assertFalse(self.launches)
 
     def test_reader_keeps_synthetic_auth_home_only_for_reads(self):
         read = self.read

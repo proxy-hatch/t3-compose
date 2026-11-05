@@ -9,7 +9,7 @@ import uuid
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from . import cli, evidence, github_app, identifier_list, privacy
+from . import cli, evidence, github_app, privacy
 from . import process, pullrequest, records, schema, token_preconditions, token_run
 
 _SHA = re.compile(r'[0-9a-f]{40}')
@@ -125,40 +125,66 @@ def _publication_set(repo, head, refs):
     return selected
 
 
-def _screen(repo, local, branch, selected):
-    """Bounded exact-set adapter using PV-1 readers and grep semantics."""
-    patterns = identifier_list.load_identifiers(local)
-    matched = bool(identifier_list.match_identifiers(patterns, branch))
-    workflow = False
+def _screen(repo, local, branch, selected, *, base, head, texts=()):
+    """One strict scanner; workflow transitions are an independent restriction."""
+    screened = privacy.scan_commits(repo, local, selected, base=base, head=head,
+                                   branch=branch, texts=texts)
+    if screened.get('ok') is not True:
+        return _out('refused', 'privacy blocked; Corrections for unpublished commits; coordinator fixes branch and text; report published matches to Shawn')
     for sha in selected:
-        raw = privacy._object(repo, 'commit', sha)
-        _, sep, message = raw.partition(b'\n\n')
-        if not sep:
-            _fail('invalid commit object')
-        matched |= bool(identifier_list.match_identifiers(patterns, privacy._text(message)))
-        tree = privacy._git(repo, 'ls-tree', '-r', '-t', '-z', '--full-tree', sha, '--')
-        if tree and not tree.endswith(b'\0'):
-            _fail('invalid publication tree')
-        for entry in tree[:-1].split(b'\0') if tree else []:
-            metadata, tab, path = entry.partition(b'\t')
-            if not tab or not path:
-                _fail('invalid publication entry')
-            filename = privacy._text(path)
-            if filename.endswith('.lock'):
-                continue
-            if not re.fullmatch(rb'(?:(?:100644|100755|120000) blob|040000 tree) [0-9a-f]{40}', metadata):
-                _fail('unsupported publication entry')
-            matched |= bool(identifier_list.match_identifiers(patterns, filename))
-            if not metadata.startswith(b'040000 tree '):
-                contents = privacy._object(repo, 'blob', metadata[-40:].decode())
-                matched |= bool(identifier_list.match_identifiers(patterns, privacy._text(contents)))
-        changed = _git(repo, 'diff-tree', '--root', '-m', '--no-commit-id',
-                       '--name-only', '-r', '-z', sha, '--', '.github/workflows/')
-        workflow |= bool(changed)
-    if matched:
-        return _out('refused', 'privacy blocked; Corrections for unpublished commits; coordinator fixes branch; report published matches to Shawn')
-    if workflow:
-        return _out('refused', 'Shawn must push workflow changes', 5)
+        # Do not apply the scanner's .lock exclusions here. -m walks every
+        # merge parent; --root treats the empty tree as a root's predecessor.
+        if _git(repo, 'diff-tree', '--root', '-m', '--no-commit-id',
+                '--name-only', '-r', '-z', sha, '--', '.github/workflows/'):
+            return _out('refused', 'Shawn must push workflow changes', 5)
+    return None
+
+
+def _review_set(repo, base, head):
+    raw = _git(repo, 'rev-list', base + '..' + head, '--')
+    if raw and not raw.endswith(b'\n'):
+        _fail('incomplete review selection')
+    selected = raw.decode('ascii').splitlines()
+    if any(not _SHA.fullmatch(s) for s in selected) or len(set(selected)) != len(selected):
+        _fail('invalid review selection')
+    return selected
+
+
+def _final_gate(args, repo, identity, loaded, intent, selected, branch, *,
+                url=None, refs=None, texts=(), metadata=None):
+    """After preparation, validate captured inputs before entering token_run.
+
+    Own intent is the only permitted record addition. No child/status facts
+    are invented on refusal. These sequential reads are not a transaction.
+    """
+    local, work, head = args.local_dir, args.work, intent['data']['commit']
+    base = loaded['work']['reviewBase']
+    try:
+        _overrides(repo)
+    except cli.CommandError:
+        return _out('refused', 'Publication configuration changed; no child launched; coordinator must repair overrides')
+    stopped = _screen(repo, local, branch, selected, base=base, head=head, texts=texts)
+    if stopped:
+        return stopped
+    if not evidence.check(local, identity, work, head, pr_ready=False)['verified']:
+        return _out('refused', 'Publication evidence changed; no child launched; record fresh exact-head checks and review')
+    current = records.load_work(local, identity, work)
+    if (current['work'] != loaded['work'] or
+            current['effectiveWork'] != loaded['effectiveWork'] or
+            current['events'] != [*loaded['events'], intent]):
+        return _out('refused', 'Publication work changed; no child launched; reconcile current work and review')
+    if url is not None:
+        actual_refs = _remote(repo, url)
+        if actual_refs != refs or _publication_set(repo, head, actual_refs) != selected:
+            return _out('refused', 'Publication refs or selection changed; no child launched; prepare fresh publication')
+    elif _review_set(repo, base, head) != selected:
+        return _out('refused', 'Publication selection changed; no child launched')
+    if (args.head != head or args.branch != branch or
+            metadata is not None and (args.base, privacy._file(args.title_file),
+                                      privacy._file(args.body_file)) != metadata):
+        return _out('refused', 'Publication metadata changed; no child launched; prepare fresh publication')
+    if _git(repo, 'rev-parse', '--verify', 'HEAD') != (head + '\n').encode():
+        return _out('refused', 'Publication HEAD changed; no child launched; restore reviewed checkout')
     return None
 
 
@@ -251,15 +277,16 @@ def _push(args, repo, identity, url):
     checked = evidence.check(local, identity, work, head, pr_ready=False)
     if not checked['verified']:
         return _out('refused', 'stale or missing evidence; coordinator must record exact-head checks and review')
+    loaded = records.load_work(local, identity, work)
     refs = _remote(repo, url)
     selected = _publication_set(repo, head, refs)
-    stopped = _screen(repo, local, branch, selected)
+    stopped = _screen(repo, local, branch, selected,
+                      base=loaded['work']['reviewBase'], head=head)
     if stopped:
         return stopped
     ref = 'refs/heads/' + branch
     target = url + '#' + ref
     current = refs.get(ref, 'absent')
-    loaded = records.load_work(local, identity, work)
     old, result = _latest(loaded, target)
     uncertain = records.uncertain_items(loaded['events'])
     pending = [i for i in uncertain if i['kind'] == 'operation' and
@@ -303,11 +330,12 @@ def _push(args, repo, identity, url):
     path = _status_path(local, identity, work, intent)
     command = ['git', 'push', '--force-with-lease=' + ref + ':' +
                ('' if current == 'absent' else current), url, head + ':' + ref]
-    try:
-        _overrides(repo)
-    except cli.CommandError:
-        return _finish(local, identity, work, intent, 'refused',
-                       confirmation='Publication configuration changed; no child launched; coordinator must repair overrides')
+    stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
+                          url=url, refs=refs)
+    if stopped:
+        refused = _finish(local, identity, work, intent, 'refused',
+                          confirmation=stopped.data['reason'])
+        return cli.Outcome(refused.data, stopped.code)
     try:
         with _quiet():
             result = token_run.run_command(command, path, local_dir=local)
@@ -457,12 +485,13 @@ def _pr(args, repo, identity, config, reader_env):
         return _out('refused', 'stale or missing evidence; record exact-head checks and review')
     loaded = records.load_work(local, identity, work)
     base = loaded['work']['reviewBase']
-    screened = privacy.check(SimpleNamespace(local_dir=local, repo_path=str(repo),
-        range=base + '..' + head, branch=args.branch, text_file=[]))
-    patterns = identifier_list.load_identifiers(local)
-    text_match = any(identifier_list.match_identifiers(patterns, text) for text in (title, body))
-    if isinstance(screened, cli.Outcome) or screened.get('ok') is not True or text_match:
-        return _out('refused', 'privacy blocked; coordinator fixes text; Corrections only for unpublished commits; report published matches to Shawn')
+    branch = args.branch
+    metadata = (args.base, title, body)
+    texts = (('title', title), ('body', body))
+    selected = _review_set(repo, base, head)
+    stopped = _screen(repo, local, branch, selected, base=base, head=head, texts=texts)
+    if stopped:
+        return stopped
     target = 'https://github.com/' + config.full_name + '/pulls#' + args.branch
     intents = [e for e in loaded['events'] if e['kind'] == 'op-intent' and
                e['data']['operation'] == 'pull-request' and e['data']['target'] == target]
@@ -514,10 +543,11 @@ def _pr(args, repo, identity, config, reader_env):
             stream.write(body)
         command = ['gh', 'pr', 'create', '--repo', config.full_name, '--head', args.branch,
                    '--base', args.base, '--title=' + title, '--body-file', str(body_path)]
-        try:
-            _overrides(repo)
-        except cli.CommandError:
-            return finish('refused', gap='Publication configuration changed; no child launched; coordinator must repair overrides')
+        stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
+                              texts=texts, metadata=metadata)
+        if stopped:
+            refused = finish('refused', gap=stopped.data['reason'])
+            return cli.Outcome(refused.data, stopped.code)
         try:
             with _quiet():
                 actual = token_run.run_command(command, path, local_dir=local)
