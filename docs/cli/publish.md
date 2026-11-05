@@ -383,6 +383,10 @@ ASCII alphanumerics, dot, underscore or hyphen, and are at most 128 characters.
 The selected local root, existing record ancestors, work and dedicated parent
 must be owned directories with mode 0700. Descriptor-pinned traversal rejects
 symlinks below the trusted selected root; unsafe existing modes are never repaired.
+Each opened directory is registered for cleanup before traversal continues and
+remains pinned until stack cleanup. Root-acquisition failure unwinds registered
+cleanup; a close error is never retried by the writer. Close uncertainty is
+not an atomic or hostile-same-user guarantee.
 Only the dedicated parent may be created. New final files use descriptor-relative
 exclusive nofollow creation and mode 0600; existing files, links and other entries
 are never overwritten or reused. Regular-file ownership, single link, size,

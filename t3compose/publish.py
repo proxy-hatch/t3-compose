@@ -422,7 +422,14 @@ def _write_policy_observation(local, identity, work, op_id, observation):
         root = work_path.parents[len(identity.split('/'))+3]
         name = op_id + '.json'
         with ExitStack() as stack:
-            current = stack.enter_context(records.directory(root))
+            current = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, current)
+            for component in root.parts[1:]:
+                require(component not in {'.', '..'})
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=current)
+                stack.callback(os.close, child)
+                current = child
             private_directory(current)
             pins = []
             for component in work_path.relative_to(root).parts:

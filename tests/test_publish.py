@@ -2057,3 +2057,48 @@ class OfflinePolicyObservationWriter(OfflineTestCase):
             return fd
         with patch.object(os, 'open', side_effect=opening): self.refused()
         self.assertEqual(path.read_bytes(), b'preserve-replacement')
+
+    def _root_close_fault(self, fail_open):
+        sentinel = self.temp/'root-close-sentinel'
+        sentinel.write_bytes(b'synthetic')
+        value = self.project()
+        real_open, real_close = os.open, os.close
+        opened, attempts, recycled, fired = [], [], [], []
+        def opening(*args, **kwargs):
+            if fail_open and len(opened) == 2:
+                raise OSError('synthetic open failure')
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+        def closing(fd):
+            attempts.append(fd)
+            real_close(fd)
+            if not fired and (fail_open or fd == opened[0]):
+                fired.append(fd)
+                recycled.append(real_open(sentinel, os.O_RDONLY))
+                self.assertEqual(recycled[0], fd)
+                raise OSError('synthetic close after release')
+        try:
+            with patch.object(os, 'open', side_effect=opening), patch.object(
+                    os, 'close', side_effect=closing):
+                self.refused(value)
+            self.assertTrue(fired)
+            self.assertTrue(all(attempts.count(fd) == 1 for fd in attempts), attempts)
+            self.assertEqual(os.fstat(recycled[0]).st_ino, sentinel.stat().st_ino)
+            for fd in set(opened)-set(recycled):
+                with self.assertRaises(OSError): os.fstat(fd)
+            path = self.parent/'operation.json'
+            if fail_open:
+                self.assertFalse(self.parent.exists())
+            else:
+                self.assertEqual(path.read_bytes(), publish._encode_policy_observation(value))
+        finally:
+            for fd in set(opened+recycled):
+                try: real_close(fd)
+                except OSError: pass
+
+    def test_writer_root_entry_failure_owns_all_descriptors(self):
+        self._root_close_fault(True)
+
+    def test_writer_root_close_error_never_retries_recycled_descriptor(self):
+        self._root_close_fault(False)
