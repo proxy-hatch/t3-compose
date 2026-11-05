@@ -158,6 +158,132 @@ class OfflinePublish(OfflineTestCase):
                 runpy.run_path(str(ROOT / 'bin/t3c'), run_name='__main__')
         return exit.exception.code, out.getvalue(), err.getvalue()
 
+    def policy_command(self, **overrides):
+        values = dict(local=self.local, repo=self.repo, base=self.base,
+                      head=self.head, branch=self.args.branch, policy=self.temp / 'policy.json')
+        values.update(overrides)
+        return publish._policy_verify_command(**values)
+
+    def policy_requirement(self, command):
+        decision = self.add('decision', {'question': 'Change fixture check?',
+            'answer': 'Use fixture verification command', 'decidedBy': 'manager',
+            'date': '2026-11-01'})
+        self.add('scope', {'decisionRef': decision['seq'],
+            'requiredChecks': [{'id': 'SUITE', 'command': command, 'kind': 'fast'}]})
+
+    def policy_pass(self, expected, **overrides):
+        data = dict(checkId='SUITE', command=expected, commit=self.head,
+                    outcome='pass', source='manager', evidencePath='verify.log')
+        data.update(overrides)
+        return self.add('check', data)
+
+    def policy_join(self, command):
+        return publish._policy_verify_check(self.local, REPO, 'WORK', self.head, command)
+
+    def test_policy_command_arrays_and_no_content_reads(self):
+        expected = ['t3c', '--local-dir', str(self.local), 'privacy', 'verify',
+            '--repo-path', str(self.repo), '--range', self.base + '..' + self.head,
+            '--branch', self.args.branch, '--privacy-policy', str(self.temp / 'policy.json')]
+        with patch.object(Path, 'open', side_effect=AssertionError('content read')):
+            self.assertEqual(self.policy_command(local=self.local / 'unused/..'), expected)
+            texts = [('title', self.temp / 'title'), ('body', self.temp / 'body')]
+            self.assertEqual(self.policy_command(text_files=texts), expected +
+                ['--text-file', 'title=' + str(self.temp / 'title'),
+                 '--text-file', 'body=' + str(self.temp / 'body')])
+
+    def test_policy_command_rejects_untyped_and_invalid_arguments(self):
+        for changes in ({'local': b'path'}, {'repo': ''}, {'policy': 1},
+                {'policy': 'x\0y'}, {'policy': '\ud800'}, {'policy': 'x' * 4097},
+                {'base': 'main'}, {'head': 'A' * 40}, {'branch': '-topic'},
+                {'branch': 'a..b'}, {'branch': 'a b'}, {'branch': 'a.lock'},
+                {'text_files': 'title=x'}, {'text_files': [('body', 'x'), ('title', 'y')]},
+                {'text_files': [('title', 'x')]}, {'text_files': [('title', 'x'), ('body', 2)]}):
+            with self.subTest(changes=changes), self.assertRaises(cli.CommandError):
+                self.policy_command(**changes)
+
+    def test_policy_join_requires_actual_current_requirement_and_whole_evidence(self):
+        command = self.policy_command()
+        self.assertFalse(self.policy_join(command))
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        self.add('scope', {'decisionRef': next(e['data']['decisionRef'] for e in reversed(self.events()) if e['kind'] == 'scope'),
+            'acceptance': [{'id': 'OTHER', 'text': 'Additional fixture evidence'}]})
+        self.assertFalse(self.policy_join(command))
+        self.assertEqual(self.launches, [])
+
+    def test_policy_join_rejects_command_variants_and_diagnostic_fallback(self):
+        command = self.policy_command()
+        self.policy_requirement(command)
+        for changes in ({'commit': self.base}, {'source': 'worker'},
+                {'source': 'feature-lead'}, {'outcome': 'fail'},
+                {'command': ' '.join(command)}):
+            with self.subTest(changes=changes):
+                self.policy_pass(command, **changes)
+                self.assertFalse(self.policy_join(command))
+        # The actual record schema refuses nonconcrete evidence before the
+        # current-record join; detached check dictionaries are not accepted.
+        for missing in ('', None, {'unknown': 'No fixture log'}):
+            with self.assertRaises(ValueError):
+                self.policy_pass(command, evidencePath=missing)
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        changed_local = self.policy_command(local=self.temp / 'other-local')
+        self.assertFalse(self.policy_join(changed_local))
+        self.assertFalse(publish._policy_verify_check(self.local, REPO, 'WORK', self.base, command))
+        for index, replacement in ((6, str(self.temp / 'other-repo')), (8, self.head + '..' + self.head),
+                (10, 'other/topic'), (12, str(self.temp / 'other-policy'))):
+            changed = command.copy()
+            changed[index] = replacement
+            self.assertFalse(self.policy_join(changed))
+        for changed in (' '.join(command), tuple(command), command[:-1], command + ['--extra'],
+                [*command[:3], 'verify', 'privacy', *command[5:]],
+                [*command[:2], str(self.local / 'x/..'), *command[3:]]):
+            with self.subTest(command=changed), self.assertRaises(cli.CommandError):
+                self.policy_join(changed)
+        pr = self.policy_command(text_files=[('title', self.temp / 'title'), ('body', self.temp / 'body')])
+        self.policy_requirement(pr)
+        self.policy_pass(pr)
+        self.assertTrue(self.policy_join(pr))
+        for index in (14, 16):
+            changed = pr.copy()
+            changed[index] += '-changed'
+            self.assertFalse(self.policy_join(changed))
+        with self.assertRaises(cli.CommandError):
+            self.policy_join(pr[:13] + pr[15:] + pr[13:15])
+
+    def test_policy_migration_keeps_raw_failure_and_requires_fresh_check(self):
+        raw = self.policy_pass('fixture-check', outcome='fail')
+        command = self.policy_command()
+        old = self.policy_pass(command)
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        events = self.events()
+        self.assertEqual(events[raw['seq'] - 1], raw)
+        self.assertEqual(events[old['seq'] - 1], old)
+        # A changed requirement invalidates earlier matching observations, even
+        # if the same command later returns under a supported scope decision.
+        self.policy_requirement('fixture-replacement')
+        self.policy_requirement(command)
+        self.assertFalse(self.policy_join(command))
+        self.policy_pass(command)
+        self.assertTrue(self.policy_join(command))
+        self.add('lead-assignment', {'thread': 'new-fixture-lead', 'assignedBy': WRITER,
+                 'date': '2026-11-01', 'reason': 'Fixture reassignment'})
+        self.assertFalse(self.policy_join(command))
+
+    def test_policy_reserved_head_refuses_builder_and_checker(self):
+        with self.assertRaises(cli.CommandError):
+            self.policy_command(branch='HEAD')
+        command = self.policy_command()
+        command[10] = 'HEAD'
+        with self.assertRaises(cli.CommandError):
+            self.policy_join(command)
+        self.assertEqual(self.launches, [])
+
     def test_shared_scan_uses_actual_push_set_and_work_endpoints(self):
         # The remote already has the reviewed tip: the push set is empty,
         # although the work review range is not.
@@ -1336,3 +1462,315 @@ class OfflinePublishPR(OfflineTestCase):
             'notes': 'Fixture reopened'})
         self.assertFalse(self.pair()['verified'])
         self.assertEqual(self.invoke().data['outcome'], 'unknown')
+
+
+class OfflinePolicyObservation(OfflineTestCase):
+    """Direct process-private projection controls; no scanner/authority I/O."""
+    def setUp(self):
+        from t3compose import privacy, privacy_dispositions as pd
+        self.privacy, self.pd = privacy, pd
+        self.digest = privacy._canonical_digest
+        self.d = 'sha256:' + 'd' * 64
+        self.time = '2026-11-05T00:00:00+00:00'
+        self.ids = privacy._policy_identifiers(('synthetic-private',))
+        self.args = dict(operation='push', repository=REPO, base='a'*40, head='b'*40,
+            commits=['b'*40], branch='fixture/topic', texts=[], check_command=['synthetic-check'],
+            identifiers=self.ids, list_observed_at='2026-11-05T00:00:03+00:00')
+        self.context = dict(version='selection-context/v1', repository=REPO,
+            base='a'*40, head='b'*40, commits=['b'*40], branchDigest=privacy._digest(b'fixture/topic'), texts=[])
+
+    def authority(self):
+        return dict(authorityEventCount=1, authorityCheckpoint=dict(lastSeq=1, digest=self.d),
+            authorityWorkDigest=self.d, authorityEventsDigest=self.d,
+            observedStart=self.time, observedEnd=self.time)
+
+    def facts(self, mode='artifact'):
+        a = self.authority()
+        provenance = dict(receiptId='synthetic', authorityWorkId='AUTH', approvalSeq=1,
+            inventoryContextDigest=self.d, contextDigest=self.d, policyFileDigest=self.d,
+            manifestDigest=self.d, receiptDigest=self.d, sourceDigest=self.d, verificationDigest=self.d,
+            baseline='a'*40, **self.ids, **a)
+        coverage = dict(version='artifact-coverage/v1', **{k:v for k,v in self.context.items() if k!='version'},
+            selectionDigest=self.digest(self.args['commits']), provenance=provenance,
+            screened=[], approvedUnscanned=[{'file': 'synthetic-private/path'}], excluded=[])
+        f = dict(version='policy-evaluation/v1', policySatisfied=True, rawStatus='policy-evaluation-required',
+            raw=dict(ok=False, commits=1, findings=[], action='synthetic-private'), coverage=coverage,
+            authority=dict(start=self.authority(), end=self.authority()),
+            observation=dict(start=self.time, end='2026-11-05T00:00:02+00:00'))
+        if mode != 'artifact':
+            f['version'] = 'policy-evaluation/v2'
+            f['selection'] = dict(self.context, selectionContext=self.digest(self.context),
+                listDigest=self.ids['listDigest'], patternCount=1, localeDigest=self.d)
+            bindings = dict(ruleId='synthetic-rule', ruleContext=self.d, repository=REPO,
+                scope='public-product-text', fields=['file'], policyVersion=self.pd.POLICY_VERSION,
+                policyDigest=self.pd.digest(self.pd.DESCRIPTOR), authorityWorkId='AUTH', approvalSeq=1,
+                publicCommit='c'*40, listDigest=self.ids['listDigest'], selectionContext=self.digest(self.context),
+                artifact=['synthetic-policy', self.d] if mode=='combined' else [None,None],
+                ruleDigest=self.d, publicationDigest=self.d, dispositionsDigest=self.d,
+                authorityWorkDigest=self.d, policyFileDigest=self.d)
+            f['publicText'] = dict(bindings=bindings, authority=dict(start=self.authority(), end=self.authority()),
+                verdicts=[{'private-proof': object()}], resolved=1, unresolved=0)
+            f.update(rawStatus='findings', raw=dict(ok=False, commits=1,
+                findings=[{'private-finding': object()}], action='synthetic-private'))
+            if mode == 'public':
+                f.update(coverage=None, authority=None)
+        return f
+
+    def project(self, facts=None, **args):
+        return publish._policy_observation(self.privacy.PolicyEvaluation(facts or self.facts()), **dict(self.args, **args))
+
+    def refuse(self, f=None, **args):
+        with self.assertRaises(cli.CommandError) as error:
+            self.project(f, **args)
+        self.assertEqual(str(error.exception), 'publication: invalid private policy observation')
+
+    def test_projection_versions_closed_output_and_honest_raw_nonpass(self):
+        keys = ('version operation base head selectionDigest contextDigest checkCommandDigest listDigest patternCount '
+            'policyBindingDigest artifactAuthorityStartDigest artifactAuthorityEndDigest publicAuthorityStartDigest '
+            'publicAuthorityEndDigest rawStatus rawExit commitCount findingCount approvedUnscannedCount '
+            'policySatisfied observedStart observedEnd listObservedAt').split()
+        for mode in ('artifact','public','combined'):
+            with self.subTest(mode=mode):
+                value = self.project(self.facts(mode))
+                self.assertEqual(set(value), set(keys))
+                self.assertEqual(value['version'], 'publication-policy-observation/v1')
+                self.assertEqual(value['rawExit'], 1)
+                self.assertIs(value['policySatisfied'], True)
+                self.assertEqual(value['contextDigest'], self.digest(self.context))
+                self.assertEqual(value['selectionDigest'], self.digest(self.args['commits']))
+                encoded = json.dumps(value)
+                self.assertLessEqual(len(encoded.encode()), 16384)
+                for secret in ('synthetic-private','private-proof','private-finding','AUTH','synthetic-policy',str(self.temp)):
+                    self.assertNotIn(secret, encoded)
+                self.assertEqual(value['artifactAuthorityStartDigest'] is None, mode=='public')
+                self.assertEqual(value['publicAuthorityStartDigest'] is None, mode=='artifact')
+        clean = self.facts()
+        clean['coverage']['approvedUnscanned'] = []
+        clean.update(rawStatus='no-text-findings', raw=dict(ok=True, commits=1, findings=[], action=None))
+        self.assertEqual(self.project(clean)['rawExit'], 0)
+
+    def test_projection_context_list_and_binding_mismatches(self):
+        for mode in ('artifact','public','combined'):
+            for args in (dict(repository='github.com/other/project'), dict(base='c'*40), dict(head='c'*40),
+                dict(commits=[]), dict(branch='other'), dict(texts=[('title','private')])):
+                with self.subTest(mode=mode,args=args): self.refuse(self.facts(mode), **args)
+            for key in self.ids:
+                ids = dict(self.ids, **{key: 2 if key=='patternCount' else self.d})
+                with self.subTest(mode=mode,key=key):
+                    # Public-only compares current list/count; descriptor keys remain validated.
+                    self.refuse(self.facts(mode), identifiers=ids)
+        for mode in ('public','combined'):
+            for key in ('selectionContext','listDigest','policyDigest','authorityWorkDigest'):
+                f=self.facts(mode); f['publicText']['bindings'][key]='sha256:'+'e'*64
+                self.refuse(f)
+        f=self.facts('combined'); f['publicText']['bindings']['artifact'][1]='sha256:'+'e'*64
+        self.refuse(f)
+        f=self.facts(); f['coverage']['commits']=['c'*40,'b'*40]; self.refuse(f)
+
+    def test_projection_explicit_type_closed_shapes_and_bounds(self):
+        for result in (True, {}, {'policySatisfied':True}, object(), SimpleNamespace(policy_satisfied=True)):
+            with self.assertRaises(cli.CommandError): publish._policy_observation(result, **self.args)
+        for verdict in (False, 1, 'true', None):
+            f=self.facts(); f['policySatisfied']=verdict; self.refuse(f)
+        for field,value in (('version','policy-evaluation/v9'),('rawStatus','private-status')):
+            f=self.facts(); f[field]=value; self.refuse(f)
+        for target in ('root','raw','coverage','provenance','observation','selection','publicText','bindings'):
+            f=self.facts('combined')
+            obj={'root':f,'raw':f['raw'],'coverage':f['coverage'],'provenance':f['coverage']['provenance'],
+                'observation':f['observation'],'selection':f['selection'],'publicText':f['publicText'],
+                'bindings':f['publicText']['bindings']}[target]
+            obj['private-extra']=object(); self.refuse(f)
+        for key,value in (('ok',1),('commits',True),('commits',-1),('commits',2**63),('findings',{})):
+            f=self.facts(); f['raw'][key]=value; self.refuse(f)
+        for ids in (dict(self.ids, patternCount=True),dict(self.ids, patternCount=-1),
+                    dict(self.ids, patternCount=2**63),dict(self.ids, listDigest='bad'),dict(self.ids, extra=1)):
+            self.refuse(identifiers=ids)
+        for args in (dict(operation='other'), dict(commits=['b'*40,'b'*40]),dict(commits=[1]),
+            dict(check_command='shell command'),dict(check_command=['x'*16385]),dict(branch='\ud800')):
+            self.refuse(**args)
+        for mode in ('public','combined'):
+            for key,value in (('resolved',True),('unresolved',1)):
+                f=self.facts(mode); f['publicText'][key]=value; self.refuse(f)
+            f=self.facts(mode); f['publicText']['bindings']['artifact']=[None,self.d]; self.refuse(f)
+
+    def test_projection_six_field_authorities_and_stable_binding(self):
+        for mode in ('artifact','public','combined'):
+            original = self.project(self.facts(mode))
+            groups = (['authority'] if mode=='artifact' else
+                      ['publicText'] if mode=='public' else ['authority','publicText'])
+            for group in groups:
+                for side in ('start','end'):
+                    for field in self.authority():
+                        f=self.facts(mode); a=f['authority'] if group=='authority' else f[group]['authority']
+                        del a[side][field]; self.refuse(f)
+                    for field,value in (('extra',1),('authorityEventCount',True),('authorityEventCount',-1),
+                        ('authorityEventsDigest','bad'),('observedStart','yesterday'),
+                        ('observedStart','2026-11-05T00:00:01+00:00'),('observedEnd',self.time[:-6]),
+                        ('observedEnd','2026-11-05T01:00:00+01:00')):
+                        f=self.facts(mode); a=f['authority'] if group=='authority' else f[group]['authority']
+                        a[side][field]=value; self.refuse(f)
+                    f=self.facts(mode); a=f['authority'] if group=='authority' else f[group]['authority']
+                    a[side]['observedEnd']='2026-11-05T00:00:00.1+00:00'
+                    got=self.project(f)
+                    prefix='artifact' if group=='authority' else 'public'
+                    key=prefix+'Authority'+side.title()+'Digest'
+                    self.assertNotEqual(got[key],original[key])
+                    self.assertEqual(got['policyBindingDigest'],original['policyBindingDigest'])
+                f=self.facts(mode); a=f['authority'] if group=='authority' else f[group]['authority']
+                a['end'].update(authorityEventCount=2,authorityCheckpoint=dict(lastSeq=2,digest=self.d),
+                    authorityEventsDigest='sha256:'+'f'*64)
+                got=self.project(f)
+                self.assertEqual(got['policyBindingDigest'],original['policyBindingDigest'])
+                self.assertNotEqual(got[prefix+'AuthorityEndDigest'],original[prefix+'AuthorityEndDigest'])
+        f=self.facts(); f['authority']['start']['authorityCheckpoint']['extra']=1; self.refuse(f)
+        f=self.facts(); f['authority']['end']['authorityCheckpoint']['lastSeq']=2; self.refuse(f)
+        for value in ('2026-11-05T00:00:01+00:00','bad','2026-11-05T00:00:03',self.time+'x'):
+            self.refuse(list_observed_at=value)
+        f=self.facts(); f['observation']['end']='2026-11-04T00:00:00+00:00'; self.refuse(f)
+
+    def test_projection_pr_order_and_stable_policy_change(self):
+        f=self.facts('public'); texts=[('title','private title'),('body','private body')]
+        expected=dict(self.context,texts=[dict(labelDigest=self.privacy._digest(k.encode()),
+            textDigest=self.privacy._digest(v.encode())) for k,v in texts])
+        f['selection'].update(expected,selectionContext=self.digest(expected))
+        f['publicText']['bindings']['selectionContext']=self.digest(expected)
+        value=self.project(f,operation='pr',texts=texts)
+        self.assertEqual(value['contextDigest'],self.digest(expected))
+        self.refuse(f,operation='pr',texts=list(reversed(texts)))
+        self.refuse(f,operation='push',texts=texts)
+        changed=self.facts(); changed['coverage']['provenance']['sourceDigest']='sha256:'+'f'*64
+        self.assertNotEqual(self.project(changed)['policyBindingDigest'],self.project()['policyBindingDigest'])
+
+    def test_projection_required_fields_types_and_private_diagnostics(self):
+        for mode in ('artifact', 'public', 'combined'):
+            f = self.facts(mode)
+            targets = [(), ('raw',), ('observation',)]
+            if mode != 'public':
+                targets += [('coverage',), ('coverage','provenance')]
+            if mode != 'artifact':
+                targets += [('selection',), ('publicText',), ('publicText','bindings')]
+            for path in targets:
+                obj = f
+                for key in path:
+                    obj = obj[key]
+                for key in obj:
+                    broken = self.facts(mode)
+                    target = broken
+                    for part in path:
+                        target = target[part]
+                    del target[key]
+                    with self.subTest(mode=mode,path=path,key=key): self.refuse(broken)
+        for key,value in (('receiptId','bad/id'),('authorityWorkId','x'*129),('approvalSeq',True),
+            ('approvalSeq',0),('approvalSeq',2),('baseline','a'*39),('policyFileDigest',object()),
+            ('sourceDigest','sha256:'+'D'*64),('patternCount',True)):
+            f=self.facts(); f['coverage']['provenance'][key]=value; self.refuse(f)
+        for key,value in (('fields',[]),('fields',['text','file']),('fields',['file','file']),
+            ('fields',['unknown']),('fields',[True]),('ruleId','bad/id'),('scope','credential'),
+            ('repository','https://'+REPO),('policyVersion',self.privacy.POLICY_VERSION),
+            ('approvalSeq',0),('approvalSeq',True),('publicCommit','main'),('artifact',['../policy',self.d])):
+            f=self.facts('combined'); f['publicText']['bindings'][key]=value; self.refuse(f)
+        for key,value in (('patternCount',True),('patternCount',2),('localeDigest','bad'),
+            ('version','selection-context/v9'),('texts',[{}]),('commits',['b'*40,'b'*40])):
+            f=self.facts('public'); f['selection'][key]=value; self.refuse(f)
+        for key,value in (('selectionDigest','bad'),('branchDigest',self.d),('texts',[{}]),
+            ('screened',{}),('approvedUnscanned',None),('excluded',1)):
+            f=self.facts(); f['coverage'][key]=value; self.refuse(f)
+        for key,value in (('ok',True),('findings',[{}])):
+            f=self.facts(); f['raw'][key]=value; self.refuse(f)
+        # Even formatting a private object is outside this projection's contract.
+        class Private:
+            def __repr__(self):
+                raise AssertionError('private representation inspected')
+        f=self.facts('public')
+        f['raw']['findings']=[Private()]
+        f['publicText']['verdicts']=[Private()]
+        self.assertEqual(self.project(f)['findingCount'],1)
+        f['publicText']['bindings']['policyFileDigest']=Private()
+        self.refuse(f)
+
+    def test_projection_ordered_selection_metadata_and_empty_push(self):
+        f=self.facts()
+        self.args['commits']=['c'*40,'b'*40]
+        f['coverage']['commits']=list(self.args['commits'])
+        f['coverage']['selectionDigest']=self.digest(self.args['commits'])
+        f['raw']['commits']=2
+        expected=self.project(f)
+        self.refuse(f, commits=list(reversed(self.args['commits'])))
+        self.args['commits']=[]
+        f['coverage']['commits']=[]
+        f['coverage']['selectionDigest']=self.digest([])
+        f['raw']['commits']=0
+        got=self.project(f)
+        self.assertEqual(got['commitCount'],0)
+        self.assertNotEqual(got['contextDigest'],expected['contextDigest'])
+        self.assertNotEqual(got['policyBindingDigest'],expected['policyBindingDigest'])
+        self.refuse(f, operation='pr', texts=[])
+        self.args['commits']=['b'*40]
+        f=self.facts('public')
+        texts=[('title','private title'),('body','private body')]
+        hashes=[dict(labelDigest=self.privacy._digest(label.encode()),
+                     textDigest=self.privacy._digest(body.encode())) for label,body in texts]
+        context=dict(self.context,texts=hashes)
+        f['selection'].update(texts=hashes,selectionContext=self.digest(context))
+        f['publicText']['bindings']['selectionContext']=self.digest(context)
+        self.assertEqual(self.project(f,operation='pr',texts=texts)['contextDigest'],self.digest(context))
+        for bad in ([('title','changed'),texts[1]], [texts[0],('body','changed')],
+                    [('other','private title'),texts[1]], [texts[0]], [*texts,('extra','text')]):
+            self.refuse(f,operation='pr',texts=bad)
+        for command in ([],[''],[1],['\ud800'],['x\n']): self.refuse(check_command=command)
+
+    def test_projection_authority_time_checkpoint_and_size_boundaries(self):
+        for mode in ('artifact','public','combined'):
+            groups=['authority'] if mode=='artifact' else ['publicText'] if mode=='public' else ['authority','publicText']
+            for group in groups:
+                for value in ('', '2026-02-30T00:00:00Z','2026-11-05T00:00:00.1234567Z',
+                    '2026-11-05T00:00:00-01:00','2026-11-05 00:00:00+00:00',True):
+                    f=self.facts(mode)
+                    a=f['authority'] if group=='authority' else f[group]['authority']
+                    a['end']['observedEnd']=value
+                    self.refuse(f)
+                for value in (True,-1,2**31,'1'):
+                    f=self.facts(mode)
+                    a=f['authority'] if group=='authority' else f[group]['authority']
+                    a['end']['authorityCheckpoint']['lastSeq']=value
+                    self.refuse(f)
+                f=self.facts(mode)
+                a=f['authority'] if group=='authority' else f[group]['authority']
+                a['end']['authorityWorkDigest']='sha256:'+'e'*64
+                self.refuse(f)
+        f=self.facts()
+        f['observation']=dict(start='2026-11-05T00:00:00Z',end='2026-11-05T00:00:02Z')
+        self.assertEqual(self.project(f)['observedStart'],f['observation']['start'])
+        later=self.project(f,list_observed_at='2026-11-05T00:00:04Z')
+        self.assertEqual(later['policyBindingDigest'],self.project(f)['policyBindingDigest'])
+        for value in (None,True,'2026-11-05T00:00:02.1234567Z','x'*16385):
+            self.refuse(f,list_observed_at=value)
+        # Bound command strings and their aggregate before hashing. Many fields
+        # cannot inflate output: the closed result contains fixed-size digests.
+        self.refuse(check_command=['x'*4097])
+        self.refuse(check_command=['x'*4096]*4)
+        for mode in ('artifact','public','combined'):
+            self.assertLess(len(json.dumps(self.project(self.facts(mode))).encode()), 2048)
+
+    def test_projection_is_dormant_without_writer_or_production_call(self):
+        import ast
+        source=(ROOT/'t3compose/publish.py').read_text()
+        module=ast.parse(source)
+        definitions={node.name for node in module.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))}
+        self.assertIn('_policy_observation',definitions)
+        calls=[node for node in ast.walk(module) if isinstance(node,ast.Call) and
+               isinstance(node.func,ast.Name) and node.func.id=='_policy_observation']
+        self.assertEqual(calls,[])
+        self.assertFalse(any('write_policy_observation' in name for name in definitions))
+
+    def test_projection_does_not_invent_authority_prefix_continuity(self):
+        for mode in ('artifact','public','combined'):
+            f=self.facts(mode)
+            original=self.project(f)
+            groups=[]
+            if mode!='public': groups.append(f['authority'])
+            if mode!='artifact': groups.append(f['publicText']['authority'])
+            for group in groups:
+                group['start'].update(authorityEventCount=2,
+                    authorityCheckpoint=dict(lastSeq=2,digest=self.d))
+            self.assertEqual(self.project(f)['policyBindingDigest'],original['policyBindingDigest'])

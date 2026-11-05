@@ -274,3 +274,89 @@ not an atomic transaction across inspection, record writes, mint and publication
 concurrent changes after the relevant final observation are outside this guarantee.
 Policy integration remains a separate follow-up; this foundation grants no policy
 permission and does not change `publish run`.
+
+## Dormant canonical verification helpers
+
+Two private helpers provide a directly tested foundation for later integration.
+Neither has a production caller or changes the strict gates above. There is no
+publisher policy flag, permission, saved-report input or evaluation storage here.
+
+`_policy_verify_command(local, repo, base, head, branch, policy, *, text_files=())`
+returns this exact token array, never a shell command:
+
+```text
+["t3c", "--local-dir", LOCAL, "privacy", "verify", "--repo-path", REPO,
+ "--range", BASE + ".." + HEAD, "--branch", BRANCH, "--privacy-policy", POLICY]
+```
+
+Paths accept strings or `Path` objects and become absolute lexical normalized
+paths, without opening files, resolving symlinks or requiring existence. Endpoints
+are full lowercase SHA-1 values. Branches must have valid lexical Git branch
+syntax. Path and branch strings are nonempty UTF-8 without ASCII controls, each
+at most 4096 bytes; encoded command JSON is at most 16384 bytes. Text inputs are
+an empty tuple/list or precisely ordered pairs `title`, `body`; the PR array adds
+`["--text-file", "title=" + TITLE, "--text-file", "body=" + BODY]`.
+Malformed inputs raise sanitized `CommandError` (2).
+
+`_policy_verify_check(local, identity, work, head, command)` accepts only the
+canonical list, loads current validated records itself and returns a Boolean.
+It binds local directory, current effective review base and requested head,
+requires an exact current required-check command and applicable trusted pass
+with concrete evidence, and also requires the complete evidence comparison.
+Malformed inputs or unavailable records raise sanitized `CommandError` (2).
+The future caller must construct the expected command from its actual captured
+repository, branch, policy and ordered text paths; record labels cannot supply
+those invocation arguments. No detached bundle, check or report is an input.
+
+This is cooperative provenance, not authentication. Review-range verification
+cannot attest the actual remote-excluded push set. The dormant projection below
+adds no storage or activation. Actual selection evaluation, fresh policy/list/authority
+observations and final write gates remain mandatory before policy publication.
+
+## Dormant private observation projection
+
+`_policy_observation(result, *, operation, repository, base, head, commits,
+branch, texts, check_command, identifiers, list_observed_at)` returns a fresh
+closed dictionary. It performs no I/O. The input must be the current in-process
+`privacy.PolicyEvaluation` with `policy_satisfied is True`; a saved summary or
+truthy object refuses. Callers supply their captured canonical repository,
+immutable endpoints, ordered selection, intended branch, decoded ordered
+`title`/`body` texts for `pr` (none for `push`), verification token array and
+fresh `prepare_policy_identifiers` result. These arguments are trusted caller
+context, not independently recovered publication authority.
+
+Artifact v1 binds coverage context and all four fresh identifier fields through
+provenance; repository/base come from coverage, not its provenance mapping.
+Public-only v2 binds selection/context/list/count and the public policy descriptor.
+Combined v2 additionally binds artifact provenance and its pinned policy file
+name/digest pair. The two policy versions have separate descriptors.
+
+The private `publication-policy-observation/v1` result has exactly these keys:
+`version`, `operation`, `base`, `head`, `selectionDigest`, `contextDigest`,
+`checkCommandDigest`, `listDigest`, `patternCount`, `policyBindingDigest`,
+`artifactAuthorityStartDigest`, `artifactAuthorityEndDigest`,
+`publicAuthorityStartDigest`, `publicAuthorityEndDigest`, `rawStatus`, `rawExit`,
+`commitCount`, `findingCount`, `approvedUnscannedCount`, `policySatisfied`,
+`observedStart`, `observedEnd`, `listObservedAt`. Absent authorities are null.
+Digests are SHA-256; commit IDs are full SHA-1. Counts are exact nonnegative
+integers bounded by 2^31-1; booleans are never counts. Canonical encoded output
+is at most 16384 UTF-8 bytes. Malformed input raises constant `CommandError(2)`.
+
+Both authority groups use six-field start/end observations: event count,
+checkpoint (sequence/digest), work digest, events digest and nested UTC start/end
+timestamps. Each digest includes all six validated fields. `policyBindingDigest`
+is the stable comparison seam: it binds explicit policy/source/approval/list/work
+and exact captured context, excluding volatile authority counts, checkpoints,
+event digests and observation times. Allowed unrelated authority appends can
+change observation hashes without changing that binding. Timestamps are bounded
+aware UTC ISO strings; each start is no later than its end, and the list observation
+is no earlier than evaluation end. These sequential observations prove neither
+prefix continuity nor atomic revocation.
+
+Only typed selected fields are hashed/exported. Findings, verdicts, proofs,
+quotes and whole facts/coverage are never serialized or hashed. Treat private
+digests as secret-equivalent. The constructible Python type is cooperative
+provenance, not authentication; saved observations grant no permission.
+There is no writer, CLI option, production caller or policy activation.
+A separately reviewed private writer and complete fresh evaluator/current
+list/current authority/pre-mint integration remain mandatory follow-ups.

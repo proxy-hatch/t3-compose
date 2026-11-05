@@ -629,3 +629,48 @@ decisions only. No real rule is installed by the capability.
 The records are cooperative: they bind a decision, evidence and occurrences under this
 workflow, not who spoke or who verified, and they give no atomic revocation. Observation
 is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv2).
+
+### Canonical verification-check foundation
+
+The dormant [publisher helpers](cli/publish.md#dormant-canonical-verification-helpers)
+use an exact token array for both `requiredChecks.command` and `check.command`,
+including absolute normalized local/repository/policy paths, immutable work
+`reviewBase..head`, intended branch and, for PRs, ordered title/body file labels.
+A shell string, matching check ID, changed label or saved summary cannot replace
+that array. Future callers construct it from captured invocation arguments.
+
+The join loads actual current validated records and uses `effectiveWork`, scope
+replacement sequence and current assignment provenance. It explicitly rechecks
+selection's diagnostic fallback: exact head and command, trusted source, pass
+and concrete evidence must all hold. The whole evidence comparison remains
+binding; a privacy pass cannot clear another missing check, criterion or review.
+Current schema validation already refuses empty or non-string check evidence.
+
+Use the supported new-work or resolved-decision/scope migration above and record
+a fresh applicable verification check after a changed requirement. Keep failed
+raw checks and older passes unchanged; neither becomes verification evidence
+through relabeling. These helpers are inactive and grant no policy permission;
+the private projection below also remains dormant. Storage and production
+integration remain separate follow-ups.
+
+
+### Private policy observation boundary
+
+The dormant [observation projection](cli/publish.md#dormant-private-observation-projection)
+binds a current process-private evaluation to captured selection/metadata and a
+fresh identifier observation. Artifact-only v1, public-only v2 and combined v2
+retain their distinct input shapes. A successful policy verdict preserves raw
+exit 1 when findings or approved-unscanned bytes remain; it never repairs failed
+raw check history. Neither this projection nor its stable policy binding is
+check execution evidence, owner approval, a receipt or publication permission.
+
+Its closed 23-field private dictionary contains only bounded counts/status/time,
+immutable endpoints and selected digests; it cannot contain whole private facts,
+findings, proofs, matched paths or owner quotes. Six-field authority observation
+hashes include their nested times. Stable policy bindings exclude volatile
+observation metadata, so unrelated allowed authority appends do not require a
+new policy binding. The fresh list observation follows the evaluation window.
+No record event, stored observation or writer is installed by this foundation.
+A later writer must independently validate closed output, size and filesystem
+safety; complete fresh evaluation/authority/list and ordinary publication gates
+remain required before any token mint. Cooperative provenance is not authentication.
