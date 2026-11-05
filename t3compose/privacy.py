@@ -10,7 +10,7 @@ import re
 import stat
 from collections.abc import Mapping, Sequence
 
-from . import cli, identifier_list, jsonio, process, records
+from . import cli, identifier_list, jsonio, privacy_dispositions as dispositions, process, records
 
 MAX_BYTES = identifier_list.MAX_TEXT_BYTES
 TIMEOUT_SECONDS = 30
@@ -171,15 +171,22 @@ def scan_commits(repo, local_dir, commits, *, base, head, branch, texts=(), priv
     Invalid or incomplete input raises CommandError without a partial report.
     """
     patterns = identifier_list.load_identifiers(local_dir)
+    if privacy_policy is not None:
+        # A public-text policy resolves to its optional artifact part; the raw scan never uses dispositions.
+        public = _text_policy(repo, local_dir, privacy_policy, patterns)
+        privacy_policy = privacy_policy if public is None else public['artifactPath']
     return _scan(repo, local_dir, patterns, commits, base=base, head=head, branch=branch,
                  texts=texts, privacy_policy=privacy_policy, private=False)
 
 
-def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, privacy_policy, private):
+def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, privacy_policy, private, trace=None):
     """The shared exact-selection scan over one captured pattern sequence.
 
     private=False returns the redacted raw report. private=True is for the policy
-    evaluator alone: (raw report, unredacted coverage, provenance snapshot).
+    evaluator alone: (raw report, unredacted coverage or None, provenance snapshot
+    or None). A trace dict receives the normalized selection, the place of each
+    finding (field, commit, path, text index) in finding order, and one unredacted
+    body per distinct matching input, from this same scan.
     """
     if not isinstance(repo, (str, os.PathLike)):
         _fail("privacy repository path is invalid")
@@ -217,6 +224,8 @@ def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, priv
         if not label:
             _fail("privacy text label is empty")
         pairs.append((label, text))
+    if trace is not None:
+        trace.update(base=base, head=head, commits=commits, branch=branch, texts=pairs, inputs=[], bodies={})
     findings = []
     coverage = None
     if privacy_policy is not None:
@@ -237,7 +246,7 @@ def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, priv
     def safe(value):
         return "[redacted]" if not private and value is not None and match(value) else value
 
-    def screen(field, text, commit=None, file=None, label=None):
+    def screen(field, text, commit=None, file=None, label=None, index=None):
         if coverage is not None:
             coverage['screened'].append(dict(field=field, commit=commit, file=file, label=label,
                                               contentDigest=_digest(text.encode('utf-8'))))
@@ -245,11 +254,16 @@ def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, priv
         if lines:
             findings.append({"field": field, "commit": safe(commit), "file": safe(file),
                              "label": safe(label), "lines": lines})
+            if trace is not None:
+                body = _digest(text.encode('utf-8'))
+                trace['bodies'].setdefault(body, text)
+                trace['inputs'].append(dict(field=field, lines=lines, inputDigest=body,
+                                            commit=commit, file=file, index=index))
 
     screen("branch", branch)
-    for label, text in pairs:
-        screen("label", label, label=label)
-        screen("text", text, label=label)
+    for index, (label, text) in enumerate(pairs):
+        screen("label", label, label=label, index=index)
+        screen("text", text, label=label, index=index)
     for sha in commits:
         raw = _object(repo, "commit", sha)
         _, separator, message = raw.partition(b"\n\n")
@@ -278,6 +292,8 @@ def _scan(repo, local_dir, patterns, commits, *, base, head, branch, texts, priv
             screen("file", _text(_object(repo, "blob", blob)), commit=sha, file=filename)
     data = {"ok": not findings, "commits": len(commits), "findings": findings,
             "action": "publication blocked; Corrections or Shawn must resolve matches" if findings else None}
+    if private and coverage is None:
+        return data, None, None
     if coverage is not None:
         if coverage['approvedUnscanned']:
             data.update(ok=False, action='policy-evaluation-required')
@@ -504,7 +520,7 @@ def _authority(local_dir, repository, receipt, source, context):
             continue
         data = event['data']
         question = data['question']
-        if not question.startswith('privacy-artifact'):
+        if not question.strip().lower().startswith('privacy-artifact'):  # a near miss refuses, never ignored
             continue
         match = re.fullmatch(r'privacy-artifact/v1 (approve|revoke) '
                              r'([A-Za-z0-9][A-Za-z0-9._-]{0,127}) (sha256:[0-9a-f]{64})', question)
@@ -518,6 +534,33 @@ def _authority(local_dir, repository, receipt, source, context):
     return dict(authorityEventCount=len(events), authorityCheckpoint=records.checkpoint(
         loaded['work'], events), authorityWorkDigest=_canonical_digest(loaded['work']),
         authorityEventsDigest=_canonical_digest(events))
+
+
+def _origin_identity(repo):
+    _repository(repo)
+    # Only the hardened seam reads origin; normalization is pure parsing.
+    origin = _text(_git(repo, 'config', '--get', 'remote.origin.url'))
+    _require_policy(origin.endswith('\n') and origin.count('\n') == 1)
+    origin = origin[:-1]
+    if '://' in origin:
+        url = urlsplit(origin)
+        _require_policy(url.scheme in {'https', 'ssh'} and url.hostname and not url.query
+                        and not url.fragment and url.password is None and url.port is None)
+        identity = url.hostname.lower() + '/' + url.path.removeprefix('/').removesuffix('.git')
+    else:
+        _require_policy(re.fullmatch(r'[^/@:]+@[^/:]+:.+', origin))
+        host, path = origin.split('@', 1)[1].split(':', 1)
+        identity = host.lower() + '/' + path.removesuffix('.git')
+    return records.canonical_identity(identity)
+
+
+def _referenced(policy_path, name, digest):
+    """One digest-pinned document beside the policy file, read once."""
+    _policy_path(name)
+    _policy_digest(digest)
+    value, observed = _policy_snapshot(policy_path.parent / name)
+    _require_policy(observed == digest)
+    return value
 
 
 def _load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
@@ -534,12 +577,7 @@ def _load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
     _policy_segment(policy['authorityWorkId'])
 
     def referenced(document, kind):
-        name, digest = document[kind + 'File'], document[kind + 'Digest']
-        _policy_path(name)
-        _policy_digest(digest)
-        value, observed = _policy_snapshot(policy_path.parent / name)
-        _require_policy(observed == digest)
-        return value
+        return _referenced(policy_path, document[kind + 'File'], document[kind + 'Digest'])
 
     manifest, receipt = referenced(policy, 'manifest'), referenced(policy, 'receipt')
     _closed(manifest, 'schemaVersion repository objectFormat baseline entries')
@@ -550,21 +588,7 @@ def _load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
     for key in ('policyVersion', 'policyDigest', 'listDigest'):
         _require_policy(receipt[key] == identifiers[key])
     _require_policy(receipt['manifestDigest'] == policy['manifestDigest'])
-    _repository(repo)
-    # Only the hardened seam reads origin; normalization is pure parsing.
-    origin = _text(_git(repo, 'config', '--get', 'remote.origin.url'))
-    _require_policy(origin.endswith('\n') and origin.count('\n') == 1)
-    origin = origin[:-1]
-    if '://' in origin:
-        url = urlsplit(origin)
-        _require_policy(url.scheme in {'https', 'ssh'} and url.hostname and not url.query
-                        and not url.fragment and url.password is None and url.port is None)
-        identity = url.hostname.lower() + '/' + url.path.removeprefix('/').removesuffix('.git')
-    else:
-        _require_policy(re.fullmatch(r'[^/@:]+@[^/:]+:.+', origin))
-        host, path = origin.split('@', 1)[1].split(':', 1)
-        identity = host.lower() + '/' + path.removesuffix('.git')
-    repository = records.canonical_identity(identity)
+    repository = _origin_identity(repo)
     _require_policy(manifest['repository'] == repository == receipt['repository'] and
                     manifest['objectFormat'] == 'sha1')
     baseline = _commit_id(manifest['baseline'])
@@ -636,6 +660,8 @@ def load_artifact_policy(repo, local_dir, policy_path, *, base, patterns):
 # Artifact-only policy evaluation: separate from the raw scan, never public-text authority.
 EVALUATION_VERSION = 'policy-evaluation/v1'
 SUMMARY_VERSION = 'policy-verify/v1'
+EVALUATION_VERSION_2 = 'policy-evaluation/v2'  # public-text policies only; v1 stays artifact-only
+SUMMARY_VERSION_2 = 'policy-verify/v2'
 _UNSATISFIED = 'policy unsatisfied; Corrections or Shawn must resolve text matches'
 _BINDINGS = ('receiptId', 'repository', 'authorityWorkId', 'approvalSeq', 'inventoryContextDigest',
              'contextDigest', 'policyFileDigest', 'manifestDigest', 'receiptDigest', 'sourceDigest',
@@ -670,6 +696,15 @@ class PolicyEvaluation:
     def summary(self):
         """The only serializable form: fixed words and counts, nothing that is bound."""
         raw, coverage = self.facts['raw'], self.facts['coverage']
+        if self.facts['version'] == EVALUATION_VERSION_2:
+            public = self.facts['publicText']
+            return dict(version=SUMMARY_VERSION_2, policySatisfied=self.policy_satisfied,
+                        rawStatus=self.facts['rawStatus'], rawExit=0 if raw['ok'] else 1,
+                        commits=raw['commits'], action=None if self.policy_satisfied else _UNSATISFIED,
+                        coverage=dict(texts=len(self.facts['selection']['texts']), textFindings=len(raw['findings']),
+                                      approvedUnscanned=len(coverage['approvedUnscanned']) if coverage else 0),
+                        publicText=dict(resolved=public['resolved'], unresolved=public['unresolved'],
+                                        occurrences=sum(v['occurrences'] for v in public['verdicts'])))
         return dict(version=SUMMARY_VERSION, policySatisfied=self.policy_satisfied,
                     rawStatus=self.facts['rawStatus'], rawExit=0 if raw['ok'] else 1,
                     commits=raw['commits'], action=None if self.policy_satisfied else _UNSATISFIED,
@@ -679,26 +714,12 @@ class PolicyEvaluation:
                                   excluded=len(coverage['excluded'])))
 
 
-def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy):
-    """Rerun the shared scan for an explicit artifact policy; return a private verdict.
-
-    One fresh identifier list serves the scan and both policy observations. Every
-    text finding stays unresolved: no public-text disposition, literal proof or
-    saved report is an input. An invalid, incomplete or changed binding raises
-    CommandError and never yields a partial result. The verdict is read-only: it
-    grants no publication permission and claims no atomic revocation.
-    """
-    if privacy_policy is None:
-        _fail('privacy policy is required')
-    started = datetime.now(timezone.utc).isoformat()
-    patterns = identifier_list.load_identifiers(local_dir)
-    data, coverage, snapshot = _scan(repo, local_dir, patterns, commits, base=base, head=head,
-                                     branch=branch, texts=texts, privacy_policy=privacy_policy,
-                                     private=True)
-    # Observe again from current state with the same captured list: a revocation, a
-    # replaced file or a substituted approval refuses; unrelated appended events do not.
-    current = load_artifact_policy(repo, local_dir, privacy_policy, base=base, patterns=patterns)
+def _artifact_end(repo, local_dir, artifact, base, patterns, snapshot, coverage, pin):
+    """Observe an artifact policy again with the same captured list and recheck its occurrences."""
+    # A revocation, a replaced file or a substituted approval refuses; unrelated appended events do not.
+    current = load_artifact_policy(repo, local_dir, artifact, base=base, patterns=patterns)
     _require_policy(all(current[key] == snapshot[key] for key in _BINDINGS))
+    _require_policy(pin is None or snapshot['policyFileDigest'] == pin)  # a public-text policy pins its artifact part
     entries = {entry['path']: entry for entry in snapshot['manifest']['entries']}
     for item in coverage['approvedUnscanned']:
         entry = entries.get(item['file'])
@@ -707,15 +728,117 @@ def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), p
                         (entry['mode'], entry['blobOid'], entry['size']) and
                         (item['receiptId'], item['contextDigest']) ==
                         (snapshot['receiptId'], snapshot['contextDigest']))
+    return current
+
+
+def _selected(public, trace):
+    """The exact scanned selection as private facts; the digest of this object is what a review binds."""
+    return dict(version='selection-context/v1', repository=public['bindings']['repository'], base=trace['base'],
+                head=trace['head'], commits=list(trace['commits']), branchDigest=_digest(trace['branch'].encode('utf-8')),
+                texts=[dict(labelDigest=_digest(label.encode('utf-8')), textDigest=_digest(body.encode('utf-8')))
+                       for label, body in trace['texts']])
+
+
+def _finding_context(item):
+    """A finding's place in its selection (selected commit, path or text index) as a versioned fingerprint."""
+    path = item['file']
+    return _canonical_digest(dict(version='finding-context/v1', field=item['field'], commit=item['commit'],
+                                  pathDigest=None if path is None else _digest(path.encode('utf-8')),
+                                  index=item['index']))
+
+
+def _public_text_verdicts(repo, patterns, public, findings, trace, locale, selection_context):
+    """Join each finding of the one shared scan with attested occurrences, proving from the same captured list."""
+    _require_policy(len(trace['inputs']) == len(findings))  # a short trace must never read as "nothing to resolve"
+    proofs = {}
+
+    def prove(digest):  # once per distinct input, against the pinned snapshot
+        if digest not in proofs:
+            proofs[digest] = _literal_proofs(repo, patterns, trace['bodies'][digest],
+                                             public_commit=public['bindings']['publicCommit'])
+        return proofs[digest]
+    found = [dict(field=item['field'], lines=item['lines'], inputDigest=item['inputDigest'],
+                  context=_finding_context(item)) for item in trace['inputs']]
+    return dispositions.resolve(public, found, prove, locale_digest=locale, selection_context=selection_context)
+
+
+def _locale_digest():
+    try:
+        return _canonical_digest(_literal_environment())
+    except (UnicodeError, ValueError):
+        _fail('privacy environment is invalid')
+
+
+def _text_policy(repo, local_dir, policy_path, patterns):
+    """Observe public-text evidence from current files and authority; None for any other policy kind."""
+    try:
+        policy_path = Path(policy_path)
+        policy, policy_digest = _policy_snapshot(policy_path)
+    except (cli.CommandError, OSError, ValueError, TypeError, RecursionError, OverflowError):
+        return None  # The artifact loader refuses an unreadable or malformed file with its own diagnostic.
+    if type(policy) is not dict or policy.get('policyVersion') != dispositions.POLICY_VERSION:
+        return None
+    try:
+        observed = dispositions.observe(
+            policy, lambda name, digest: _referenced(policy_path, name, digest), local_dir=local_dir,
+            repository=_origin_identity(repo), list_digest=_canonical_digest(list(patterns)))
+        name = observed['artifact'][0]
+        observed['artifactPath'] = None if name is None else policy_path.parent / _policy_path(name)
+    except (cli.CommandError, OSError, ValueError, TypeError, RecursionError, OverflowError):
+        _fail('invalid public-text evidence')
+    observed['bindings']['policyFileDigest'] = policy_digest
+    return observed
+
+
+def evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy):
+    """Rerun the shared scan for an explicit policy; return a private verdict.
+
+    One fresh identifier list serves the scan, every proof and both observations.
+    An artifact-provenance policy leaves every text finding unresolved. A public-text
+    policy joins each finding with attested, proven occurrences under a recorded owner
+    decision (policy-evaluation/v2). No saved report, proof or verdict is an input.
+    An invalid, incomplete or changed binding raises CommandError and never yields a
+    partial result. The verdict is read-only: it grants no publication permission and
+    claims no atomic revocation.
+    """
+    if privacy_policy is None:
+        _fail('privacy policy is required')
+    started = datetime.now(timezone.utc).isoformat()
+    patterns = identifier_list.load_identifiers(local_dir)
+    public = _text_policy(repo, local_dir, privacy_policy, patterns)
+    locale = None if public is None else _locale_digest()
+    artifact = privacy_policy if public is None else public['artifactPath']
+    trace = {}
+    data, coverage, snapshot = _scan(repo, local_dir, patterns, commits, base=base, head=head,
+                                     branch=branch, texts=texts, privacy_policy=artifact,
+                                     private=True, trace=trace)
+    pin = None if public is None else public['artifact'][1]
+    current = None if snapshot is None else _artifact_end(
+        repo, local_dir, artifact, base, patterns, snapshot, coverage, pin)
     findings = data['findings']
     status = 'findings' if findings else (
-        'policy-evaluation-required' if coverage['approvedUnscanned'] else 'no-text-findings')
+        'policy-evaluation-required' if coverage and coverage['approvedUnscanned'] else 'no-text-findings')
+    raw = dict(ok=data['ok'], commits=data['commits'], findings=findings, action=data['action'])
+    authority = None if current is None else dict(start={key: snapshot[key] for key in _OBSERVED},
+                                                  end={key: current[key] for key in _OBSERVED})
+    if public is None:
+        return PolicyEvaluation(dict(
+            version=EVALUATION_VERSION, policySatisfied=not findings, rawStatus=status, raw=raw,
+            coverage=coverage, authority=authority,
+            observation=dict(start=started, end=datetime.now(timezone.utc).isoformat())))
+    selection = _selected(public, trace)
+    context = _canonical_digest(selection)
+    verdicts = _public_text_verdicts(repo, patterns, public, findings, trace, locale, context)
+    later = _text_policy(repo, local_dir, privacy_policy, patterns)
+    _require_policy(later is not None and later['bindings'] == public['bindings'] and _locale_digest() == locale)
+    resolved = sum(v['resolved'] for v in verdicts)
     return PolicyEvaluation(dict(
-        version=EVALUATION_VERSION, policySatisfied=not findings, rawStatus=status,
-        raw=dict(ok=data['ok'], commits=data['commits'], findings=findings, action=data['action']),
-        coverage=coverage,
-        authority=dict(start={key: snapshot[key] for key in _OBSERVED},
-                       end={key: current[key] for key in _OBSERVED}),
+        version=EVALUATION_VERSION_2, policySatisfied=resolved == len(verdicts), rawStatus=status, raw=raw,
+        selection=dict(selection, selectionContext=context, listDigest=public['bindings']['listDigest'],
+                       patternCount=len(patterns), localeDigest=locale),
+        coverage=coverage, authority=authority,
+        publicText=dict(bindings=public['bindings'], authority=dict(start=public['authority'], end=later['authority']),
+                        verdicts=verdicts, resolved=resolved, unresolved=len(verdicts) - resolved),
         observation=dict(start=started, end=datetime.now(timezone.utc).isoformat())))
 
 

@@ -582,14 +582,13 @@ or actual owner receipt is installed by this capability.
 
 ## Public-text standing-authority recipe
 
-The [public-text policy](cli/privacy.md#public-text-dispositions-public-textv1)
+The [public-text policy](cli/privacy.md#public-text-dispositions-public-textv2)
 consumes a standing owner decision that text already public by design may be
 republished. It uses existing `decision` events and asks the owner for nothing new;
 it never approves an opaque inventory, a credential or an unrelated match. Source
 evidence, a locator, a coordinator's judgment, prior publication and an
 implementation assignment are not authority. Tests use explicitly synthetic
-decisions only. No real rule is installed by the capability. The evaluator
-integration is the next Task; until then no command consumes these records.
+decisions only. No real rule is installed by the capability.
 
 1. **Normalize the decision.** Append one `decision` to the one dedicated authority
    stream the rule names (`authorityWorkId`): `question`
@@ -613,11 +612,15 @@ integration is the next Task; until then no command consumes these records.
    its class. Only product text the owner's rule covers is
    `public-product-text`; record credentials, tokens, private paths, unrelated and
    ambiguous matches as exclusions, which stay unresolved. A pattern row, a path, a
-   label or a flag never grants scope. An unknown literal, a new input or a changed
-   list needs a new review: the join is by exact input and occurrence.
+   label or a flag never grants scope. The review is for one selection: the private
+   result names its `selectionContext` and, per finding, the `context`; the
+   dispositions bind the first and hold an entry per place. A new commit, another
+   order or endpoint, a changed text, an unknown literal or a changed list needs a new
+   review. That is fresh scope evidence under the same owner decision, never a new
+   approval, and the join is by exact selection, place, input and occurrence.
 4. **Revoke** with `privacy-public-text/v1 revoke <ruleId> <ruleContext>` in the same
    stream, a concrete resolved owner answer and date. It is terminal for the rule.
-5. **Required checks.** Once the evaluator is integrated, as for [artifact work](#work-epochs-and-required-checks), the
+5. **Required checks.** As for [artifact work](#work-epochs-and-required-checks), the
    policy check is the exact `t3c privacy verify ...` with the same `--privacy-policy`
    in a new work epoch (or a `scope` event with a resolved decision); the raw
    `privacy check` stays failed evidence, never relabeled. A publication gate
@@ -625,4 +628,4 @@ integration is the next Task; until then no command consumes these records.
 
 The records are cooperative: they bind a decision, evidence and occurrences under this
 workflow, not who spoke or who verified, and they give no atomic revocation. Observation
-is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv1).
+is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv2).

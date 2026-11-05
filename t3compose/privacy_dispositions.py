@@ -4,20 +4,23 @@ Policy logic over explicit facts that the trusted privacy facade supplies: this
 module reads no policy file, starts no process, scans nothing and never imports
 the facade; its only I/O is observing the records stream. A complete literal
 proof is necessary and never sufficient. Scope comes only from a recorded owner
-decision plus independently attested, exact occurrence evidence. Provenance is
-cooperative, not authentication.
+decision plus independently attested, exact occurrence evidence that is bound to
+the facade's fingerprints of the exact selection and of each finding's place in
+it. Provenance is cooperative, not authentication.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from functools import wraps
 import hashlib
 import re
 
 from . import jsonio, records
 
-POLICY_VERSION = 'public-text/v1'
+POLICY_VERSION = 'public-text/v2'
+SCHEMA = 2
 SCOPE = 'public-product-text'
 FIELDS = ('branch', 'file', 'label', 'message', 'path', 'text')
 CLASSES = (SCOPE, 'ambiguous', 'credential', 'private-path', 'unrelated')
-DESCRIPTOR = dict(authority='owner', contextVersion=1, policyVersion=POLICY_VERSION, schemaVersion=1,
+DESCRIPTOR = dict(authority='owner', contextVersion=1, policyVersion=POLICY_VERSION, schemaVersion=SCHEMA,
                   scope=SCOPE, verification='occurrence-attestation')
 MAX_ENTRIES, MAX_OCCURRENCES = 256, 4096
 OCCURRENCE = ('patternLine', 'byteOffset', 'byteLength', 'literalDigest', 'publicBlobOid', 'publicContentDigest')
@@ -36,6 +39,16 @@ def _require(condition):
         raise Refusal('invalid public-text evidence')
 
 
+def _boundary(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except (ValueError, TypeError, RecursionError, OverflowError):  # Refusal is a ValueError
+            raise Refusal('invalid public-text evidence') from None
+    return call
+
+
 def digest(value):
     return 'sha256:' + hashlib.sha256(jsonio.canonical_json(value)).hexdigest()
 
@@ -43,7 +56,7 @@ def digest(value):
 def _closed(value, keys):
     _require(type(value) is dict and set(value) == set(keys.split()))
     if 'schemaVersion' in value:
-        _require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
+        _require(type(value['schemaVersion']) is int and value['schemaVersion'] == SCHEMA)
 
 
 def _shape(value, pattern):
@@ -53,6 +66,12 @@ def _shape(value, pattern):
 def _text(value):
     _require(isinstance(value, str) and bool(value.strip()) and '\0' not in value)
     value.encode('utf-8')
+
+
+def _name(value):
+    """An exact relative file name: no empty, dot or dotdot segment, wildcard or backslash."""
+    _text(value)
+    _require(not any(c in value for c in '\\*?[]') and all(p not in {'', '.', '..'} for p in value.split('/')))
 
 
 def _rule(rule, repository):
@@ -67,8 +86,10 @@ def _rule(rule, repository):
              and fields == sorted(set(fields)) and set(fields) <= set(FIELDS))
     source = rule['source']
     _closed(source, 'sourceRef date quote')
-    _text(source['sourceRef'])
-    _text(source['quote'])  # The date must equal the approval event's, which records validated.
+    for key in source:
+        _text(source[key])
+    _require(re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', source['date'])
+             and date.fromisoformat(source['date']).isoformat() == source['date'])
 
 
 def _attested(document, method, keys, rule, context):
@@ -83,10 +104,11 @@ def _entries(items):
     _require(type(items) is list and len(items) <= MAX_ENTRIES)
     entries, total = {}, 0
     for item in items:
-        _closed(item, 'field inputDigest occurrences')
+        _closed(item, 'field context inputDigest occurrences')
+        _shape(item['context'], _DIGEST)
         _shape(item['inputDigest'], _DIGEST)
         _require(item['field'] in FIELDS)
-        key, occurrences = (item['field'], item['inputDigest']), item['occurrences']
+        key, occurrences = (item['field'], item['context'], item['inputDigest']), item['occurrences']
         _require(key not in entries and type(occurrences) is list and bool(occurrences))
         total += len(occurrences)
         _require(total <= MAX_OCCURRENCES)
@@ -117,7 +139,8 @@ def _authority(local_dir, rule, context):
         answer=source['quote'], date=source['date'], decidedBy='owner'))
     for event in events:
         data = event['data']
-        if event['kind'] != 'decision' or not data['question'].startswith('privacy-public-text'):
+        # Near-miss spellings of the namespace are in it: they refuse, they are never ignored.
+        if event['kind'] != 'decision' or not data['question'].strip().lower().startswith('privacy-public-text'):
             continue
         match = _QUESTION.fullmatch(data['question'])
         _require(match is not None and data['decidedBy'] == 'owner' and isinstance(data['answer'], str)
@@ -130,31 +153,38 @@ def _authority(local_dir, rule, context):
                 authorityWorkDigest=digest(loaded['work']), authorityEventsDigest=digest(events))
 
 
+@_boundary
 def observe(policy, read, *, local_dir, repository, list_digest):
     """Validate the evidence and join current authority; return bindings, entries and authority facts.
 
-    read(name, digest) returns the parsed document pinned by that raw digest. Any invalid,
-    mismatched, unattested or revoked evidence raises Refusal. This is an observation of
-    cooperative records at one moment: no authentication and no atomic revocation.
+    repository is the canonical origin identity and list_digest the one captured list's digest.
+    read(name, digest) returns the strict-JSON document pinned by that raw digest, from a relative
+    name it reads once. Any invalid, mismatched, unattested or revoked evidence raises Refusal with
+    a constant message. This is an observation of cooperative records at one moment: no
+    authentication and no atomic revocation.
     """
     started = datetime.now(timezone.utc).isoformat()
+    _require(isinstance(repository, str) and records.canonical_identity(repository) == repository)  # pure
+    _shape(list_digest, _DIGEST)
     kinds = ('rule', 'publication', 'dispositions')
     _closed(policy, 'schemaVersion policyVersion authorityWorkId artifactPolicyFile artifactPolicyDigest '
                     + ' '.join(kind + 'File ' + kind + 'Digest' for kind in kinds))
     _require(policy['policyVersion'] == POLICY_VERSION)
     for kind in kinds:
+        _name(policy[kind + 'File'])
         _shape(policy[kind + 'Digest'], _DIGEST)
     artifact = (policy['artifactPolicyFile'], policy['artifactPolicyDigest'])
     if artifact != (None, None):
-        _text(artifact[0])
+        _name(artifact[0])
         _shape(artifact[1], _DIGEST)
     rule, publication, dispositions = (read(policy[kind + 'File'], policy[kind + 'Digest']) for kind in kinds)
     _rule(rule, repository)
     _require(rule['authorityWorkId'] == policy['authorityWorkId'])
     context = digest({k: v for k, v in rule.items() if k != 'approvalSeq'})
     _attested(publication, 'prior-publication', 'repository publicCommit', rule, context)
-    _attested(dispositions, 'occurrence-review', 'publicCommit listDigest entries', rule, context)
+    _attested(dispositions, 'occurrence-review', 'publicCommit listDigest selectionContext entries', rule, context)
     _shape(publication['publicCommit'], _SHA)
+    _shape(dispositions['selectionContext'], _DIGEST)
     _require(publication['repository'] == repository and dispositions['publicCommit'] == publication['publicCommit']
              and dispositions['listDigest'] == list_digest)
     entries = _entries(dispositions['entries'])
@@ -164,6 +194,7 @@ def observe(policy, read, *, local_dir, repository, list_digest):
                       fields=tuple(rule['fields']), policyVersion=POLICY_VERSION, policyDigest=rule['policyDigest'],
                       authorityWorkId=rule['authorityWorkId'], approvalSeq=rule['approvalSeq'],
                       publicCommit=publication['publicCommit'], listDigest=list_digest,
+                      selectionContext=dispositions['selectionContext'], artifact=artifact,
                       ruleDigest=policy['ruleDigest'], publicationDigest=policy['publicationDigest'],
                       dispositionsDigest=policy['dispositionsDigest'],
                       authorityWorkDigest=authority['authorityWorkDigest']),
@@ -190,24 +221,35 @@ def _join(proof, entry, finding, bindings, locale_digest):
     return None if all(row[-1] == SCOPE for row in entry) else 'excluded'
 
 
-def resolve(observed, findings, prove, *, locale_digest):
+@_boundary
+def resolve(observed, findings, prove, *, locale_digest, selection_context):
     """Join trusted scan findings with attested occurrences; return one private verdict per finding.
 
-    findings are the scan's {field, lines, inputDigest} in scan order. prove(inputDigest) returns
-    the shared-list literal proof for that exact input and is requested only for in-scope,
-    attested candidates. A finding resolves only when its proof is complete, equals the attested
-    occurrences exactly (every repeat, nothing extra) and each carries the rule's scope. A witness
-    alone never resolves anything; every other finding stays unresolved.
+    findings are the scan's {field, lines, inputDigest, context} in scan order: lines is a list and
+    context the facade's fingerprint of the finding's place in the selection. selection_context is
+    its fingerprint of the exact selection. prove(inputDigest) returns the shared-list literal proof
+    for that exact input and is requested only for a finding whose field is in scope, whose review
+    is for this selection and that has an entry. A finding resolves only then, when its proof is
+    complete, equals the attested occurrences exactly (every repeat, nothing extra) and each carries
+    the rule's scope. A witness alone never resolves anything; every other finding stays unresolved.
     """
     bindings, entries, verdicts = observed['bindings'], observed['entries'], []
+    _shape(locale_digest, _DIGEST)
+    _shape(selection_context, _DIGEST)
     for finding in findings:
-        entry = entries.get((finding['field'], finding['inputDigest']))
+        _closed(finding, 'field lines inputDigest context')
+        _shape(finding['inputDigest'], _DIGEST)
+        _shape(finding['context'], _DIGEST)
+        _require(finding['field'] in FIELDS)
+        entry = entries.get((finding['field'], finding['context'], finding['inputDigest']))
         if finding['field'] not in bindings['fields']:
             reason = 'out-of-scope'
+        elif selection_context != bindings['selectionContext']:
+            reason = 'selection'
         elif entry is None:
             reason = 'unattested'
         else:
             reason = _join(prove(finding['inputDigest']), entry, finding, bindings, locale_digest)
-        verdicts.append(dict(inputDigest=finding['inputDigest'], resolved=reason is None, reason=reason,
-                             occurrences=len(entry) if reason is None else 0))
+        verdicts.append(dict(field=finding['field'], context=finding['context'], inputDigest=finding['inputDigest'],
+                             resolved=reason is None, reason=reason, occurrences=len(entry) if reason is None else 0))
     return verdicts
