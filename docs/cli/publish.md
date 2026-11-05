@@ -434,3 +434,61 @@ This cooperative sequence gives no atomic revocation or changes-made-and-undone
 protection. Future activation must seal **both** contexts after **all** proofwork,
 and seal both again after persistence, preserving every final publication gate.
 Sealing one context does not seal another. Full activation remains separate.
+
+## Dormant policy lifecycle composition
+
+Private `_prepare_policy_gate(args, repo, identity, loaded, selected, branch, *,
+operation, target, refs=None, texts=(), text_files=())` returns `(state, refusal)`.
+`operation` is `push` or `pr`; target is the canonical HTTPS push ref or PR
+collection for that branch. Push supplies the complete captured advertised refs;
+PR supplies ordered title/body texts and their labeled files. This interface is
+inert: no installed command calls it, no policy flag is registered, and current
+publication remains strict.
+
+Missing optional Namespace policy attributes mean `None`. Absent policy returns
+`(None, None)`, meaning strict mode, never permission. A separate CHECK policy
+requires a publication policy and is push-only. Omission selects the publication
+policy independently for CHECK. Each capture keeps original spelling, lexical
+absolute path and bounded nofollow raw-byte digest, even for equal inputs.
+PR file captures additionally bind ordered labels and exact text. Preparation
+validates current records, repository identity/origin/root/HEAD and selections,
+then joins actual canonical current check evidence. It evaluates CHECK range
+without texts followed by the remote-excluded push selection, or the single PR
+range with metadata. Initial seals retain stable projections in private state.
+There is no result deduplication, saved verdict input or observation cache.
+
+`_finalize_policy_gate(state, *, intent)` consumes the preparation once. The
+supplied current real UUID intent must be the sole addition to the captured work
+stream, with matching operation, target, head and expected prior ref. It joins
+current canonical check evidence, finishes fresh CHECK then publication proof
+work, checks captures, seals BOTH contexts and compares stable policy/list,
+context/selection/command and endpoint bindings. Volatile authority observations
+remain distinct; seal times never replace actual evaluation/proof times.
+
+The unchanged writer stores publication under actual `opId` FIRST and push
+CHECK under `opId-review` SECOND, including identical policy inputs. PR writes
+one file. Both files use the unchanged closed 23-field, 16 KiB schema. Both
+contexts are resealed after storage, with independent capture checks and a final
+canonical check join. The suffix relates storage to the SAME intent/result; it
+creates no second operation or event.
+
+Explicit unsatisfied policy or missing current canonical check returns a
+`refused` Outcome, exit 1. Invalid inputs, result types/non-boolean satisfaction,
+changed bindings/captures, seals, intent or storage raise constant
+`publication: invalid policy lifecycle`, exit 2. Successful finalization returns
+`None`; it grants no token permission. Neither helper appends events, invents
+child facts or handles public status. Failed/partial/complete files remain under
+the writer's existing retention rules. Reusing a consumed preparation fails;
+fresh preparation and an actual new intent are required for retry. Existing
+files refuse without overwrite and never become cached authority.
+
+The state has a private-safe repr but remains cooperative process-private state,
+not authentication. Current public authority is observed inside `_text_policy`,
+artifact authority in the later artifact loader and identifiers at the seal's
+last list read. Both seals after all proofs and both reseals after writes catch
+persistent changes before those reads. Later changes, including during another
+context's seal, remain possible; this is neither atomicity nor detection of
+changes made and undone between reads. A future active caller still owes ALL C0
+workflow/configuration/evidence/work-prefix/ref/selection/lease/metadata and
+HEAD-last gates, honest refusal/unknown result handling, and full integration
+acceptance. Direct lifecycle tests do not establish successful public publishing.

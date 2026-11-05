@@ -1767,11 +1767,18 @@ class OfflinePolicyObservation(OfflineTestCase):
                     isinstance(node.func,ast.Name) and node.func.id=='_policy_observation']
         self.assertEqual(len(seal_calls), 1)
         self.assertEqual(calls, seal_calls)
-        self.assertFalse(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and
-                             n.func.id == '_seal_policy_context' for n in ast.walk(module)))
         self.assertIn('_write_policy_observation', definitions)
-        self.assertFalse(any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and
-                             n.func.id == '_write_policy_observation' for n in ast.walk(module)))
+        dormant = {'_policy_gate_seal', '_prepare_policy_gate', '_finalize_policy_gate',
+                   '_policy_gate_capture', '_policy_gate_inputs', '_policy_gate_evaluate'}
+        guarded = dormant | {'_seal_policy_context', '_write_policy_observation'}
+        owners = []
+        for function in module.body:
+            if isinstance(function, ast.FunctionDef):
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in guarded:
+                        owners.append(function.name)
+        self.assertTrue(owners)
+        self.assertTrue(set(owners) <= dormant)
 
     def test_projection_does_not_invent_authority_prefix_continuity(self):
         for mode in ('artifact','public','combined'):
@@ -2858,3 +2865,446 @@ class PublisherPolicyFixture:
             repository=context.identity, base=context.base, head=context.head, commits=context.commits,
             branch=context.branch, texts=context.texts, check_command=context.check_command,
             identifiers=identifiers, list_observed_at=datetime.now(timezone.utc).isoformat())
+
+
+class OfflinePolicyLifecycle(OfflineTestCase):
+    def fixture(self, mode='combined', operation='push'):
+        from tempfile import mkdtemp
+        case = self
+        class Holder:
+            temp = Path(mkdtemp(dir=case.temp))
+            def __getattr__(self, name):
+                return getattr(case, name)
+        f = PublisherPolicyFixture(Holder(), mode=mode)
+        c = f.context('check' if operation == 'push' else 'pr')
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(c.check_command[1:])
+        self.assertEqual((code, err.getvalue()), (0, ''))
+        self.assertEqual(json.loads(out.getvalue())['rawExit'], 1)
+        f.policy_requirement(c.check_command)
+        f.policy_pass(c.check_command)
+        self.assertTrue(f.policy_join(c.check_command))
+        f.args.privacy_policy = f.context(operation).policy
+        f.args.privacy_check_policy = c.policy if operation == 'push' else None
+        f.operation = operation
+        f.target = ('https://' + REPO + '.git#refs/heads/' + f.args.branch if operation == 'push'
+                    else 'https://' + REPO + '/pulls#' + f.args.branch)
+        return f
+
+    def prepare(self, f, **changes):
+        c = f.context(f.operation)
+        options = dict(operation=f.operation, target=f.target,
+            refs=f.refs if f.operation == 'push' else None,
+            texts=c.texts, text_files=c.text_files)
+        options.update(changes)
+        return publish._prepare_policy_gate(f.args, f.repo, REPO,
+            records.load_work(f.local, REPO, 'WORK'), c.commits, f.args.branch, **options)
+
+    def intent(self, f):
+        import uuid
+        return f.add('op-intent', dict(opId=uuid.uuid4().hex,
+            operation='push' if f.operation == 'push' else 'pull-request',
+            target=f.target, commit=f.head, expectedPriorHead='absent' if f.operation == 'push' else None))
+
+    def private_parents(self, f):
+        _, root = records.location(f.local, REPO, 'WORK')
+        current = root
+        while current != f.local.parent:
+            current.chmod(0o700)
+            current = current.parent
+        return root / 'publication-policy'
+
+    def test_six_direct_lifecycles_real_checks_evaluations_intents_and_storage(self):
+        from t3compose import privacy
+        for mode in ('artifact', 'public', 'combined'):
+            for operation in ('push', 'pr'):
+                with self.subTest(mode=mode, operation=operation):
+                    f = self.fixture(mode, operation)
+                    directory = self.private_parents(f)
+                    order, results = [], []
+                    actual_eval = privacy.evaluate_policy
+                    actual_seal = publish._seal_policy_context
+                    actual_write = publish._write_policy_observation
+                    def evaluate(*args, **kw):
+                        value = actual_eval(*args, **kw)
+                        self.assertIs(value.policy_satisfied, True)
+                        results.append(value)
+                        order.append(('evaluate', str(kw['privacy_policy'])))
+                        return value
+                    def seal(*args, **kw):
+                        order.append(('seal', str(kw['policy'])))
+                        return actual_seal(*args, **kw)
+                    def write(*args):
+                        order.append(('write', args[3]))
+                        return actual_write(*args)
+                    with patch.object(privacy, 'evaluate_policy', side_effect=evaluate), \
+                         patch.object(publish, '_seal_policy_context', side_effect=seal), \
+                         patch.object(publish, '_write_policy_observation', side_effect=write):
+                        state, stopped = self.prepare(f)
+                        self.assertIsNone(stopped)
+                        self.assertNotIn(str(f.temp), repr(state))
+                        intent = self.intent(f)
+                        before = f.events()
+                        boundary = len(order)
+                        self.assertIsNone(publish._finalize_policy_gate(state, intent=intent))
+                    policies = [str(f.context('check').policy), str(f.context('push').policy)] if operation == 'push' else [str(f.context('pr').policy)]
+                    self.assertEqual(order[:boundary], [('evaluate', p) for p in policies] + [('seal', p) for p in policies])
+                    ids = [intent['data']['opId']]
+                    if operation == 'push':
+                        ids += [ids[0] + '-review']
+                    self.assertEqual(order[boundary:], [('evaluate', p) for p in policies] +
+                        [('seal', p) for p in policies] + [('write', i) for i in ids] + [('seal', p) for p in policies])
+                    self.assertEqual(len({id(r) for r in results}), len(policies) * 2)
+                    self.assertEqual(f.events(), before)
+                    for name in ids:
+                        path = directory / (name + '.json')
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                        self.assertLessEqual(path.stat().st_size, 16384)
+                        value = json.loads(path.read_bytes())
+                        self.assertEqual(len(value), 23)
+                        self.assertEqual(value['rawExit'], 1)
+                        self.assertTrue(value['policySatisfied'])
+                        self.assertNotIn('SYNTHETIC_PRODUCT', path.read_text())
+                        self.assertNotIn(str(f.temp), path.read_text())
+                    if operation == 'push':
+                        pub = json.loads((directory / (ids[0] + '.json')).read_bytes())
+                        review = json.loads((directory / (ids[1] + '.json')).read_bytes())
+                        self.assertEqual((pub['commitCount'], review['commitCount']), (1, 2))
+                        self.assertEqual(pub['checkCommandDigest'], review['checkCommandDigest'])
+                    self.assertEqual(f.launches, [])
+
+    def invalid(self, function):
+        with self.assertRaises(cli.CommandError) as caught:
+            function()
+        self.assertEqual(str(caught.exception), 'publication: invalid policy lifecycle')
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_strict_pairing_context_identity_and_current_check(self):
+        f = self.fixture()
+        saved = f.args.privacy_policy
+        del f.args.privacy_policy
+        f.args.privacy_check_policy = None
+        self.assertEqual(self.prepare(f), (None, None))
+        f.args.privacy_check_policy = saved
+        self.invalid(lambda: self.prepare(f))
+        f.args.privacy_policy = saved
+        f.args.privacy_check_policy = f.context('check').policy
+        for changes in ({'target': 'https://invalid.invalid'}, {'texts': (('title', 'wrong'),)},
+                        {'refs': {}}, {'operation': 'pr'}):
+            with self.subTest(changes=changes):
+                self.invalid(lambda: self.prepare(f, **changes))
+        for command_changes in ({'outcome': 'fail'}, {'commit': f.middle},
+                                {'command': ['different']}, {'source': 'worker'}):
+            with self.subTest(change=command_changes):
+                f.policy_requirement(f.context('check').check_command)
+                f.policy_pass(f.context('check').check_command, **command_changes)
+                state, stopped = self.prepare(f)
+                self.assertIsNone(state)
+                self.assertEqual(stopped.code, 1)
+                f.policy_pass(f.context('check').check_command)
+                state, stopped = self.prepare(f)
+                self.assertIsNone(stopped)
+                self.assertIsNotNone(state)
+        f.git('config', 'remote.origin.url', 'https://github.com/other/repository.git')
+        self.invalid(lambda: self.prepare(f))
+        self.assertEqual(f.launches, [])
+
+    def test_actual_failed_raw_migration_and_changed_requirement(self):
+        f = self.fixture('public')
+        canonical = f.context('check').check_command
+        f.policy_pass(['raw-check'], outcome='fail')
+        self.assertIsNone(self.prepare(f)[1])
+        history = f.events()
+        f.policy_requirement(['changed-command'])
+        self.assertEqual(self.prepare(f)[1].code, 1)
+        f.policy_requirement(canonical)
+        self.assertEqual(self.prepare(f)[1].code, 1)
+        f.policy_pass(canonical)
+        self.assertIsNone(self.prepare(f)[1])
+        self.assertEqual(f.events()[:len(history)], history)
+        # A current pass cannot repair other whole-evidence gaps.
+        decision = next(e['data']['decisionRef'] for e in reversed(f.events()) if e['kind'] == 'scope')
+        f.add('scope', dict(decisionRef=decision, acceptance=[dict(id='OTHER', text='New criterion')]))
+        self.assertEqual(self.prepare(f)[1].code, 1)
+
+    def test_both_independent_captures_same_path_no_result_reuse(self):
+        from t3compose import privacy
+        f = self.fixture('artifact')
+        f.args.privacy_policy = f.args.privacy_check_policy
+        original = privacy._policy_snapshot
+        reads = []
+        def snapshot(path):
+            reads.append(str(path))
+            return original(path)
+        with patch.object(privacy, '_policy_snapshot', side_effect=snapshot):
+            state, stopped = self.prepare(f)
+        self.assertIsNone(stopped)
+        self.assertEqual(state.captures[0], state.captures[1])
+        self.assertGreaterEqual(reads.count(state.captures[0][1]), 4)
+        self.private_parents(f)
+        intent = self.intent(f)
+        f.args.privacy_policy = str(f.args.privacy_policy)
+        self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+        self.assertEqual(f.launches, [])
+
+    def test_initial_and_final_invalid_type_truth_and_wrong_selection(self):
+        from t3compose import privacy
+        f = self.fixture('public')
+        for value in (True, {'policySatisfied': True}, SimpleNamespace(policy_satisfied=True),
+                      privacy.PolicyEvaluation(dict(policySatisfied=1))):
+            with self.subTest(value=type(value).__name__):
+                with patch.object(privacy, 'evaluate_policy', return_value=value):
+                    self.invalid(lambda: self.prepare(f))
+        f.args.privacy_policy = f.context('check').policy
+        self.assertEqual(self.prepare(f)[1].code, 1)
+        f.args.privacy_policy = f.context('push').policy
+        self.assertIsNone(self.prepare(f)[1])
+        for stage in ('initial', 'final'):
+            state, stopped = self.prepare(f)
+            self.assertIsNone(stopped)
+            with patch.object(privacy, 'evaluate_policy', return_value=privacy.PolicyEvaluation(dict(policySatisfied=False))):
+                if stage == 'initial':
+                    self.assertEqual(self.prepare(f)[1].code, 1)
+                else:
+                    self.assertEqual(publish._finalize_policy_gate(state, intent=self.intent(f)).code, 1)
+
+    def test_final_captured_paths_metadata_head_and_real_intent(self):
+        for operation, mutation in (('push', 'publication'), ('push', 'check'),
+                ('push', 'raw'), ('push', 'head'), ('pr', 'metadata'), ('pr', 'unrelated')):
+            with self.subTest(operation=operation, mutation=mutation):
+                f = self.fixture('combined', operation)
+                state, stopped = self.prepare(f)
+                self.assertIsNone(stopped)
+                directory = self.private_parents(f)
+                intent = self.intent(f)
+                if mutation == 'publication':
+                    f.args.privacy_policy = str(f.args.privacy_policy) + '/.'
+                elif mutation == 'check':
+                    f.args.privacy_check_policy = f.temp / 'other'
+                elif mutation == 'raw':
+                    path = f.context('check').policy
+                    path.write_bytes(path.read_bytes() + b' ')
+                elif mutation == 'head':
+                    f.git('checkout', '--detach', f.middle)
+                elif mutation == 'metadata':
+                    f.text_files[0][1].write_text('changed title')
+                else:
+                    f.add('decision', dict(question='unrelated', answer='current change',
+                          date='2026-11-04', decidedBy='manager'))
+                self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                self.assertFalse(directory.exists())
+        for mutation in ('absent', 'target', 'head', 'operation', 'opId', 'prior'):
+            with self.subTest(intent=mutation):
+                f = self.fixture('artifact')
+                state, stopped = self.prepare(f)
+                directory = self.private_parents(f)
+                if mutation == 'absent':
+                    intent = dict(kind='op-intent', data={})
+                else:
+                    import uuid
+                    data = dict(opId=uuid.uuid4().hex, operation='push', target=f.target,
+                                commit=f.head, expectedPriorHead='absent')
+                    key, value = {'target': ('target', 'wrong'), 'head': ('commit', f.middle),
+                        'operation': ('operation', 'other'), 'opId': ('opId', 'non-uuid'),
+                        'prior': ('expectedPriorHead', f.base)}[mutation]
+                    data[key] = value
+                    intent = f.add('op-intent', data)
+                self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                self.assertFalse(directory.exists())
+
+    def test_cross_second_actual_proof_and_storage_both_current_seals(self):
+        from t3compose import privacy
+        # Independent first authority/policy changes leave second actual result satisfied.
+        for stage in ('proof', 'storage'):
+            for mutation in ('unchanged', 'artifact', 'public', 'source', 'list', 'locale'):
+                with self.subTest(stage=stage, mutation=mutation):
+                    f = self.fixture()
+                    state, stopped = self.prepare(f)
+                    self.assertIsNone(stopped)
+                    directory = self.private_parents(f)
+                    intent = self.intent(f)
+                    injected, evaluations, seals = [], [], []
+                    def change():
+                        if injected:
+                            return
+                        injected.append(mutation)
+                        if mutation == 'artifact':
+                            f.authority_decision('CHECKARTIFACT', 'privacy-artifact/v1 revoke synthetic-inventory ' + f.check_artifact_context, 'SYNTHETIC ONLY: revoked.')
+                        elif mutation == 'public':
+                            f.authority_decision('CHECKPUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.check_rule_context, 'SYNTHETIC ONLY: revoked.')
+                        elif mutation == 'source':
+                            path = f.temp / 'check-source'
+                            path.write_bytes(path.read_bytes() + b' ')
+                        elif mutation == 'list':
+                            (f.local / 'state/private-identifiers.txt').write_text('OTHER_SYNTHETIC\n')
+                        elif mutation == 'locale':
+                            os.environ['LC_ALL'] = 'C' if os.environ.get('LC_ALL') != 'C' else 'C.UTF-8'
+                    actual_eval, actual_proof = privacy.evaluate_policy, privacy._literal_proofs
+                    actual_seal, actual_write = publish._seal_policy_context, publish._write_policy_observation
+                    def evaluate(*args, **kwargs):
+                        evaluations.append(str(kwargs['privacy_policy']))
+                        return actual_eval(*args, **kwargs)
+                    def proof(*args, **kwargs):
+                        value = actual_proof(*args, **kwargs)
+                        if len(evaluations) == 2 and stage == 'proof':
+                            change()
+                        return value
+                    def seal(*args, **kwargs):
+                        seals.append(str(kwargs['policy']))
+                        return actual_seal(*args, **kwargs)
+                    def write(*args):
+                        value = actual_write(*args)
+                        if stage == 'storage' and args[3].endswith('-review'):
+                            change()
+                        return value
+                    before = f.events()
+                    with patch.object(privacy, 'evaluate_policy', side_effect=evaluate), \
+                         patch.object(privacy, '_literal_proofs', side_effect=proof), \
+                         patch.object(publish, '_seal_policy_context', side_effect=seal), \
+                         patch.object(publish, '_write_policy_observation', side_effect=write):
+                        if mutation == 'unchanged':
+                            self.assertIsNone(publish._finalize_policy_gate(state, intent=intent))
+                        else:
+                            self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                    self.assertEqual(injected, [mutation])
+                    self.assertEqual(len(evaluations), 2)
+                    if mutation not in ('list', 'locale'):
+                        self.assertTrue(seals)
+                    self.assertEqual(f.events(), before)
+                    self.assertEqual(len(list(directory.glob('*.json'))), 2 if stage == 'storage' or mutation == 'unchanged' else 0)
+                    self.assertEqual(f.launches, [])
+
+    def test_storage_failure_retention_no_reuse_and_fresh_intent(self):
+        for failure in (1, 2, 0):
+            with self.subTest(failure=failure):
+                f = self.fixture('artifact')
+                state, stopped = self.prepare(f)
+                directory = self.private_parents(f)
+                intent = self.intent(f)
+                actual = publish._write_policy_observation
+                writes = []
+                def write(*args):
+                    writes.append(args[3])
+                    if len(writes) == failure:
+                        raise OSError('synthetic private failure')
+                    return actual(*args)
+                with patch.object(publish, '_write_policy_observation', side_effect=write):
+                    if failure:
+                        self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                    else:
+                        self.assertIsNone(publish._finalize_policy_gate(state, intent=intent))
+                old = {p.name: p.read_bytes() for p in directory.glob('*.json')}
+                self.assertEqual(len(old), {1: 0, 2: 1, 0: 2}[failure])
+                self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                # No event is manufactured by either helper; caller records real refusal.
+                self.assertEqual(f.events()[-1], intent)
+                f.add('op-result', dict(intentRef=intent['seq'], **{k: intent['data'][k]
+                    for k in ('opId', 'operation', 'target', 'commit')}, outcome='refused',
+                    confirmation='Synthetic caller observed refusal'))
+                fresh, stopped = self.prepare(f)
+                self.assertIsNone(stopped)
+                later = self.intent(f)
+                self.assertIsNone(publish._finalize_policy_gate(fresh, intent=later))
+                self.assertEqual({p.name: p.read_bytes() for p in directory.glob('*.json') if p.name in old}, old)
+                self.assertNotEqual(later['data']['opId'], intent['data']['opId'])
+
+    def test_second_context_post_storage_seal_old_files_and_final_types(self):
+        from t3compose import privacy
+        for mutation in ('public', 'artifact', 'old-file', 'final-type'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture()
+                state, stopped = self.prepare(f)
+                self.assertIsNone(stopped)
+                directory = self.private_parents(f)
+                intent = self.intent(f)
+                actual = publish._write_policy_observation
+                writes, seals = [], []
+                actual_seal = publish._seal_policy_context
+                def seal(*args, **kwargs):
+                    seals.append(str(kwargs['policy']))
+                    return actual_seal(*args, **kwargs)
+                def write(*args):
+                    value = actual(*args)
+                    writes.append(value)
+                    if len(writes) == 2:
+                        if mutation == 'public':
+                            f.authority_decision('PUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.rule_context, 'SYNTHETIC ONLY: revoked.')
+                        elif mutation == 'artifact':
+                            f.authority_decision('ARTIFACT', 'privacy-artifact/v1 revoke synthetic-inventory ' + f.artifact_context, 'SYNTHETIC ONLY: revoked.')
+                    return value
+                old = None
+                if mutation == 'old-file':
+                    directory.mkdir(mode=0o700)
+                    old = directory / (intent['data']['opId'] + '.json')
+                    old.write_bytes(b'old bytes never permission')
+                    old.chmod(0o600)
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(publish, '_write_policy_observation', side_effect=write))
+                    stack.enter_context(patch.object(publish, '_seal_policy_context', side_effect=seal))
+                    if mutation == 'final-type':
+                        stack.enter_context(patch.object(privacy, 'evaluate_policy', return_value=True))
+                    self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                if mutation in ('public', 'artifact'):
+                    self.assertEqual(len(writes), 2)
+                    self.assertEqual(seals, [str(f.context(name).policy) for name in ('check', 'push', 'check', 'push')])
+                if old:
+                    self.assertEqual(old.read_bytes(), b'old bytes never permission')
+                self.assertEqual(f.events()[-1]['kind'], 'decision' if mutation in ('public', 'artifact') else 'op-intent')
+                self.assertEqual(f.launches, [])
+
+    def test_initial_policy_authority_and_pinned_evidence_fail_closed(self):
+        for mutation in ('missing', 'malformed', 'wrong-place', 'revoked', 'prior-publication'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture('public')
+                self.assertIsNone(self.prepare(f)[1])
+                if mutation == 'missing':
+                    f.context('push').policy.unlink()
+                elif mutation == 'malformed':
+                    f.context('push').policy.write_text('{}')
+                elif mutation == 'wrong-place':
+                    entry = f.dispositions['push']['entries'][0]
+                    entry['occurrences'][0]['byteOffset'] += 1
+                    f.pin_public('push')
+                elif mutation == 'revoked':
+                    f.authority_decision('PUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.rule_context, 'SYNTHETIC ONLY: revoked.')
+                else:
+                    f.publication['method'] = 'unattested'
+                    f.pin_public('push')
+                if mutation == 'wrong-place':
+                    state, stopped = self.prepare(f)
+                    self.assertIsNone(state)
+                    self.assertEqual(stopped.code, 1)
+                else:
+                    self.invalid(lambda: self.prepare(f))
+                self.assertEqual(f.launches, [])
+
+    def test_equal_bytes_distinct_paths_remain_independent_and_stable_bindings(self):
+        for mutation in ('check-bytes', 'publication-bytes', 'list', 'locale'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture('artifact' if mutation.endswith('bytes') else 'public')
+                if mutation.endswith('bytes'):
+                    publication = f.context('push').policy
+                    check = f.context('check').policy
+                    check.write_bytes(publication.read_bytes())
+                    # The exact canonical command still executes under the replacement policy.
+                    code, summary = f.execute_check()
+                    self.assertEqual((code, summary['rawExit']), (0, 1))
+                state, stopped = self.prepare(f)
+                self.assertIsNone(stopped)
+                if mutation.endswith('bytes'):
+                    self.assertNotEqual(state.captures[0][1], state.captures[1][1])
+                    self.assertEqual(state.captures[0][2], state.captures[1][2])
+                intent = self.intent(f)
+                directory = self.private_parents(f)
+                if mutation.endswith('bytes'):
+                    path = f.context('check' if mutation == 'check-bytes' else 'push').policy
+                    path.write_bytes(path.read_bytes() + b' ')
+                elif mutation == 'list':
+                    with (f.local / 'state/private-identifiers.txt').open('a') as stream:
+                        stream.write('UNMATCHED_SYNTHETIC\n')
+                else:
+                    os.environ['LC_ALL'] = 'C' if os.environ.get('LC_ALL') != 'C' else 'C.UTF-8'
+                self.invalid(lambda: publish._finalize_policy_gate(state, intent=intent))
+                self.assertFalse(directory.exists())

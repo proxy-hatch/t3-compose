@@ -552,6 +552,202 @@ def _write_policy_observation(local, identity, work, op_id, observation):
         _fail('invalid private policy observation storage')
 
 
+class _PreparedPolicyGate:
+    """Process-private cooperative state; neither a credential nor a saved pass."""
+    def __repr__(self):
+        return '<private prepared policy lifecycle>'
+
+    def __reduce__(self):
+        raise TypeError('policy lifecycle is process-private')
+
+
+def _policy_gate_capture(path):
+    if not isinstance(path, (str, Path)):
+        raise ValueError
+    spelling = str(path)
+    absolute = os.path.abspath(spelling)
+    return spelling, absolute, privacy._policy_snapshot(absolute)[1]
+
+
+def _policy_gate_inputs(state):
+    args = state.args
+    if ((args.local_dir, args.work, args.head, args.branch,
+         getattr(args, 'privacy_policy', None), getattr(args, 'privacy_check_policy', None))
+            != state.arguments):
+        raise ValueError
+    # These reads remain independent, including identical paths and bytes.
+    for capture in state.captures:
+        if _policy_gate_capture(capture[0]) != capture:
+            raise ValueError
+    for label, spelling, absolute, text in state.files:
+        if os.path.abspath(spelling) != absolute or privacy._file(absolute) != text:
+            raise ValueError
+    if _git(state.repo, 'rev-parse', '--verify', 'HEAD') != (state.head + '\n').encode():
+        raise ValueError
+
+
+def _policy_gate_evaluate(state):
+    values = []
+    for context in state.contexts:
+        result = privacy.evaluate_policy(state.repo, state.local, context['commits'],
+            base=state.base, head=state.head, branch=state.branch,
+            texts=context['texts'], privacy_policy=context['policy'])
+        if type(result) is not privacy.PolicyEvaluation:
+            raise ValueError
+        if result.policy_satisfied is False:
+            return None
+        if result.policy_satisfied is not True:
+            raise ValueError
+        values.append(result)
+    return values
+
+
+def _policy_gate_seal(state, results):
+    return [_seal_policy_context(result, repo=state.repo, local=state.local,
+        policy=context['policy'], operation=state.operation, repository=state.identity,
+        base=state.base, head=state.head, commits=context['commits'], branch=state.branch,
+        texts=context['texts'], check_command=state.command)
+        for context, result in zip(state.contexts, results)]
+
+
+def _prepare_policy_gate(args, repo, identity, loaded, selected, branch, *,
+                         operation, target, refs=None, texts=(), text_files=()):
+    """Dormant deep preparation. (None, None) means strict mode, never permission.
+
+    Trusted caller owns the complete C0 publication gates and actual outcomes.
+    No current production entry calls this seam. No evaluation is deduplicated.
+    """
+    import copy
+    try:
+        policy = getattr(args, 'privacy_policy', None)
+        check_policy = getattr(args, 'privacy_check_policy', None)
+        if check_policy is not None and (policy is None or operation != 'push'):
+            raise ValueError
+        if policy is None:
+            return None, None
+        if operation not in ('push', 'pr') or args.branch != branch:
+            raise ValueError
+        state = _PreparedPolicyGate()
+        state.args, state.used = args, False
+        state.local, state.work, state.head = args.local_dir, args.work, args.head
+        state.repo = Path(os.path.abspath(repo))
+        state.identity, state.branch, state.operation = identity, branch, operation
+        state.loaded = copy.deepcopy(loaded)
+        current = records.load_work(state.local, identity, state.work)
+        if current != loaded or records.canonical_identity(identity) != identity:
+            raise ValueError
+        effective = loaded['effectiveWork']
+        state.base = effective['reviewBase']
+        if (effective['repository'] != identity or effective['workId'] != state.work or
+                loaded['work']['reviewBase'] != state.base):
+            raise ValueError
+        url = 'https://' + identity + '.git'
+        expected_target = (url + '#refs/heads/' + branch if operation == 'push'
+                           else 'https://' + identity + '/pulls#' + branch)
+        if target != expected_target:
+            raise ValueError
+        state.target = target
+        if (_git(state.repo, 'rev-parse', '--show-toplevel').strip() != os.fsencode(state.repo) or
+                _git(state.repo, 'config', '--get-all', 'remote.origin.url').splitlines()
+                not in ([url.encode()], [url.removesuffix('.git').encode()])):
+            raise ValueError
+        state.arguments = (args.local_dir, args.work, args.head, args.branch, policy, check_policy)
+        review = _review_set(state.repo, state.base, state.head)
+        check_policy = policy if check_policy is None else check_policy
+        state.captures = [_policy_gate_capture(check_policy)]
+        if operation == 'push':
+            state.captures.append(_policy_gate_capture(policy))
+            if texts or text_files or type(refs) is not dict:
+                raise ValueError
+            if list(selected) != _publication_set(state.repo, state.head, refs):
+                raise ValueError
+            state.refs = dict(refs)
+            state.prior = refs.get('refs/heads/' + branch, 'absent')
+        else:
+            if refs is not None or list(selected) != review:
+                raise ValueError
+            state.prior = None
+        state.files = []
+        if operation == 'pr':
+            if tuple(label for label, _ in texts) != ('title', 'body') or len(text_files) != 2:
+                raise ValueError
+            for (label, text), (file_label, path) in zip(texts, text_files):
+                if label != file_label or not isinstance(path, (str, Path)):
+                    raise ValueError
+                spelling, absolute = str(path), os.path.abspath(path)
+                if privacy._file(absolute) != text:
+                    raise ValueError
+                state.files.append((label, spelling, absolute, text))
+        state.command = _policy_verify_command(state.local, state.repo, state.base,
+            state.head, branch, check_policy, text_files=text_files)
+        state.contexts = [dict(policy=state.captures[0][1], commits=tuple(review),
+                               texts=tuple(texts) if operation == 'pr' else ())]
+        if operation == 'push':
+            state.contexts.append(dict(policy=state.captures[1][1], commits=tuple(selected), texts=()))
+        _policy_gate_inputs(state)
+        if not _policy_verify_check(state.local, identity, state.work, state.head, state.command):
+            return None, _out('refused', 'current policy verification required')
+        initial = _policy_gate_evaluate(state)
+        if initial is None:
+            return None, _out('refused', 'policy unsatisfied')
+        _policy_gate_inputs(state)
+        state.initial_results = tuple(initial)
+        state.initial = _policy_gate_seal(state, initial)
+        return state, None
+    except (cli.CommandError, records.RecordError, OSError, ValueError, TypeError,
+            KeyError, AttributeError, UnicodeError, OverflowError, RecursionError):
+        _fail('invalid policy lifecycle')
+
+
+def _finalize_policy_gate(state, *, intent):
+    """Consume one preparation with one actual current intent; never mint/write events.
+
+    ALL proofs precede BOTH seals, ordered immutable storage, and BOTH reseals.
+    Failure retains files/uncertainty. A later attempt needs fresh preparation.
+    """
+    try:
+        if type(state) is not _PreparedPolicyGate or state.used:
+            raise ValueError
+        state.used = True
+        _policy_gate_inputs(state)
+        current = records.load_work(state.local, state.identity, state.work)
+        if (current['work'] != state.loaded['work'] or
+                current['effectiveWork'] != state.loaded['effectiveWork'] or
+                current['events'] != [*state.loaded['events'], intent] or
+                intent['kind'] != 'op-intent'):
+            raise ValueError
+        data = intent['data']
+        if (data['operation'] != ('push' if state.operation == 'push' else 'pull-request') or
+                data['target'] != state.target or data['commit'] != state.head or
+                data['expectedPriorHead'] != state.prior or
+                type(data['opId']) is not str or not re.fullmatch('[0-9a-f]{32}', data['opId'])):
+            raise ValueError
+        if not _policy_verify_check(state.local, state.identity, state.work, state.head, state.command):
+            return _out('refused', 'current policy verification required')
+        final = _policy_gate_evaluate(state)
+        if final is None:
+            return _out('refused', 'policy unsatisfied')
+        _policy_gate_inputs(state)
+        observations = _policy_gate_seal(state, final)
+        stable = ('operation', 'base', 'head', 'selectionDigest', 'contextDigest',
+                  'checkCommandDigest', 'policyBindingDigest', 'listDigest', 'patternCount')
+        if any(any(before[key] != after[key] for key in stable)
+               for before, after in zip(state.initial, observations)):
+            raise ValueError
+        _write_policy_observation(state.local, state.identity, state.work, data['opId'], observations[-1])
+        if state.operation == 'push':
+            _write_policy_observation(state.local, state.identity, state.work,
+                                      data['opId'] + '-review', observations[0])
+        _policy_gate_inputs(state)
+        _policy_gate_seal(state, final)
+        if not _policy_verify_check(state.local, state.identity, state.work, state.head, state.command):
+            return _out('refused', 'current policy verification required')
+        return None
+    except (cli.CommandError, records.RecordError, OSError, ValueError, TypeError,
+            KeyError, AttributeError, UnicodeError, OverflowError, RecursionError):
+        _fail('invalid policy lifecycle')
+
+
 @contextmanager
 def _environment(repo):
     """No ambient credentials, Git selectors, executable paths or user config."""
