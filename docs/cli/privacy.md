@@ -3,8 +3,9 @@
 `t3c privacy check` screens publishable text in any repository against the
 private identifier list. It is a read-only check, not permission to publish.
 It implements the [workflow's privacy rule](../superpowers/specs/2026-10-27-t3-compose-design.md#checks-and-publication).
-`t3c privacy verify` separately evaluates an explicit artifact policy over the
-same selection; see [policy evaluation](#policy-evaluation-and-privacy-verify).
+`t3c privacy verify` separately evaluates an explicit artifact or public-text policy
+over the same selection; see [policy evaluation](#policy-evaluation-and-privacy-verify)
+and [public-text dispositions](#public-text-dispositions-public-textv2).
 
 ```text
 t3c [--local-dir PATH] [--text] privacy check --repo-path P --range BASE..HEAD
@@ -283,9 +284,10 @@ Future evaluation/publication gates must re-observe current state. Owner-source
 provenance and verifier independence are cooperative attestations, not identity
 authentication. Coordinators are responsible for faithfully recording them.
 
-Policy evaluation of these inputs is [specified below](#policy-evaluation-and-privacy-verify).
-Public-text disposition evaluation and publisher integration remain deferred.
-Neither is waived or satisfied by this scanner.
+Policy evaluation of these inputs is [specified below](#policy-evaluation-and-privacy-verify),
+and [public-text dispositions](#public-text-dispositions-public-textv2) are a separate
+policy kind. Publisher integration remains deferred; neither is waived or satisfied by
+this scanner.
 
 
 ## Explicit inherited-artifact accounting
@@ -377,8 +379,8 @@ entirely by `[redacted]` if unsafe, including IDs and digests. Consumers must no
 treat a redacted binding or editable saved report as verification evidence.
 Coverage is raw evidence, never `policySatisfied` or publication permission.
 The [artifact evaluator](#policy-evaluation-and-privacy-verify) reruns the shared
-core and validates its own approvals; public-text scope and evidence remain
-future work; publisher C must re-observe current authority and exact publication
+core and validates its own approvals; [public-text dispositions](#public-text-dispositions-public-textv2)
+are evaluated separately; publisher C must re-observe current authority and exact publication
 inputs at the gate. Cooperative source provenance is not authentication; the
 observed prefix provides no atomic revocation guarantee after observation. Strict
 publisher behavior remains unchanged until those separate integrations land.
@@ -388,16 +390,17 @@ publisher behavior remains unchanged until those separate integrations land.
 `evaluate_policy` and `t3c privacy verify` answer one separate question: is the
 raw scan's only non-text coverage, inherited opaque bytes accounted as
 approved-unscanned, covered by a valid, current, unrevoked owner decision, with
-**zero text findings**? Raw screening and policy satisfaction are different
+**zero unresolved text findings**? Raw screening and policy satisfaction are different
 verdicts. The raw check of the same selection keeps exiting 1 for any
 approved-unscanned occurrence; the policy verdict never relabels it.
 
-This evaluator is artifact-only. Every text finding in a branch, label, text,
-message, path or file stays unresolved: no public-text disposition, public
-snapshot, [literal proof](#private-literal-evidence-foundation) or saved report
-is an input, and none can change the verdict. The literal-proof seam is not
-called. Standing public-text authority is a later Task (B2b) and publisher
-integration another (C); neither is waived or satisfied here.
+An artifact-provenance policy is evaluated artifact-only. Every text finding in a
+branch, label, text, message, path or file stays unresolved: no public-text
+disposition, public snapshot, [literal proof](#private-literal-evidence-foundation) or
+saved report is an input, and none can change the verdict. The literal-proof seam is
+not called. A `public-text/v2` policy uses the separate
+[dispositions](#public-text-dispositions-public-textv2) (`policy-evaluation/v2`);
+publisher integration is another Task (C), neither waived nor satisfied here.
 
 ```python
 evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy)
@@ -505,7 +508,7 @@ the same summary.
 
 | Key | Meaning |
 |---|---|
-| version | `policy-verify/v1` |
+| version | `policy-verify/v1` for an artifact policy; a `public-text/v2` policy returns [`policy-verify/v2`](#public-text-dispositions-public-textv2) |
 | policySatisfied | the policy verdict above |
 | rawStatus | `no-text-findings`, `findings` (takes precedence) or `policy-evaluation-required` |
 | rawExit | 0 or 1: what `privacy check` with the same policy exits for this selection |
@@ -643,55 +646,57 @@ The whole result, including `literalDigest`, `listDigest` and `inputDigest`, is
 secret-equivalent private evidence. These unsalted hashes let anyone holding them
 confirm a guess of a private value offline. Never write the result to stdout, to
 public or shared evidence, or to GitHub, even after the matcher-based redaction
-used for coverage, which does not recognize a digest. B2b and C keep the exact
-proof facts in private state and emit nonsecret summaries only.
+used for coverage, which does not recognize a digest. The public-text evaluator and
+publisher C keep the exact proof facts in private state and emit nonsecret summaries only.
 
 A witness proves only that the exact bytes occur in one supported regular blob,
 possibly as a substring of unrelated longer text. It does not prove identifier
 identity, field, context or approved scope.
 
-B2b must rerun shared scanning with the same captured list and locale, collect
-all actual field occurrences, bind exact report/selection/input facts, and join
-actual standing owner authority, approved public-product scope, independently
-attested prior publication, and current nonrevocation. Local object presence or
-literal proof cannot declassify credentials or unrelated private data. The
-[artifact-only evaluator and `privacy verify`](#policy-evaluation-and-privacy-verify)
-never call this seam, so every text finding stays unresolved there; B2b extends
-them. C owns publisher integration and publication-gate rechecks. Raw scan
-results, history coverage, defaults and publisher behavior remain unchanged. No
-real opaque approval or receipt is created by this foundation; complete literal
-proof is never policy satisfaction or permission to publish.
+The [public-text evaluator](#public-text-dispositions-public-textv2) reruns shared
+scanning with the same captured list and locale, collects all actual field
+occurrences, and joins standing owner authority, approved public-product scope,
+independently attested prior publication and current nonrevocation. Local object
+presence or literal proof cannot declassify credentials or unrelated private data.
+The [artifact-only evaluator](#policy-evaluation-and-privacy-verify) never calls this
+seam. C owns publisher integration and publication-gate rechecks. Raw scan results,
+history coverage, defaults and publisher behavior remain unchanged. No real opaque
+approval or receipt is created by this foundation; complete literal proof is never
+policy satisfaction or permission to publish.
 
-Design input for B2b, not a change here: the 128-candidate bound depends on Git
-tree order and counts candidates that cannot witness, including unread oversized
-ones. B2b may count only read candidates (the
-8 MiB bound already limits reading), raise the cap with that bound binding, or
-accept a verified caller-supplied witness path. It must not raise a bound or
-accept an arbitrary witness path silently.
+The public-text evaluator keeps the candidate bounds and Git-tree-order witness search
+unchanged: a late witness yields `proof-limit`, which leaves its findings unresolved.
+Raising a bound or accepting a caller-supplied witness path needs its own reviewed change.
 
-## Public-text dispositions (`public-text/v1`)
+## Public-text dispositions (`public-text/v2`)
 
-`t3compose.privacy_dispositions` defines a second policy kind, `public-text/v1`, that
-asks a different question from artifact accounting: is a text finding covered by the
-owner's standing public-by-design rule, and proven public? This Task adds only that
-pure module. No scanner, evaluator, CLI or publisher path calls it yet: `scan_commits`,
-`evaluate_policy`, `privacy check`, `privacy verify` and the publisher are unchanged and
-every text finding stays unresolved. It is never a global identifier exception. The
-module reads no policy file, runs no process, scans nothing and never imports the
-facade; its only I/O is observing the records stream.
+`--privacy-policy FILE` whose `policyVersion` is `public-text/v2` asks a different
+question from artifact accounting: is every text finding covered by the owner's
+standing public-by-design rule, and proven public? No new command or flag exists;
+`artifact-provenance/v1` files keep their own mode, `policy-evaluation/v1` and
+`policy-verify/v1` unchanged. This is never a global identifier exception, and
+`t3compose.privacy_dispositions` joins current facts the facade supplies. It reads
+no policy file, runs no process, scans nothing and never imports the facade; its
+only I/O is observing the records stream. Version 2 binds each review to the exact
+selection and to each finding's place in it; `public-text/v1`, which did not, is refused.
 
 ```python
-observe(policy, read, *, local_dir, repository, list_digest)   # evidence and current authority
-resolve(observed, findings, prove, *, locale_digest)           # one private verdict per finding
+observe(policy, read, *, local_dir, repository, list_digest)    # evidence and current authority
+resolve(observed, findings, prove, *, locale_digest, selection_context)   # one private verdict per finding
 ```
 
-`read(name, digest)` is the caller's pinned single-read callback; `findings` are the
-scan's own `{field, lines, inputDigest}`; `prove(inputDigest)` returns the shared-list
-literal proof and is called only for in-scope, attested candidates. Invalid, stale or
-revoked evidence raises `Refusal`, a `ValueError` with a constant message.
-
-Files use the artifact rules above (one pinned read, relative names, closed schemas,
-`sha256:` digests; Git IDs are 40-hex). Pins are raw digests of each file.
+Callers' obligations, which the module checks by refusing rather than trusting:
+`repository` is the canonical origin identity (pure parsing; a path is refused before
+any record or process is touched); `list_digest` and `locale_digest` come from the one
+captured list and environment; `read(name, digest)` is the facade's callback, which reads
+an exact relative name once, pins its raw digest and returns strict JSON; `findings` are
+the scan's own `{field, lines (a list), inputDigest, context}`; `prove(inputDigest)`
+returns the shared-list literal proof and is called only for a finding whose field is in
+scope, whose review is for this selection and that has an entry (the facade memoizes it
+per input). Invalid, stale or revoked evidence, a malformed name or
+digest, a lone surrogate or a value that is not JSON raises `Refusal`, a `ValueError`
+whose message and `repr` are constant; the facade turns it into a sanitized `CommandError`.
+All closed documents carry integer `schemaVersion` 2.
 
 | Document | Keys |
 | --- | --- |
@@ -699,52 +704,110 @@ Files use the artifact rules above (one pinned read, relative names, closed sche
 | Rule | schemaVersion, ruleId, repository, scope, fields, policyVersion, policyDigest, authorityWorkId, approvalSeq, source |
 | Rule source | sourceRef, date, quote |
 | Publication | schemaVersion, ruleId, ruleContext, verifier, sourceRef, method, result, repository, publicCommit |
-| Dispositions | schemaVersion, ruleId, ruleContext, verifier, sourceRef, method, result, publicCommit, listDigest, entries |
-| Entry | field, inputDigest, occurrences (nonempty; at most 256 entries and 4,096 occurrences in all) |
+| Dispositions | schemaVersion, ruleId, ruleContext, verifier, sourceRef, method, result, publicCommit, listDigest, selectionContext, entries |
+| Entry | field, context, inputDigest, occurrences (nonempty; at most 256 entries and 4,096 occurrences in all) |
 | Occurrence | patternLine, byteOffset, byteLength, literalDigest, publicBlobOid, publicContentDigest, scope |
 
 The two artifact keys are both `null` (pure public text, which invents no opaque
-inventory) or both set to an artifact policy file name and its raw digest; the module
-validates and returns them for its caller to read. `scope` is `public-product-text`;
-`fields` is a strictly sorted, unique, nonempty subset of `branch`, `file`, `label`,
-`message`, `path`, `text`. `policyDigest` hashes the versioned descriptor `{authority:
-owner, contextVersion: 1, policyVersion, schemaVersion: 1, scope, verification:
+inventory) or both set to an unchanged artifact policy file and its raw digest; the
+evaluator refuses a different file. `scope` is `public-product-text`; `fields` is a
+strictly sorted, unique, nonempty subset of `branch`, `file`, `label`, `message`,
+`path`, `text`. `policyDigest` hashes the versioned descriptor `{authority: owner,
+contextVersion: 1, policyVersion, schemaVersion: 2, scope, verification:
 occurrence-attestation}`. `ruleContext` is the canonical digest of the rule without
 `approvalSeq`. The rule's repository, and the publication's, equal the canonical
-origin identity the caller supplies.
+origin identity.
 
 **Authority.** The existing `decision` kind in the policy's authority work records
 `privacy-public-text/v1 approve <ruleId> <ruleContext>`, with `answer` the exact
 `source.quote`, `date` its date and `decidedBy` `owner`, at `approvalSeq`. A revoke
 (`... revoke <ruleId> <ruleContext>`) is terminal for the rule, even naming another
 context; an approval of another context is ambiguous; a malformed, unresolved or
-nonowner decision in the `privacy-public-text` namespace refuses. Nothing in the
-`privacy-artifact` namespace, a generic decision, prior publication or an
-assignment grants this authority. See the [records recipe](../records.md#public-text-standing-authority-recipe).
+nonowner decision in the `privacy-public-text` namespace refuses. A near-miss spelling
+of the namespace (another letter case, surrounding whitespace) counts as in it and
+refuses, so a mistyped revocation is never ignored; the `privacy-artifact` authority
+reads its namespace the same way. This is conservative detection, not normalization:
+the grammar stays exact. Nothing in the `privacy-artifact` namespace, a generic
+decision, prior publication or an assignment grants this authority. See the
+[records recipe](../records.md#public-text-standing-authority-recipe).
 
 **Evidence.** The publication attests, independently, that `publicCommit` (a full
 SHA-1 commit, not a ref) was actually public; a local object or caller SHA proves
 nothing. Dispositions bind that commit and the one captured list's digest and
-attest each matched occurrence by exact `(field, inputDigest)`: the digest is of
-the input's UTF-8 bytes (a blob, message, path, branch, label or text). An
+attest each matched occurrence by exact `(field, context, inputDigest)`: the digest is
+of the input's UTF-8 bytes (a blob, message, path, branch, label or text). An
 occurrence's scope is the reviewer's verified class: `public-product-text`, or an
 exclusion (`credential`, `private-path`, `unrelated`, `ambiguous`) that leaves it
 unresolved. `method` is `prior-publication` or `occurrence-review`; `result` is
 `verified`. Verifier independence and locators are cooperative attestations.
 
-**Join.** `resolve` takes the scan's findings in order and requests a proof for the
-exact input only when its field is in `fields` and an entry exists. A finding
-resolves only if its proof is `literal-proof/v1`, complete, with the pinned
-`publicCommit`, the captured list's digest, the input digest and the captured locale
-digest; its rows equal the finding's `lines`; every occurrence has a public witness;
-its occurrences equal the entry's exactly (every repeat, none extra); and each scope
-is `public-product-text`. A witness is necessary and never sufficient. Unknown or
-uncovered literals, unsupported, empty or overlapping proofs, stale inputs and
-exclusions leave findings unresolved, whatever the snapshot holds. Reasons stay
-private: `out-of-scope`, `unattested`, `proof`, `mismatch`, `excluded`.
+**Selection and contexts.** A review is made for one selection and for one place per
+finding; identical bytes elsewhere are not reviewed. `selectionContext` is the digest of
+canonical JSON `{version: selection-context/v1, repository, base, head, commits,
+branchDigest, texts}`: the canonical origin identity, the immutable endpoints, the commit
+IDs in the order supplied (never sorted), the branch digest, and every supplied text as
+`{labelDigest, textDigest}` in order, duplicates and positions included. An entry's
+`context` is the digest of `{version: finding-context/v1, field, commit, pathDigest,
+index}` for the finding it covers: `commit` for message, path and file findings,
+`pathDigest` for path and file findings, the text's position `index` for label and text
+findings, else null. Digests hash UTF-8 bytes. The facade builds both from the one scan's
+field trace, never from a saved report or stdout. A different commit, order, endpoint,
+branch, text, path or position is another selection or place, so the review does not
+carry over (reasons `selection`, `unattested`). The raw report is bound finding by
+finding: each finding of the current scan needs its own entry, a finding without one is
+unresolved, and an entry that no finding uses is ignored. An entry exists per place: a
+blob that is unchanged across the selected commits needs one for each, within the bounds
+above. To author a review, evaluate once with no entries and any well-formed
+`selectionContext`: every finding is unresolved, and the private result names the real
+`selectionContext` and each finding's `context` and input digest.
 
-**Observation.** `observe` is one observation of cooperative records. It returns
-`bindings` for a caller to compare between a start and an end observation, and gives
-no authentication, atomic revocation or tamper evidence; the
-[window limits](#observation-window) apply. The facade wiring, the private result and
-summary versions, the raw-scan behavior and the CLI follow in the next Task.
+**Join.** The facade reruns the shared scan once, from one fresh captured list and
+locale. For each finding in scan order it then requests `_literal_proofs` for the
+exact input, once per distinct input, only when the finding's field is in `fields`,
+the review is for this selection and an entry exists for its place. A finding
+resolves only if its proof is `literal-proof/v1`,
+complete, with the pinned `publicCommit`, the captured list's digest, the input
+digest and the captured locale digest; its rows equal the finding's `lines`; every
+occurrence has a public witness; its occurrences equal the entry's exactly (every
+repeat, none extra); and each scope is `public-product-text`. A witness is
+necessary and never sufficient. Unknown or uncovered literals, unsupported, empty
+or overlapping proofs, stale inputs and exclusions leave findings unresolved,
+whatever the snapshot holds. Reasons stay private: `out-of-scope`, `selection`,
+`unattested`, `proof`, `mismatch`, `excluded`.
+
+**Observation.** The start observation reads and validates the evidence and
+authority; the scan and proofs follow; the end observation repeats the first and
+must give equal bindings (every pin, rule, repository, context, snapshot, list,
+selection and work digest, the artifact pair and the policy file's digest) and an equal
+locale digest. A changed or revoked binding, a trace that does not account for every
+finding, or any invalid file raises a sanitized `CommandError`. The
+[window limits above](#observation-window) apply unchanged: no stream-prefix continuity
+is checked and changes made and undone between observations are invisible. It is one
+captured list, so a fresh gate evaluates again. The module cannot recompute the
+fingerprints it is given; the facade's tests pin them, and provenance stays cooperative.
+
+**Raw scan.** `scan_commits` and `privacy check` with this policy observe its evidence
+as above (an invalid, stale or revoked policy refuses: exit 2), then return the raw
+scanner's result (findings or approved-unscanned bytes exit 1; unsupported bytes exit
+2). Dispositions never change that result, and only the optional artifact part adds coverage.
+
+**Result `policy-evaluation/v2`** is a `PolicyEvaluation` as above (never printed):
+`version`, `policySatisfied`, `rawStatus` and `raw` as v1; `selection` (the
+`selection-context/v1` facts, plus `selectionContext`, `listDigest`, `patternCount`,
+`localeDigest`); `coverage` and `authority` (the v1 objects, or `null` without an
+artifact part); `publicText` (`bindings`, `authority.start` and `.end`, `verdicts`
+aligned with the raw findings as `field`, `context`, `inputDigest`, `resolved`,
+`reason`, `occurrences`, plus `resolved` and `unresolved`); and `observation`.
+`policySatisfied` is true only when every finding is resolved. A reviewer reads each
+place's `context` and the `selectionContext` here.
+
+**Summary `policy-verify/v2`** has `version`, `policySatisfied`, `rawStatus`,
+`rawExit`, `commits`, `action`, `coverage` (`texts`, `textFindings`,
+`approvedUnscanned`) and `publicText` (`resolved`, `unresolved`, `occurrences`): counts
+only, no digest, ID, path, repository, quote, source, policy path or matched text.
+Exit 0 means satisfied; 1 means unresolved; 2 means invalid or incomplete, with empty
+stdout. Raw status and exit stay honest: satisfied policy leaves `rawExit` 1.
+
+Publisher integration is separate work: it must run the evaluator on its own push
+set or review range and metadata, require `result.policy_satisfied` (never truthiness
+of the result), and never format `result.facts` or raw coverage.

@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import importlib
 import io
+import itertools
 import json
 import os
 import re
@@ -560,6 +561,12 @@ class OfflineArtifactProvenance(OfflineTestCase):
         self.assertNotIn(str(self.temp), str(error.exception))
         self.assertNotIn('SYNTHETIC ONLY', str(error.exception))
         self.assertNotIn('syn-secret', str(error.exception))
+
+    def test_a_near_miss_revocation_refuses_rather_than_being_ignored(self):
+        self.fixture()
+        self.load()  # positive control
+        self.decision('revoke', question=' Privacy-artifact/v1 revoke synthetic-inventory ' + self.context)
+        self.refuse()
 
     def test_valid_bound_immutable_observation_and_no_exemption(self):
         from t3compose import records, privacy
@@ -1884,3 +1891,436 @@ class OfflinePolicyEvaluation(OfflineTestCase):
         self.assertEqual(len(check_args[2]), 2)
         for key in ('base', 'head', 'branch', 'texts'):
             self.assertEqual(check_kwargs[key], verify_kwargs[key])
+
+
+class OfflinePublicText(OfflineTestCase):
+    """Synthetic standing rule and prior publication only: nothing here represents a real decision."""
+    git = OfflinePrivacy.git
+    commit = OfflinePrivacy.commit
+    invoke = OfflinePrivacy.invoke
+    digest = OfflineArtifactProvenance.digest
+    write = OfflineArtifactProvenance.write
+    fixture = OfflineArtifactProvenance.fixture
+    bind = OfflineArtifactProvenance.bind
+    decision = OfflineArtifactProvenance.decision
+    inventory = OfflineInheritedArtifacts.inventory
+    PUBLIC, WIDGET = 'public product text: syn-secret\n', 'the syn-secret widget\n'
+    IDENTITY, SCOPE = 'example.invalid/team/repo', 'public-product-text'
+
+    def setUp(self):
+        OfflinePrivacy.setUp(self)
+        self.base0, self.streams = self.base, itertools.count(1)
+
+    def witness(self):
+        return dict(publicBlobOid=self.git('rev-parse', self.public + ':product.md'),
+                    publicContentDigest=self.digest(self.PUBLIC.encode()))
+
+    def where(self, field, commit=None, path=None, index=None):  # an independent spelling of finding-context/v1
+        return self.digest(dict(version='finding-context/v1', field=field, commit=commit, index=index,
+                                pathDigest=None if path is None else self.digest(path.encode())))
+
+    def selected(self, commits=None, texts=None, branch='main', base=None, head=None):  # ... of selection-context/v1
+        texts = self.options.get('texts', []) if texts is None else texts
+        return self.digest(dict(
+            version='selection-context/v1', repository=self.IDENTITY, base=base or self.public, head=head or self.head,
+            commits=list(commits or self.selection), branchDigest=self.digest(branch.encode()),
+            texts=[dict(labelDigest=self.digest(a.encode()), textDigest=self.digest(b.encode())) for a, b in texts]))
+
+    def entry(self, text, scope=SCOPE, fill=False, field='file', path='docs.md', commit=None, index=None):
+        from t3compose import privacy
+        proof = privacy._literal_proofs(self.repo, self.rows, text, public_commit=self.public)
+        self.assertTrue(fill or proof['complete'], proof['reason'])
+        tree = field in ('file', 'path', 'message')
+        place = self.where(field, (commit or self.head) if tree else None, path if field in ('file', 'path') else None, index)
+        return dict(field=field, context=place, inputDigest=self.digest(text.encode()), occurrences=[
+            {**o, **(self.witness() if o['publicBlobOid'] is None else {}), 'scope': scope}
+            for o in proof['occurrences']])
+
+    def forged(self, text, path='docs.md'):  # an attestation of an occurrence that the real proof refuses to confirm
+        return dict(field='file', context=self.where('file', self.head, path), inputDigest=self.digest(text.encode()), occurrences=[dict(
+            patternLine=1, byteOffset=text.index('syn-secret'), byteLength=10,
+            literalDigest=self.digest(b'syn-secret'), scope=self.SCOPE, **self.witness())])
+
+    def append(self, question, answer, decidedBy='owner'):
+        from t3compose import records
+        records.append_event(self.local, self.IDENTITY, self.work, 'decision', dict(
+            question=question, answer=answer, date='2026-11-04', decidedBy=decidedBy), writer=self.writer)
+
+    def revoke(self):
+        self.append('privacy-public-text/v1 revoke synthetic-rule ' + self.context, 'SYNTHETIC ONLY: revoked.')
+
+    def build(self, rows=None, fields=('file', 'message', 'text'), widget=None, event=None, entries=None, texts=()):
+        from t3compose import privacy_dispositions as pd, records
+        self.rows = rows or ['syn-secret', 'syn-other']
+        self.list_file.write_text('\n'.join(self.rows) + '\n')
+        if 'origin' not in self.git('remote').split():
+            self.git('remote', 'add', 'origin', 'https://example.invalid/team/repo.git')
+        self.public = self.commit('public snapshot', {'product.md': self.PUBLIC})
+        self.widget = widget or self.WIDGET
+        self.head = self.commit('add widget', {'docs.md': self.widget})
+        self.selection, self.options = [self.head], dict(texts=list(texts)) if texts else {}
+        self.work, self.writer = 'PUBLIC%d' % next(self.streams), 'manager@' + self.IDENTITY
+        rule = dict(schemaVersion=pd.SCHEMA, ruleId='synthetic-rule', repository=self.IDENTITY, scope=self.SCOPE,
+                    fields=list(fields), policyVersion=pd.POLICY_VERSION, policyDigest=pd.digest(pd.DESCRIPTOR),
+                    authorityWorkId=self.work, approvalSeq=1, source=dict(
+                        sourceRef='synthetic:owner-message', date='2026-11-04', quote='SYNTHETIC ONLY: standing rule.'))
+        self.context = pd.digest({k: v for k, v in rule.items() if k != 'approvalSeq'})
+        records.create_work(self.local, self.IDENTITY, self.work, dict(
+            workId=self.work, linearIssue=None, repository=self.IDENTITY, targetBranch='main', reviewBase=self.base0,
+            scope=['x'], designRefs=[], ownedPaths=['x'], dependencies=[], acceptance=[dict(id='AC', text='Synthetic')],
+            requiredChecks=[dict(id='CHK', command='synthetic', kind='fast')], writer=self.writer), writer=self.writer)
+        self.append('privacy-public-text/v1 approve synthetic-rule ' + self.context, rule['source']['quote'],
+                    **(event or {}))
+        attest = dict(schemaVersion=pd.SCHEMA, ruleId='synthetic-rule', ruleContext=self.context,
+                      verifier='synthetic-independent-reviewer', result='verified')
+        self.docs = dict(rule=rule, publication=dict(
+            attest, sourceRef='synthetic:publication-observation', method='prior-publication',
+            repository=self.IDENTITY, publicCommit=self.public), dispositions=dict(
+            attest, sourceRef='synthetic:occurrence-review', method='occurrence-review', publicCommit=self.public,
+            listDigest=self.digest(self.rows), selectionContext=self.selected(),
+            entries=[self.entry(self.PUBLIC, path='product.md'), self.entry(self.widget)] if entries is None else entries()))
+        self.pin()
+
+    def attest(self, entries, **selected):  # a review of another selection: its fingerprint and its findings' places
+        self.docs['dispositions'].update(selectionContext=self.selected(**selected), entries=entries())
+        self.pin()
+
+    def raw(self, name, data):  # a pinned document that is not strict JSON
+        (self.temp / name).write_bytes(data)
+        policy = json.loads((self.temp / 'text-policy').read_bytes())
+        self.write('text-policy', dict(policy, **{name + 'Digest': self.digest(data)}))
+
+    def pin(self, artifact=False):
+        from t3compose import privacy_dispositions as pd
+        policy = dict(schemaVersion=pd.SCHEMA, policyVersion=pd.POLICY_VERSION, authorityWorkId=self.work,
+                      artifactPolicyFile=None, artifactPolicyDigest=None)
+        for name in ('rule', 'publication', 'dispositions'):
+            policy.update({name + 'File': name, name + 'Digest': self.write(name, self.docs[name])})
+        if artifact:
+            policy.update(artifactPolicyFile='policy',
+                          artifactPolicyDigest=self.digest((self.temp / 'policy').read_bytes()))
+        self.write('text-policy', policy)
+
+    def evaluate(self, commits=None, **options):
+        from t3compose import privacy
+        args = dict(base=self.public, head=self.head, branch='main', privacy_policy=self.temp / 'text-policy')
+        args.update(self.options, **options)
+        return privacy.evaluate_policy(self.repo, self.local, commits or self.selection, **args)
+
+    def reasons(self, result):
+        return [v['reason'] for v in result.facts['publicText']['verdicts']]
+
+    def refused(self):
+        with self.assertRaises(cli.CommandError) as error:
+            self.evaluate()
+        for private in (str(self.temp), 'syn-', 'SYNTHETIC', self.public, self.head, 'docs.md'):
+            self.assertNotIn(private, str(error.exception))
+
+    def verify(self, *extra, text=False, command='verify', revision=None):
+        return self.invoke('--privacy-policy', str(self.temp / 'text-policy'), *extra, command=command,
+                           text=text, revision=revision or self.public + '..HEAD', entry=True)
+
+    def mid_run(self, action):  # runs once, right after the first proof and before the end observation
+        from t3compose import privacy
+        original, done = privacy._literal_proofs, []
+
+        def wrapped(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if not done:
+                done.append(action())
+            return result
+        return patch.object(privacy, '_literal_proofs', side_effect=wrapped)
+
+    def test_known_public_text_satisfies_policy_while_raw_stays_nonpass(self):
+        import pickle
+        from t3compose import privacy
+        self.build()
+        result = self.evaluate()
+        facts, text = result.facts, result.facts['publicText']
+        self.assertIs(result.policy_satisfied, True)
+        self.assertEqual((facts['version'], facts['rawStatus'], facts['raw']['ok'], facts['coverage'], facts['authority']),
+                         ('policy-evaluation/v2', 'findings', False, None, None))
+        self.assertEqual([(f['field'], f['commit'], f['file'], f['lines']) for f in facts['raw']['findings']],
+                         [('file', self.head, 'docs.md', (1,)), ('file', self.head, 'product.md', (1,))])
+        self.assertEqual([(v['resolved'], v['reason'], v['occurrences']) for v in text['verdicts']], [(True, None, 1)] * 2)
+        self.assertEqual([v['context'] for v in text['verdicts']],
+                         [self.where('file', self.head, 'docs.md'), self.where('file', self.head, 'product.md')])
+        self.assertEqual((text['resolved'], text['unresolved']), (2, 0))
+        # Exact bytes, computed by hand rather than by the helper that built the attestation.
+        self.assertEqual(self.docs['dispositions']['entries'][1]['occurrences'], [dict(
+            patternLine=1, byteOffset=4, byteLength=10, literalDigest=self.digest(b'syn-secret'),
+            publicBlobOid=self.git('rev-parse', self.public + ':product.md'),
+            publicContentDigest=self.digest(self.PUBLIC.encode()), scope=self.SCOPE)])
+        self.assertEqual((text['bindings']['publicCommit'], text['bindings']['ruleId'], text['bindings']['fields']),
+                         (self.public, 'synthetic-rule', ('file', 'message', 'text')))
+        selection = {k: v for k, v in facts['selection'].items() if k not in ('texts', 'localeDigest')}
+        self.assertEqual(selection, dict(
+            version='selection-context/v1', repository=self.IDENTITY, base=self.public, head=self.head, commits=(self.head,),
+            patternCount=2, selectionContext=self.selected(), branchDigest=self.digest(b'main'), listDigest=self.digest(self.rows)))
+        self.assertEqual((facts['selection']['texts'], facts['selection']['localeDigest'][:7]), ((), 'sha256:'))
+        raw = privacy.scan_commits(self.repo, self.local, [self.head], base=self.base, head=self.head,
+                                   branch='main', privacy_policy=self.temp / 'text-policy')
+        self.assertEqual((raw['ok'], len(raw['findings']), 'coverage' in raw), (False, 2, False))
+        self.assertEqual((repr(result), result.summary()['version']), ('<PolicyEvaluation private>', 'policy-verify/v2'))
+        self.selection = [self.base0]  # nothing to resolve: a clean raw scan stays clean and satisfied
+        clean = self.evaluate()
+        self.assertEqual((clean.policy_satisfied, clean.facts['rawStatus'], clean.summary()['rawExit'], clean.summary()['publicText']),
+                         (True, 'no-text-findings', 0, {'resolved': 0, 'unresolved': 0, 'occurrences': 0}))
+        with self.assertRaises(TypeError):
+            pickle.dumps(result)
+        with self.assertRaises(TypeError):
+            text['verdicts'][0]['resolved'] = False
+
+    def test_entry_reports_counts_only_with_exit_codes_zero_one_and_two(self):
+        self.build()
+        code, out, err = self.verify()
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(json.loads(out), {
+            'version': 'policy-verify/v2', 'policySatisfied': True, 'rawStatus': 'findings', 'rawExit': 1, 'commits': 1,
+            'action': None, 'coverage': {'texts': 0, 'textFindings': 2, 'approvedUnscanned': 0},
+            'publicText': {'resolved': 2, 'unresolved': 0, 'occurrences': 2}})
+        wide = self.verify(revision=self.base0 + '..HEAD')  # a wider range is another selection than the reviewed one
+        self.assertEqual((wide[0], wide[2], json.loads(wide[1])['publicText']),
+                         (1, '', {'resolved': 0, 'unresolved': 3, 'occurrences': 0}))
+        self.assertEqual(self.verify(command='check')[0], 1)  # the raw check of the same policy still fails
+        text_code, text_out, _ = self.verify(text=True)
+        self.assertEqual((text_code, 'policySatisfied: true' in text_out), (0, True))
+        for shown in (out, text_out):
+            for private in ('"ok"', 'sha256:', 'syn-', 'SYNTHETIC', str(self.temp), self.head, self.public, 'docs.md'):
+                self.assertNotIn(private, shown)
+            self.assertIsNone(re.search('[0-9a-f]{40}', shown))
+        self.git('reset', '--hard', self.base0)  # an unknown alternative of a matched row stays unresolved: exit 1
+        self.build(rows=['syn-secret|syn-gamma', 'syn-other'], widget='the syn-secret and syn-gamma widget\n',
+                   entries=lambda: [self.entry(self.PUBLIC, path='product.md'), self.entry(self.widget, fill=True)])
+        code, out, err = self.verify()
+        self.assertEqual((code, err, json.loads(out)['policySatisfied'], json.loads(out)['publicText']),
+                         (1, '', False, {'resolved': 1, 'unresolved': 1, 'occurrences': 1}))
+        self.revoke()  # a revoked rule is invalid evidence: exit 2, empty stdout, one sanitized line
+        code, out, err = self.verify()
+        self.assertEqual((code, out), (2, ''))
+        self.assertTrue(err.strip() and all(p not in err for p in ('syn-', 'SYNTHETIC', str(self.temp))))
+        self.assertEqual(self.verify(command='check')[0], 2)  # the raw check observes the same evidence first
+
+    def test_unproven_stale_or_invalid_evidence_never_satisfies_policy(self):
+        twice, overlap, title = 'syn-secret then syn-secret\n', 'the syn-secret-x widget\n', 'syn-secret title\n'
+        gamma = dict(rows=['syn-secret|syn-gamma', 'syn-other'], widget='the syn-secret and syn-gamma widget\n',
+                     entries=lambda: [self.entry(self.PUBLIC, path='product.md'), self.entry(self.widget, fill=True)])
+
+        def uncovered():  # the second of two repeats is not attested
+            whole = self.entry(twice)
+            return [self.entry(self.PUBLIC, path='product.md'), dict(whole, occurrences=whole['occurrences'][:1])]
+
+        def moved(head=None, texts=None):
+            self.head = head or self.head
+            self.selection, self.options = [self.head], dict(texts=texts or [])
+
+        def swap(**changes):
+            for name in ('publication', 'dispositions'):
+                self.docs[name].update(changes)
+            self.pin()
+
+        def scope(value):
+            self.docs['dispositions']['entries'][1]['occurrences'][0]['scope'] = value
+            self.pin()
+        rule = self.temp / 'rule'
+        repin = lambda **change: self.write('text-policy', dict(json.loads((self.temp / 'text-policy').read_bytes()), **change))
+        titled = dict(texts=[('title', title)], entries=lambda: [
+            self.entry(self.PUBLIC, path='product.md'), self.entry(self.WIDGET), self.entry(title, field='text', index=0)])
+        rows = [
+            ('unknown alternative', gamma, None, ['proof', None]),
+            ('uncovered repeat', dict(widget=twice, entries=uncovered), None, ['mismatch', None]),
+            ('uncovered inherited match', dict(entries=lambda: [self.entry(self.WIDGET)]), None, [None, 'unattested']),
+            ('wildcard row', dict(rows=['syn-secret', 'syn-sec*'], entries=lambda: [
+                self.forged(self.PUBLIC, 'product.md'), self.forged(self.WIDGET)]), None, ['proof', 'proof']),
+            ('overlapping rows', dict(rows=['syn-secret', 'secret-x'], widget=overlap, entries=lambda: [
+                self.entry(self.PUBLIC, path='product.md'), self.forged(overlap)]), None, ['proof', None]),
+            ('stale content', {}, lambda: (moved(self.commit('edit', {'docs.md': 'the syn-secret widget!\n'})), self.attest(
+                lambda: [self.entry(self.PUBLIC, path='product.md'), self.entry(self.WIDGET)])), ['unattested', None]),
+            ('stale selection', {}, lambda: self.selection.append(self.commit('more', {'extra.md': 'syn-secret\n'})),
+             ['selection'] * 5),
+            ('stale field', {}, lambda: moved(self.commit('the syn-secret widget')), ['selection'] * 3),
+            ('title control', titled, None, [None, None, None]),
+            ('stale body', titled, lambda: moved(texts=[('title', 'syn-secret title!\n')]), ['selection'] * 3),
+            ('snapshot without the literal', {}, lambda: swap(publicCommit=self.base0), ['proof', 'proof']),
+            ('snapshot not a commit', {}, lambda: swap(publicCommit='f' * 40), None),
+            ('credential in the public blob', {}, lambda: scope('credential'), ['excluded', None]),
+            ('stale list', {}, lambda: self.list_file.write_text('syn-secret\nsyn-other\nextra\n'), None),
+            ('missing attestation', {}, lambda: (self.temp / 'dispositions').unlink(), None),
+            ('unpinned edit', {}, lambda: rule.write_bytes(rule.read_bytes() + b' '), None),
+            ('surrogate in a pinned file', {}, lambda: self.raw('rule', b'{"quote":"\\ud800"}'), None),
+            ('non-finite number in a pinned file', {}, lambda: self.raw('publication', b'{"result":NaN}'), None),
+            ('version 1 policy', {}, lambda: repin(policyVersion='public-text/v1'), None),
+            ('parent file name', {}, lambda: repin(ruleFile='sub/../rule'), None),
+            ('absolute file name', {}, lambda: repin(ruleFile=str(rule)), None),
+            ('forged owner', dict(event=dict(decidedBy='manager')), None, None),
+            ('sequence zero', {}, lambda: (self.docs['rule'].update(approvalSeq=0), self.pin()), None),
+            ('wrong repository', {}, lambda: self.git('remote', 'set-url', 'origin', 'https://example.invalid/o/r.git'), None),
+            ('revoked rule', {}, self.revoke, None)]
+        for name, options, after, expected in rows:
+            with self.subTest(name):
+                self.git('reset', '--hard', self.base0)
+                self.build(**options)
+                after and after()
+                if expected is None:
+                    self.refused()
+                    continue
+                result = self.evaluate()
+                self.assertEqual((self.reasons(result), result.facts['rawStatus']), (expected, 'findings'))
+                self.assertIs(result.policy_satisfied, set(expected) == {None})
+                self.assertEqual(result.summary()['coverage']['texts'], len(self.options.get('texts', [])))
+                self.assertEqual([(t['labelDigest'], t['textDigest']) for t in result.facts['selection']['texts']],
+                                 [(self.digest(a.encode()), self.digest(b.encode())) for a, b in self.options.get('texts', [])])
+
+    def test_end_observation_refuses_changes_but_not_unrelated_events_or_a_captured_list_change(self):
+        from t3compose import identifier_list
+        rule, policy = self.temp / 'rule', self.temp / 'text-policy'
+        self.build()
+        with self.mid_run(lambda: self.append('unrelated scheduling question', 'later')):
+            result = self.evaluate()
+        window = result.facts['publicText']['authority']
+        self.assertTrue(result.policy_satisfied)
+        self.assertEqual((window['start']['authorityEventCount'], window['end']['authorityEventCount']), (1, 2))
+        self.assertNotEqual(window['start']['authorityCheckpoint'], window['end']['authorityCheckpoint'])
+        with patch.object(identifier_list, 'load_identifiers', wraps=identifier_list.load_identifiers) as load, \
+                self.mid_run(lambda: self.list_file.write_text('different\n')):
+            self.assertTrue(self.evaluate().policy_satisfied)  # one captured list serves the whole operation
+        self.assertEqual(load.call_count, 1)
+        for name, action in (('terminal revocation', self.revoke),
+                             ('re-serialized rule', lambda: rule.write_bytes(rule.read_bytes() + b' ')),
+                             ('re-serialized policy', lambda: policy.write_bytes(policy.read_bytes() + b' ')),
+                             ('locale change', lambda: os.environ.update(LC_MESSAGES='C'))):
+            with self.subTest(name):
+                self.git('reset', '--hard', self.base0)
+                self.build()
+                with self.mid_run(action):
+                    self.refused()
+
+    def combined_change_after_proof(self, mutation):
+        self.inventory()
+        artifact_context = self.context
+        self.build()
+        self.pin(artifact=True)
+        self.assertTrue(self.evaluate().policy_satisfied)
+        policy = self.temp / 'policy'
+        action = (lambda: self.decision('revoke', context=artifact_context)) if mutation == 'revoke' else (
+            lambda: policy.write_bytes(policy.read_bytes() + b' '))
+        with self.mid_run(action) as proof:
+            with self.assertRaisesRegex(cli.CommandError, '^invalid artifact provenance input$'):
+                self.evaluate()
+        self.assertGreater(proof.call_count, 0)
+        with self.assertRaisesRegex(cli.CommandError, '^invalid artifact provenance input$'):
+            self.evaluate()
+
+    def test_combined_policy_refuses_artifact_revocation_after_real_proof(self):
+        self.combined_change_after_proof('revoke')
+
+    def test_combined_policy_refuses_artifact_policy_edit_after_real_proof(self):
+        self.combined_change_after_proof('policy bytes')
+
+    def test_approved_opaque_bytes_and_scoped_text_are_both_covered_and_pure_text_invents_no_inventory(self):
+        from t3compose import privacy
+        self.inventory()
+        self.build()
+        self.pin(artifact=True)
+        with self.mid_run(lambda: self.decision('approve', question='Synthetic unrelated decision')):
+            result = self.evaluate()
+        authority = result.facts['authority']
+        self.assertEqual(authority['end']['authorityEventCount'], authority['start']['authorityEventCount'] + 1)
+        self.assertNotEqual(authority['start']['authorityCheckpoint'], authority['end']['authorityCheckpoint'])
+        coverage = result.facts['coverage']
+        self.assertEqual((result.policy_satisfied, result.facts['rawStatus'], coverage['version'],
+                          [o['file'] for o in coverage['approvedUnscanned']], sorted(result.facts['authority'])),
+                         (True, 'findings', 'artifact-coverage/v1', ['asset.bin'], ['end', 'start']))
+        self.assertEqual(result.summary()['coverage'], {'texts': 0, 'textFindings': 2, 'approvedUnscanned': 1})
+        raw = privacy.scan_commits(self.repo, self.local, [self.head], base=self.base, head=self.head, branch='main',
+                                   privacy_policy=self.temp / 'text-policy')
+        self.assertEqual((raw['ok'], len(raw['coverage']['approvedUnscanned']), len(raw['findings'])), (False, 1, 2))
+        legacy = self.evaluate(privacy_policy=self.temp / 'policy')  # the artifact-only file keeps its own mode
+        self.assertEqual((legacy.facts['version'], legacy.policy_satisfied), ('policy-evaluation/v1', False))
+        policy = json.loads((self.temp / 'text-policy').read_bytes())
+        (self.temp / 'sub').mkdir()
+        for change in (dict(artifactPolicyDigest='sha256:' + '0' * 64), dict(artifactPolicyFile='sub/../policy'),
+                       dict(artifactPolicyFile=str(self.temp / 'policy'))):  # a wrong pin; unsafe spellings of the right file
+            self.write('text-policy', dict(policy, **change))
+            self.refused()
+        self.git('reset', '--hard', self.base0)  # without an artifact part, unapproved opaque bytes are never accounted
+        self.build()
+        self.head = self.commit('opaque', {'zz.bin': b'\0opaque'})
+        self.selection = [self.head]
+        self.refused()
+        self.assertEqual((self.verify(command='check')[0], self.verify()[0]), (2, 2))
+
+    def test_repeated_inherited_inputs_are_proven_once_and_a_short_trace_never_passes(self):
+        from t3compose import privacy
+        self.build()
+        first, second = self.head, self.commit('more')  # the same two inherited inputs again, in another commit
+        self.selection = [first, second]
+        self.attest(lambda: [self.entry(text, path=path, commit=commit) for commit in self.selection
+                             for text, path in ((self.WIDGET, 'docs.md'), (self.PUBLIC, 'product.md'))])
+        with patch.object(privacy, '_literal_proofs', wraps=privacy._literal_proofs) as proofs, \
+                patch.object(privacy, '_scan', wraps=privacy._scan) as scans:
+            result = self.evaluate()
+        self.assertEqual((len(result.facts['raw']['findings']), result.policy_satisfied, proofs.call_count, scans.call_count),
+                         (4, True, 2, 1))  # one shared scan, and one proof per distinct input
+        scanned = privacy._scan
+
+        def short(*args, **kwargs):  # a trace that lost an input must not pass as "nothing to resolve"
+            report = scanned(*args, **kwargs)
+            kwargs['trace']['inputs'].pop()
+            return report
+        with patch.object(privacy, '_scan', side_effect=short):
+            self.refused()
+
+    def test_a_review_binds_the_exact_selection_and_each_findings_place(self):
+        self.build()
+        first, second = self.head, self.commit('more', {'extra.md': 'safe\n'})  # the same two inherited inputs in both trees
+        self.head, self.selection = second, [first, second]
+        both = lambda *commits: lambda: [self.entry(body, path=path, commit=commit) for commit in commits
+                                         for body, path in ((self.WIDGET, 'docs.md'), (self.PUBLIC, 'product.md'))]
+        self.docs['dispositions'].update(selectionContext=self.digest(b'placeholder'), entries=[])
+        self.pin()  # a first pass with no entries names what a review must bind
+        named = self.evaluate()
+        self.assertEqual((self.reasons(named), named.facts['selection']['selectionContext']), (['selection'] * 4, self.selected()))
+        self.assertEqual([(v['context'], v['inputDigest']) for v in named.facts['publicText']['verdicts']],
+                         [(self.where('file', commit, path), self.digest(body.encode())) for commit in (first, second)
+                          for body, path in ((self.WIDGET, 'docs.md'), (self.PUBLIC, 'product.md'))])
+        copied = [self.entry(self.WIDGET, path='copy.md', commit=second), self.entry(self.PUBLIC, path='product.md', commit=second)]
+        rows = [('control', both(first, second), {}, [None] * 4),
+                ('another selected commit', both(first), {}, [None, None, 'unattested', 'unattested']),
+                ('same bytes at another path', lambda: both(first)() + copied, {}, [None, None, 'unattested', None]),
+                ('another order', both(first, second), dict(commits=[second, first]), ['selection'] * 4),
+                ('another base', both(first, second), dict(base=self.base0), ['selection'] * 4),
+                ('another head', both(first, second), dict(head=first), ['selection'] * 4),
+                ('another branch', both(first, second), dict(branch='other'), ['selection'] * 4),
+                ('another text', both(first, second), dict(texts=[('title', 'safe')]), ['selection'] * 4)]
+        for name, entries, options, expected in rows:
+            with self.subTest(name):
+                self.attest(entries)
+                result = self.evaluate(**options)
+                self.assertEqual((self.reasons(result), result.policy_satisfied), (expected, set(expected) == {None}))
+        self.git('reset', '--hard', self.base0)  # duplicate labels and equal bodies: only the index tells the texts apart
+        body = 'syn-secret body\n'
+        self.build(texts=[('title', body), ('title', body)], entries=lambda: [
+            self.entry(self.PUBLIC, path='product.md'), self.entry(self.WIDGET), self.entry(body, field='text', index=0)])
+        self.assertEqual(self.reasons(self.evaluate()), [None, 'unattested', None, None])
+        for texts in ([('title', body), ('other', body)], [('title', body), ('title', body + 'x')]):  # a label, a body
+            self.assertEqual(self.reasons(self.evaluate(texts=texts)), ['selection'] * 4)
+
+    def test_every_field_is_bound_to_its_own_place(self):
+        every = ('branch', 'file', 'label', 'message', 'path', 'text')
+        self.build(fields=every, texts=[('syn-secret label', 'syn-secret body')])
+        first = self.head
+        named = self.head = self.commit('about syn-secret', {'syn-secret-name.md': 'safe\n'})  # a matching message and path
+        self.selection = [named]
+
+        def places(commit):  # branch, label, text, message, then the tree in Git order: file, file, path
+            return lambda: [
+                self.entry('syn-secret-branch', field='branch'), self.entry('syn-secret label', field='label', index=0),
+                self.entry('syn-secret body', field='text', index=0), self.entry('about syn-secret\n', field='message', commit=commit),
+                self.entry(self.WIDGET, commit=commit), self.entry(self.PUBLIC, path='product.md', commit=commit),
+                self.entry('syn-secret-name.md', field='path', path='syn-secret-name.md', commit=commit)]
+        options = dict(branch='syn-secret-branch')
+        self.attest(places(named), branch='syn-secret-branch')
+        self.assertEqual(self.reasons(self.evaluate(**options)), [None] * 7)
+        self.attest(places(first), branch='syn-secret-branch')  # every place that names a commit is now another commit's
+        self.assertEqual(self.reasons(self.evaluate(**options)), [None, None, None] + ['unattested'] * 4)
