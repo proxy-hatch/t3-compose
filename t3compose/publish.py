@@ -334,6 +334,58 @@ def _policy_observation(result, *, operation, repository, base, head, commits,
         _fail('invalid private policy observation')
 
 
+def _seal_policy_context(result, *, repo, local, policy, operation, repository,
+                         base, head, commits, branch, texts, check_command):
+    """Dormant current-context observation, without repeating scans or proofs.
+
+    Inputs are the trusted caller's exact evaluation context, never a saved pass.
+    Existing loaders validate current cooperative provenance and nonrevocation.
+    Their sequential read windows are not an atomic publication guarantee.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        if type(result) is not privacy.PolicyEvaluation or result.policy_satisfied is not True:
+            raise ValueError
+        patterns = privacy.identifier_list.load_identifiers(local)
+        identifiers = privacy.prepare_policy_identifiers(local)
+        if privacy._policy_identifiers(patterns) != identifiers:
+            raise ValueError
+        facts = result.facts
+        public = privacy._text_policy(repo, local, policy, patterns)
+        if facts['version'] == privacy.EVALUATION_VERSION_2:
+            if (public is None or public['bindings'] != facts['publicText']['bindings'] or
+                    privacy._locale_digest() != facts['selection']['localeDigest']):
+                raise ValueError
+            artifact = public['artifactPath']
+        elif facts['version'] == privacy.EVALUATION_VERSION and public is None:
+            artifact = policy
+        else:
+            raise ValueError
+        if (artifact is None) != (facts['coverage'] is None):
+            raise ValueError
+        if artifact is not None:
+            current = privacy.load_artifact_policy(repo, local, artifact, base=base, patterns=patterns)
+            provenance = facts['coverage']['provenance']
+            expected = dict(provenance, repository=repository, base=base)
+            if any(current[key] != expected[key] for key in privacy._BINDINGS):
+                raise ValueError
+            if any(type(provenance[key]) is not type(identifiers[key]) or
+                   provenance[key] != identifiers[key] for key in identifiers):
+                raise ValueError
+        # Last list read is separate from the evaluator and the captured patterns.
+        # The projection retains actual evaluation/authority times, not seal times.
+        if privacy.prepare_policy_identifiers(local) != identifiers:
+            raise ValueError
+        return _policy_observation(result, operation=operation, repository=repository,
+            base=base, head=head, commits=commits, branch=branch, texts=texts,
+            check_command=check_command, identifiers=identifiers,
+            list_observed_at=datetime.now(timezone.utc).isoformat())
+    except (cli.CommandError, OSError, KeyError, TypeError, ValueError, UnicodeError,
+            OverflowError, RecursionError):
+        raise cli.CommandError('publication: invalid current policy context', 2) from None
+
+
 def _encode_policy_observation(observation):
     """Independently validate the flat private output, never evaluation facts."""
     from datetime import datetime
