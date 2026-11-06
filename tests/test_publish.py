@@ -4407,6 +4407,126 @@ class OfflinePolicyPublication(OfflineTestCase):
                 # Never manufacture a trusted pass for a refused canonical command.
                 self.blocked(f, self.entry(f))
 
+    def assert_content_publication(self, f, *, reason=None, error=None):
+        """Observe and forward real preparation/evaluation at the public entry."""
+        from t3compose import privacy
+        check, publication = f.context('check'), f.context('push')
+        self.assertTrue(f.policy_join(check.check_command))
+        self.assertIs(f.executed['policySatisfied'], True)
+        refs = dict(f.refs)
+        selected = publish._publication_set(f.repo, f.head, refs)
+        calls, results, errors = [], [], []
+        evaluate = privacy.evaluate_policy
+        def observed(repo, local, commits, **kw):
+            calls.append((repo, local, tuple(commits), kw))
+            try:
+                result = evaluate(repo, local, commits, **kw)
+            except cli.CommandError as exc:
+                errors.append(str(exc))
+                raise
+            results.append(result)
+            return result
+        with patch.object(privacy, 'evaluate_policy', side_effect=observed), \
+             patch.object(publish, '_prepare_policy_gate', wraps=publish._prepare_policy_gate) as prepared:
+            result = self.entry(f)
+        self.assertEqual(prepared.call_count, 1)
+        self.assertEqual(tuple(prepared.call_args.args[4]), tuple(selected))
+        self.assertEqual(prepared.call_args.kwargs['refs'], refs)
+        expected = [(check.policy, publish._review_set(f.repo, f.base, f.head)),
+                    (publication.policy, selected)]
+        valid = reason is None and error is None
+        self.assertEqual(len(calls), 4 if valid else 2)
+        for (repo, local, commits, kw), (policy, selection) in zip(calls, expected * 2):
+            self.assertEqual((repo, local, commits), (f.repo, f.local, tuple(selection)))
+            self.assertEqual(kw, dict(base=f.base, head=f.head, branch=f.args.branch,
+                                     texts=(), privacy_policy=str(policy)))
+        self.assertIs(type(results[0]), privacy.PolicyEvaluation)
+        self.assertIs(results[0].policy_satisfied, True)
+        if valid:
+            self.assertEqual(result[0], 0, result)
+            self.assertEqual(len(f.launches), 1)
+            self.assertEqual(errors, [])
+            self.assertTrue(all(r.policy_satisfied is True for r in results))
+            self.assertEqual(len(list(self.private_parents(f).glob('*.json'))), 2)
+        else:
+            self.blocked(f, result)
+            self.assertFalse(list(self.private_parents(f).glob('*.json')))
+            if error is not None:
+                self.assertEqual(errors, [error])
+                self.assertEqual(len(results), 1)
+            else:
+                self.assertEqual(errors, [])
+                self.assertIs(type(results[1]), privacy.PolicyEvaluation)
+                self.assertIs(results[1].policy_satisfied, False)
+                verdicts = results[1].facts['publicText']['verdicts']
+                self.assertEqual([v['reason'] for v in verdicts], [reason])
+                self.assertEqual(json.loads(result[1])['reason'], 'policy unsatisfied')
+
+    def test_passing_check_reaches_opaque_history_publication_refusals(self):
+        # History before reviewBase is outside CHECK, but still in the push set.
+        for mutation in ('unchanged', 'new-opaque', 'changed-opaque', 'unsupported'):
+            with self.subTest(mutation=mutation):
+                commit = PublisherPolicyFixture.commit
+                def history(f, message):
+                    if message != 'Synthetic public baseline':
+                        return commit(f, message)
+                    # Exclude the safe asset introduction from publication.
+                    f.git('add', '.')
+                    f.git('rm', '--cached', 'asset.bin')
+                    f.git('commit', '--allow-empty', '-qm', 'Synthetic empty ancestor')
+                    f.advertised = f.git('rev-parse', 'HEAD').strip()
+                    safe = commit(f, 'Synthetic safe ancestor')
+                    f.advertised = safe
+                    if mutation == 'new-opaque':
+                        (f.repo / 'new.bin').write_bytes(b'\0new synthetic opaque')
+                    elif mutation == 'changed-opaque':
+                        (f.repo / 'asset.bin').write_bytes(b'\0changed synthetic opaque')
+                    elif mutation == 'unsupported':
+                        f.git('update-index', '--add', '--cacheinfo', '160000,'+safe+',submodule')
+                    f.git('add', 'asset.bin')
+                    if mutation == 'new-opaque':
+                        f.git('add', 'new.bin')
+                    f.git('commit', '--allow-empty', '-qm', 'Synthetic publication candidate')
+                    f.candidate = f.git('rev-parse', 'HEAD').strip()
+                    if mutation in ('new-opaque', 'unsupported'):
+                        f.git('update-index', '--force-remove',
+                              'new.bin' if mutation == 'new-opaque' else 'submodule')
+                    if mutation == 'new-opaque':
+                        (f.repo / 'new.bin').unlink()
+                    (f.repo / 'asset.bin').write_bytes(f.opaque)
+                    return commit(f, message)
+                with patch.object(PublisherPolicyFixture, 'commit', history):
+                    f = self.fixture('artifact')
+                f.refs.clear()
+                f.refs['refs/heads/main'] = f.advertised
+                selected = publish._publication_set(f.repo, f.head, f.refs)
+                review = publish._review_set(f.repo, f.base, f.head)
+                self.assertIn(f.candidate, selected)
+                self.assertNotIn(f.candidate, review)
+                self.assertEqual(review, f.context('check').commits)
+                self.assert_content_publication(f, error=None if mutation == 'unchanged'
+                                                else 'invalid artifact provenance input')
+
+    def test_passing_check_reaches_public_and_combined_text_refusals(self):
+        for mode in ('public', 'combined'):
+            for mutation in ('unchanged', 'credential', 'unaccounted'):
+                with self.subTest(mode=mode, mutation=mutation):
+                    f = self.fixture(mode)
+                    check_bytes = f.context('check').policy.read_bytes()
+                    # Only publication evidence changes after the executed CHECK.
+                    entries = f.dispositions['push']['entries']
+                    self.assertEqual(len(entries), 1)
+                    if mutation == 'credential':
+                        entries[0]['occurrences'][0]['scope'] = 'credential'
+                    elif mutation == 'unaccounted':
+                        entries.clear()
+                    if mutation != 'unchanged':
+                        f.pin_public('push')
+                    self.assertEqual(f.context('check').policy.read_bytes(), check_bytes)
+                    self.assert_content_publication(f, reason={
+                        'unchanged': None, 'credential': 'excluded',
+                        'unaccounted': 'unattested'}[mutation])
+
     def test_workflow_root_parent_and_lock_restriction_survives_policy(self):
         f = self.fixture('artifact')
         directory = f.repo / '.github/workflows'
