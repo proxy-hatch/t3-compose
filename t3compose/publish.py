@@ -31,7 +31,7 @@ def _out(outcome, reason, code=1):
 
 
 def _policy_verify_command(local, repo, base, head, branch, policy, *, text_files=()):
-    """Build dormant verification argv; normalize spelling without reading files."""
+    """Build canonical verification argv; normalize spelling without reading files."""
     def text(value):
         if (type(value) is not str or not value or
                 any(ord(c) < 32 or ord(c) == 127 for c in value)):
@@ -74,7 +74,7 @@ def _policy_verify_command(local, repo, base, head, branch, policy, *, text_file
 def _policy_verify_check(local, identity, work, head, command):
     """Join current records only; a matching check never clears another gap.
 
-    Future callers must build expected argv from their captured invocation.
+    Callers build expected argv from their captured invocation.
     Cooperative check provenance is not authentication or policy permission.
     """
     try:
@@ -338,7 +338,7 @@ def _policy_observation(result, *, operation, repository, base, head, commits,
 
 def _seal_policy_context(result, *, repo, local, policy, operation, repository,
                          base, head, commits, branch, texts, check_command):
-    """Dormant current-context observation, without repeating scans or proofs.
+    """Current-context observation, without repeating scans or proofs.
 
     Inputs are the trusted caller's exact evaluation context, never a saved pass.
     Existing loaders validate current cooperative provenance and nonrevocation.
@@ -445,7 +445,7 @@ def _encode_policy_observation(observation):
 
 
 def _write_policy_observation(local, identity, work, op_id, observation):
-    """Dormant exclusive private storage; saved bytes never confer permission.
+    """Exclusive private storage; saved bytes never confer permission.
 
     Partial files are visible during writing. Failure cleanup only unlinks our
     inode; cleanup failure retains uncertainty. No hostile-same-user guarantee.
@@ -614,10 +614,10 @@ def _policy_gate_seal(state, results):
 
 def _prepare_policy_gate(args, repo, identity, loaded, selected, branch, *,
                          operation, target, refs=None, texts=(), text_files=()):
-    """Dormant deep preparation. (None, None) means strict mode, never permission.
+    """Deep preparation. (None, None) means strict mode, never permission.
 
     Trusted caller owns the complete C0 publication gates and actual outcomes.
-    No current production entry calls this seam. No evaluation is deduplicated.
+    Explicit public callers use this seam. No evaluation is deduplicated.
     """
     import copy
     try:
@@ -792,10 +792,25 @@ def _capture_invocation(args, *, pr_mode=False):
         fields += ('repo_path',)
     if pr_mode:
         fields += ('base', 'title_file', 'body_file')
-    values = {name: copy.deepcopy(getattr(args, name)) for name in fields}
+    fields += ('privacy_policy', 'privacy_check_policy')
+    values = {name: copy.deepcopy(getattr(args, name, None)) for name in fields}
+    policy, check = values['privacy_policy'], values['privacy_check_policy']
+    if check is not None and (policy is None or pr_mode):
+        _fail('check policy requires push publication policy')
+    policies = []
+    if policy is not None:
+        # Independent invocation captures precede helper inspection/any cwd change.
+        for name, value in (('privacy_policy', policy),
+                            ('privacy_check_policy', policy if check is None else check)):
+            spelling, absolute, digest = _policy_gate_capture(value)
+            policies.append((name, spelling, absolute, digest))
     operational = SimpleNamespace(**vars(args))
     operational.local_dir = Path(os.path.abspath(args.local_dir))
     operational.repo_path = Path.cwd() if pr_mode else Path(os.path.abspath(args.repo_path))
+    for name, spelling, absolute, digest in policies:
+        setattr(operational, name, absolute)
+    if pr_mode:
+        operational.privacy_check_policy = None
     files = []
     if pr_mode:
         if args.base != 'main':
@@ -811,13 +826,16 @@ def _capture_invocation(args, *, pr_mode=False):
                 any(ord(c) < 32 or ord(c) == 127 for c in title)):
             _fail('PR title must be nonempty bounded single-line text')
     return SimpleNamespace(original=args, values=values, args=operational,
-                           files=tuple(files), config=None, intent=None, pretoken=True,
+                           files=tuple(files), policies=tuple(policies), config=None, intent=None, pretoken=True,
                            result_attempted=False)
 
 
 def _guard_invocation(state):
     if any(getattr(state.original, name, None) != value for name, value in state.values.items()):
         _fail('publication invocation changed')
+    for name, spelling, absolute, digest in state.policies:
+        if privacy._policy_snapshot(absolute)[1] != digest:
+            _fail('publication policy changed')
     for label, spelling, path, text in state.files:
         if _read_publication_text(path) != text:
             _fail('publication metadata changed')
@@ -940,6 +958,10 @@ def _screen(repo, local, branch, selected, *, base, head, texts=()):
                                    branch=branch, texts=texts)
     if screened.get('ok') is not True:
         return _out('refused', 'privacy blocked; Corrections for unpublished commits; coordinator fixes branch and text; report published matches to Shawn')
+    return _workflows(repo, selected)
+
+
+def _workflows(repo, selected):
     for sha in selected:
         # Do not apply the scanner's .lock exclusions here. -m walks every
         # merge parent; --root treats the empty tree as a root's predecessor.
@@ -960,19 +982,22 @@ def _review_set(repo, base, head):
 
 
 def _final_gate(args, repo, identity, loaded, intent, selected, branch, *,
-                url=None, refs=None, texts=(), metadata=None, invocation=None):
+                url=None, refs=None, texts=(), metadata=None, invocation=None, policy_state=None):
     """After preparation, validate captured inputs before entering token_run.
 
     Own intent is the only permitted record addition. No child/status facts
     are invented on refusal. These sequential reads are not a transaction.
     """
+    if policy_state is not None and (type(policy_state) is not _PreparedPolicyGate or not policy_state.used):
+        _fail('invalid policy lifecycle')
     local, work, head = args.local_dir, args.work, intent['data']['commit']
     base = loaded['work']['reviewBase']
     try:
         _overrides(repo)
     except cli.CommandError:
         return _out('refused', 'Publication configuration changed; no child launched; coordinator must repair overrides')
-    stopped = _screen(repo, local, branch, selected, base=base, head=head, texts=texts)
+    stopped = (_workflows(repo, selected) if policy_state is not None else
+               _screen(repo, local, branch, selected, base=base, head=head, texts=texts))
     if stopped:
         return stopped
     if not evidence.check(local, identity, work, head, pr_ready=False)['verified']:
@@ -1099,12 +1124,22 @@ def _push(args, repo, identity, url, *, invocation=None):
     loaded = records.load_work(local, identity, work)
     refs = _remote(repo, url)
     selected = _publication_set(repo, head, refs)
-    stopped = _screen(repo, local, branch, selected,
-                      base=loaded['work']['reviewBase'], head=head)
-    if stopped:
-        return stopped
     ref = 'refs/heads/' + branch
     target = url + '#' + ref
+    policy_state = None
+    if getattr(args, 'privacy_policy', None) is not None:
+        policy_state, stopped = _prepare_policy_gate(args, repo, identity, loaded,
+            selected, branch, operation='push', target=target, refs=refs)
+        if stopped:
+            return stopped
+        if type(policy_state) is not _PreparedPolicyGate:
+            _fail('invalid policy lifecycle')
+        stopped = _workflows(repo, selected)
+    else:
+        stopped = _screen(repo, local, branch, selected,
+                          base=loaded['work']['reviewBase'], head=head)
+    if stopped:
+        return stopped
     current = refs.get(ref, 'absent')
     old, result = _latest(loaded, target)
     uncertain = records.uncertain_items(loaded['events'])
@@ -1151,8 +1186,10 @@ def _push(args, repo, identity, url, *, invocation=None):
     path = _status_path(local, identity, work, intent)
     command = ['git', 'push', '--force-with-lease=' + ref + ':' +
                ('' if current == 'absent' else current), url, head + ':' + ref]
-    stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
-                          url=url, refs=refs, invocation=invocation)
+    stopped = _finalize_policy_gate(policy_state, intent=intent) if policy_state is not None else None
+    if stopped is None:
+        stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
+            url=url, refs=refs, invocation=invocation, policy_state=policy_state)
     if stopped:
         refused = _finish(local, identity, work, intent, 'refused',
                           confirmation=stopped.data['reason'], invocation=invocation)
@@ -1332,10 +1369,21 @@ def _pr(args, repo, identity, config, reader_env, *, invocation=None):
     metadata = (args.base, title, body)
     texts = (('title', title), ('body', body))
     selected = _review_set(repo, base, head)
-    stopped = _screen(repo, local, branch, selected, base=base, head=head, texts=texts)
+    target = 'https://github.com/' + config.full_name + '/pulls#' + args.branch
+    policy_state = None
+    if getattr(args, 'privacy_policy', None) is not None:
+        policy_state, stopped = _prepare_policy_gate(args, repo, identity, loaded,
+            selected, branch, operation='pr', target=target, texts=texts,
+            text_files=(('title', args.title_file), ('body', args.body_file)))
+        if stopped:
+            return stopped
+        if type(policy_state) is not _PreparedPolicyGate:
+            _fail('invalid policy lifecycle')
+        stopped = _workflows(repo, selected)
+    else:
+        stopped = _screen(repo, local, branch, selected, base=base, head=head, texts=texts)
     if stopped:
         return stopped
-    target = 'https://github.com/' + config.full_name + '/pulls#' + args.branch
     intents = [e for e in loaded['events'] if e['kind'] == 'op-intent' and
                e['data']['operation'] == 'pull-request' and e['data']['target'] == target]
     old = intents[-1] if intents else None
@@ -1391,8 +1439,10 @@ def _pr(args, repo, identity, config, reader_env, *, invocation=None):
             stream.write(body)
         command = ['gh', 'pr', 'create', '--repo', config.full_name, '--head', args.branch,
                    '--base', args.base, '--title=' + title, '--body-file', str(body_path)]
-        stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
-                              texts=texts, metadata=metadata, invocation=invocation)
+        stopped = _finalize_policy_gate(policy_state, intent=intent) if policy_state is not None else None
+        if stopped is None:
+            stopped = _final_gate(args, repo, identity, loaded, intent, selected, branch,
+                texts=texts, metadata=metadata, invocation=invocation, policy_state=policy_state)
         if stopped:
             refused = finish('refused', gap=stopped.data['reason'])
             return cli.Outcome(refused.data, stopped.code)
@@ -1429,9 +1479,12 @@ def register(registry):
     parser = registry.group('publish').add_parser('push', help='publish an evidenced exact head')
     for name in ('repo-path', 'work', 'head', 'branch'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--privacy-policy')
+    parser.add_argument('--privacy-check-policy')
     parser.set_defaults(handler=push)
 
     parser = registry.group('publish').add_parser('pr', help='create or reuse an evidenced PR')
     for name in ('work', 'head', 'branch', 'base', 'title-file', 'body-file'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--privacy-policy')
     parser.set_defaults(handler=pr)

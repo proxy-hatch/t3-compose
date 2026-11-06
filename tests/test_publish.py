@@ -1751,7 +1751,7 @@ class OfflinePolicyObservation(OfflineTestCase):
         for mode in ('artifact','public','combined'):
             self.assertLess(len(json.dumps(self.project(self.facts(mode))).encode()), 2048)
 
-    def test_projection_and_writer_are_dormant_without_production_call(self):
+    def test_projection_and_writer_have_only_guarded_lifecycle_callers(self):
         import ast
         source=(ROOT/'t3compose/publish.py').read_text()
         module=ast.parse(source)
@@ -1777,7 +1777,7 @@ class OfflinePolicyObservation(OfflineTestCase):
                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in guarded:
                         owners.append(function.name)
         self.assertTrue(owners)
-        self.assertTrue(set(owners) <= dormant)
+        self.assertTrue(set(owners) <= dormant | {'_push', '_pr', '_capture_invocation'})
 
     def test_projection_does_not_invent_authority_prefix_continuity(self):
         for mode in ('artifact','public','combined'):
@@ -2245,7 +2245,7 @@ class OfflinePublisherPolicyFixtures(OfflineTestCase):
             # the separately attested push set is deliberately not that range.
             c = f.context('pr')
             out, err = io.StringIO(), io.StringIO()
-            with redirect_stdout(out), redirect_stderr(err):
+            with publish._environment(f.repo), redirect_stdout(out), redirect_stderr(err):
                 code = cli.main(c.check_command[1:])
             self.assertEqual((code, err.getvalue()), (0, ''))
             summary = json.loads(out.getvalue())
@@ -2527,7 +2527,7 @@ class OfflinePolicyContextSeal(OfflineTestCase):
                 later = f.evaluate(second)
                 for c, r in ((first, prior), (second, later)):
                     self.seal(c, r)
-                # Direct dormant storage, not a production caller or fake event.
+                # Direct private storage, not a public entry or fake event.
                 publish._write_policy_observation(f.local, REPO, 'WORK', 'synthetic-review',
                                                  f.observation(first, prior))
                 change()
@@ -3916,3 +3916,585 @@ class OfflinePublicationCleanup(OfflineTestCase):
         self.assert_operation(start, ['no-op'])
         self.assertEqual(attempts, ['no-op'])
         self.assert_cleanup_error(result)
+
+
+class OfflinePolicyPublication(OfflineTestCase):
+    """Actual installed entries, real checks and policy proofs; injected writes."""
+    private_parents = OfflinePolicyLifecycle.private_parents
+
+    def fixture(self, mode='combined', operation='push'):
+        from tempfile import mkdtemp
+        case = self
+        class Holder:
+            temp = Path(mkdtemp(dir=case.temp))
+            def __getattr__(self, name):
+                return getattr(case, name)
+        # Prepare policy evidence under the same controlled locale as publication.
+        locale_env = {k: v for k, v in os.environ.items()
+                      if k not in ('LANG', 'LANGUAGE', 'GREP_OPTIONS', 'GREP_COLOR', 'GREP_COLORS')
+                      and not k.startswith('LC_')}
+        with patch.dict(os.environ, dict(locale_env, LC_ALL='C'), clear=True):
+            f = PublisherPolicyFixture(Holder(), mode=mode)
+            c = f.context('check' if operation == 'push' else 'pr')
+            out, err = io.StringIO(), io.StringIO()
+            with publish._environment(f.repo), redirect_stdout(out), redirect_stderr(err):
+                code = cli.main(c.check_command[1:])
+            self.assertEqual((code, err.getvalue()), (0, ''))
+            f.executed = json.loads(out.getvalue())
+            self.assertEqual(f.executed['rawExit'], 1)
+        f.policy_requirement(c.check_command)
+        f.policy_pass(c.check_command)
+        self.assertTrue(f.policy_join(c.check_command))
+        f.args.privacy_policy = f.context(operation).policy
+        f.args.privacy_check_policy = c.policy if operation == 'push' else None
+        f.operation = operation
+        self.private_parents(f)
+        return f
+
+    def entry(self, f, *, flags=True):
+        from contextlib import ExitStack
+        argv = ['--local-dir', str(f.local), 'publish', f.operation]
+        names = ['work', 'head', 'branch']
+        if f.operation == 'push':
+            names.append('repo_path')
+        else:
+            names.extend(('base', 'title_file', 'body_file'))
+        cwd = Path.cwd()
+        try:
+            with ExitStack() as stack:
+                if f.operation == 'pr':
+                    stack.enter_context(f.pr_adapter())
+                    os.chdir(f.repo)
+                for name in names:
+                    argv.extend(('--' + name.replace('_', '-'), str(getattr(f.args, name))))
+                if flags:
+                    for name in ('privacy_policy', 'privacy_check_policy'):
+                        value = getattr(f.args, name, None)
+                        if value is not None:
+                            argv.extend(('--' + name.replace('_', '-'), str(value)))
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(argv)
+                return code, out.getvalue(), err.getvalue()
+        finally:
+            os.chdir(cwd)
+
+    def blocked(self, f, result):
+        code, out, err = result
+        self.assertNotEqual(code, 0)
+        self.assertEqual(f.launches, [])
+        for private in ('SYNTHETIC_PRODUCT', str(f.temp), 'synthetic private error'):
+            self.assertNotIn(private, out + err)
+        events = f.events()
+        intents = [e for e in events if e['kind'] == 'op-intent']
+        results = [e for e in events if e['kind'] == 'op-result']
+        if intents:
+            self.assertEqual(len(intents), 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]['data']['intentRef'], intents[0]['seq'])
+            self.assertEqual(results[0]['data']['outcome'], 'refused')
+            self.assertNotIn('statusSummary', results[0]['data'])
+        return events
+
+    def test_six_actual_entries_canonical_checks_order_and_private_joins(self):
+        from t3compose import privacy
+        for mode in ('artifact', 'public', 'combined'):
+            for operation in ('push', 'pr'):
+                with self.subTest(mode=mode, operation=operation):
+                    f = self.fixture(mode, operation)
+                    order, results = [], []
+                    evaluate = privacy.evaluate_policy
+                    seal = publish._seal_policy_context
+                    write = publish._write_policy_observation
+                    gate = publish._final_gate
+                    def evaluation(*a, **kw):
+                        value = evaluate(*a, **kw)
+                        self.assertIs(value.policy_satisfied, True)
+                        order.append('evaluate')
+                        results.append(value)
+                        return value
+                    def sealing(*a, **kw):
+                        order.append('seal')
+                        return seal(*a, **kw)
+                    def writing(*a):
+                        order.append('write')
+                        return write(*a)
+                    def final(*a, **kw):
+                        order.append('C0')
+                        return gate(*a, **kw)
+                    with patch.object(privacy, 'evaluate_policy', side_effect=evaluation), \
+                         patch.object(publish, '_seal_policy_context', side_effect=sealing), \
+                         patch.object(publish, '_write_policy_observation', side_effect=writing), \
+                         patch.object(publish, '_final_gate', side_effect=final):
+                        code, out, err = self.entry(f)
+                    self.assertEqual((code, err), (0, ''), out)
+                    self.assertEqual(json.loads(out)['outcome'], 'succeeded')
+                    self.assertEqual(len(f.launches), 1)
+                    n = 2 if operation == 'push' else 1
+                    self.assertEqual(order, ['evaluate']*n + ['seal']*n +
+                        ['evaluate']*n + ['seal']*n + ['write']*n + ['seal']*n + ['C0'])
+                    self.assertEqual(len({id(v) for v in results}), 2*n)
+                    events = f.events()
+                    intent, result = events[-2:]
+                    self.assertEqual((intent['kind'], result['kind']), ('op-intent', 'op-result'))
+                    self.assertEqual(result['data']['intentRef'], intent['seq'])
+                    op = intent['data']['opId']
+                    directory = self.private_parents(f)
+                    self.assertEqual(sorted(p.stem for p in directory.glob('*.json')),
+                                     sorted([op, op+'-review'] if n == 2 else [op]))
+                    for path in directory.glob('*.json'):
+                        observation = json.loads(path.read_text())
+                        self.assertEqual(len(observation), 23)
+                        self.assertEqual(observation['rawExit'], 1)
+                        context = f.context('check' if path.stem.endswith('-review') else operation)
+                        canonical = f.context('check' if operation == 'push' else 'pr').check_command
+                        self.assertEqual(observation['commitCount'], len(context.commits))
+                        self.assertEqual(observation['checkCommandDigest'], f.digest(canonical))
+                        self.assertIs(observation['policySatisfied'], True)
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                    self.assertNotIn('SYNTHETIC_PRODUCT', out+err)
+                    self.assertNotIn(str(f.temp), out+err)
+                    self.assertFalse(any('policy' in str(arg) for arg in f.launches[0]))
+
+    def test_flags_strict_default_unpaired_and_one_file_contexts(self):
+        for mode, flags, pairing in (('artifact', True, 'one'), ('public', True, 'one'),
+                ('combined', True, 'one'), ('artifact', False, 'none'),
+                ('public', True, 'unpaired'), ('public', True, 'swapped')):
+            with self.subTest(mode=mode, flags=flags, pairing=pairing):
+                f = self.fixture(mode)
+                if pairing == 'one':
+                    f.args.privacy_check_policy = None
+                    command = f.context('push').check_command
+                    with publish._environment(f.repo):
+                        out = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                            code = cli.main(command[1:])
+                    f.policy_requirement(command)
+                    if code == 0:
+                        f.policy_pass(command)
+                elif pairing == 'unpaired':
+                    f.args.privacy_policy = None
+                elif pairing == 'swapped':
+                    f.args.privacy_policy, f.args.privacy_check_policy = (
+                        f.args.privacy_check_policy, f.args.privacy_policy)
+                result = self.entry(f, flags=flags)
+                if mode == 'artifact' and pairing == 'one':
+                    self.assertEqual(result[0], 0, result)
+                else:
+                    self.blocked(f, result)
+
+    def test_actual_current_check_boundaries_keep_failed_history(self):
+        for change in ('absent', 'fail', 'head', 'command', 'source', 'scope', 'definition'):
+            with self.subTest(change=change):
+                f = self.fixture('public')
+                command = f.context('check').check_command
+                history = f.events()
+                f.policy_requirement(['temporary-command'])
+                f.policy_requirement(command)
+                if change not in ('absent', 'definition'):
+                    changes = {'fail': dict(outcome='fail'), 'head': dict(commit=f.middle),
+                        'command': dict(command=['wrong']), 'source': dict(source='worker'),
+                        'scope': dict(command=['different-scope'])}[change]
+                    f.policy_pass(command, **changes)
+                if change == 'definition':
+                    f.policy_requirement(['different-current-command'])
+                self.blocked(f, self.entry(f))
+                self.assertEqual(f.events()[:len(history)], history)
+                f.policy_requirement(command)
+                f.policy_pass(command)
+                f.policy_pass(['old-raw-check'], outcome='fail')
+                result = self.entry(f)
+                self.assertEqual(result[0], 0, result)
+                self.assertEqual(f.events()[:len(history)], history)
+
+    def test_policy_inputs_authority_scope_and_actual_selection(self):
+        for change in ('missing', 'malformed', 'wrong-place', 'revoked', 'prior',
+                       'scope', 'stale', 'wrong-context', 'absent-policy'):
+            with self.subTest(change=change):
+                f = self.fixture('public')
+                if change == 'missing':
+                    f.context('push').policy.unlink()
+                elif change == 'malformed':
+                    f.context('push').policy.write_text('{}')
+                elif change == 'wrong-place':
+                    f.dispositions['push']['entries'][0]['occurrences'][0]['byteOffset'] += 1
+                    f.pin_public('push')
+                elif change == 'revoked':
+                    f.authority_decision('PUBLIC', 'privacy-public-text/v1 revoke synthetic-product-rule ' + f.rule_context, 'SYNTHETIC ONLY: revoked.')
+                elif change == 'prior':
+                    f.publication['method'] = 'unattested'
+                    f.pin_public('push')
+                elif change == 'scope':
+                    f.dispositions['push']['entries'][0]['occurrences'][0]['scope'] = 'unrelated'
+                    f.pin_public('push')
+                elif change == 'stale':
+                    path = f.temp / 'push-dispositions'
+                    path.write_bytes(path.read_bytes()+b' ')
+                elif change == 'wrong-context':
+                    f.args.privacy_policy = f.context('pr').policy
+                else:
+                    f.args.privacy_policy = f.args.privacy_check_policy = None
+                self.blocked(f, self.entry(f))
+
+    def test_exact_true_current_results_never_summary_or_truthiness(self):
+        from t3compose import privacy
+        for value in (True, {'policySatisfied': True}, SimpleNamespace(policy_satisfied=True),
+                      privacy.PolicyEvaluation({'policySatisfied': 1}),
+                      privacy.PolicyEvaluation({'policySatisfied': False})):
+            for stage in ('initial', 'final'):
+                with self.subTest(value=type(value).__name__, stage=stage):
+                    f = self.fixture('artifact')
+                    actual = privacy.evaluate_policy
+                    calls = []
+                    def evaluate(*a, **kw):
+                        calls.append(kw['privacy_policy'])
+                        if stage == 'initial' or len(calls) > 2:
+                            return value
+                        return actual(*a, **kw)
+                    with patch.object(privacy, 'evaluate_policy', side_effect=evaluate):
+                        self.blocked(f, self.entry(f))
+                    self.assertEqual(len(calls), 1 if stage == 'initial' else 3)
+
+    def test_original_policy_fields_and_raw_captures_precede_helper_cwd(self):
+        from t3compose import privacy
+        for change in ('publication-field', 'check-field', 'publication-bytes', 'check-bytes'):
+            with self.subTest(change=change):
+                f = self.fixture('artifact')
+                # Equal-byte paths still have independent original-field guards.
+                f.args.privacy_check_policy.write_bytes(f.args.privacy_policy.read_bytes())
+                other = f.temp / 'equal-policy'
+                other.write_bytes(f.args.privacy_policy.read_bytes())
+                helper = cli.helper_info
+                reached = []
+                def mutate():
+                    if reached:
+                        return helper()
+                    reached.append(True)
+                    name = 'privacy_policy' if change.startswith('publication') else 'privacy_check_policy'
+                    if change.endswith('field'):
+                        setattr(f.args, name, other)
+                    else:
+                        path = getattr(f.args, name)
+                        path.write_bytes(path.read_bytes()+b' ')
+                    return helper()
+                # Direct handler preserves the actual Namespace reference.
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(cli, 'helper_info', side_effect=mutate), \
+                     redirect_stdout(out), redirect_stderr(err):
+                    try:
+                        result = publish.push(f.args)
+                        self.assertNotEqual(result.code, 0)
+                    except cli.CommandError as error:
+                        self.assertEqual(error.code, 2)
+                self.assertEqual(reached, [True])
+                self.assertFalse(f.launches)
+                self.assertNotIn(str(f.temp), out.getvalue()+err.getvalue())
+
+    def test_relative_policy_paths_are_invocation_relative_not_publication_cwd(self):
+        f = self.fixture('artifact')
+        cwd = Path.cwd()
+        try:
+            os.chdir(f.temp)
+            f.args.privacy_policy = os.path.relpath(f.context('push').policy, f.temp)
+            f.args.privacy_check_policy = os.path.relpath(f.context('check').policy, f.temp)
+            before = vars(f.args).copy()
+            result = publish.push(f.args)
+            self.assertEqual(result.code, 0, result.data)
+            self.assertEqual(vars(f.args), before)
+        finally:
+            os.chdir(cwd)
+
+    def test_mutations_during_other_context_proof_and_storage(self):
+        from t3compose import privacy
+        for stage in ('proof', 'storage'):
+            for mutation in ('unchanged', 'check-source', 'push-source', 'check-policy',
+                    'push-policy', 'list', 'locale', 'check-artifact', 'push-artifact',
+                    'check-public', 'push-public'):
+                with self.subTest(stage=stage, mutation=mutation):
+                    f = self.fixture()
+                    actual_eval = privacy.evaluate_policy
+                    actual_proof = privacy._literal_proofs
+                    actual_write = publish._write_policy_observation
+                    evaluations, injected, writes = [], [], []
+                    def change():
+                        if injected:
+                            return
+                        injected.append(mutation)
+                        if mutation == 'unchanged':
+                            return
+                        if mutation == 'list':
+                            (f.local / 'state/private-identifiers.txt').write_text('OTHER_SYNTHETIC\n')
+                        elif mutation == 'locale':
+                            os.environ['LC_ALL'] = 'C.UTF-8'
+                        elif mutation.endswith('artifact'):
+                            first = mutation.startswith('check')
+                            work, context = ('CHECKARTIFACT', f.check_artifact_context) if first else ('ARTIFACT', f.artifact_context)
+                            f.authority_decision(work, 'privacy-artifact/v1 revoke synthetic-inventory '+context, 'SYNTHETIC ONLY: revoked.')
+                        elif mutation.endswith('public'):
+                            first = mutation.startswith('check')
+                            work, context = ('CHECKPUBLIC', f.check_rule_context) if first else ('PUBLIC', f.rule_context)
+                            f.authority_decision(work, 'privacy-public-text/v1 revoke synthetic-product-rule '+context, 'SYNTHETIC ONLY: revoked.')
+                        else:
+                            first = mutation.startswith('check')
+                            if mutation.endswith('policy'):
+                                path = f.context('check' if first else 'push').policy
+                            else:
+                                path = f.temp / ('check-source' if first else 'source')
+                            path.write_bytes(path.read_bytes()+b' ')
+                    def evaluate(*a, **kw):
+                        evaluations.append(str(kw['privacy_policy']))
+                        return actual_eval(*a, **kw)
+                    def proof(*a, **kw):
+                        result = actual_proof(*a, **kw)
+                        if stage == 'proof' and len(evaluations) == 4:
+                            change()
+                        return result
+                    def write(*a):
+                        result = actual_write(*a)
+                        writes.append(a[3])
+                        if stage == 'storage' and len(writes) == 2:
+                            change()
+                        return result
+                    with patch.object(privacy, 'evaluate_policy', side_effect=evaluate), \
+                         patch.object(privacy, '_literal_proofs', side_effect=proof), \
+                         patch.object(publish, '_write_policy_observation', side_effect=write):
+                        result = self.entry(f)
+                    self.assertEqual(injected, [mutation])
+                    self.assertEqual(len(evaluations), 4)
+                    if mutation == 'unchanged':
+                        self.assertEqual(result[0], 0, result)
+                    else:
+                        self.blocked(f, result)
+                    if stage == 'storage':
+                        self.assertEqual(len(writes), 2)
+                        self.assertEqual(len(list(self.private_parents(f).glob('*.json'))), 2)
+
+    def test_write_failure_retains_first_and_one_truthful_actual_result(self):
+        for failure in (1, 2):
+            for operation in ('push', 'pr'):
+                if operation == 'pr' and failure == 2:
+                    continue
+                with self.subTest(failure=failure, operation=operation):
+                    f = self.fixture('artifact', operation)
+                    actual = publish._write_policy_observation
+                    writes = []
+                    def write(*a):
+                        writes.append(a[3])
+                        if len(writes) == failure:
+                            raise OSError('synthetic private error')
+                        return actual(*a)
+                    with patch.object(publish, '_write_policy_observation', side_effect=write):
+                        events = self.blocked(f, self.entry(f))
+                    intent = events[-2]
+                    op = intent['data']['opId']
+                    self.assertEqual(writes, [op] if failure == 1 else [op, op+'-review'])
+                    files = list(self.private_parents(f).glob('*.json'))
+                    self.assertEqual([p.stem for p in files], [] if failure == 1 else [op])
+                    if files:
+                        self.assertEqual(json.loads(files[0].read_text())['rawExit'], 1)
+
+    def test_late_c0_after_both_writes_and_reseals(self):
+        for operation in ('push', 'pr'):
+            for mutation in ('refs', 'lease', 'work', 'evidence', 'config', 'workflow',
+                             'metadata', 'head', 'policy'):
+                if operation == 'pr' and mutation in ('refs', 'lease'):
+                    continue
+                with self.subTest(operation=operation, mutation=mutation):
+                    f = self.fixture('artifact', operation)
+                    actual = publish._final_gate
+                    reached = []
+                    def gate(*a, **kw):
+                        reached.append(True)
+                        self.assertEqual(len(list(self.private_parents(f).glob('*.json'))),
+                                         2 if operation == 'push' else 1)
+                        if mutation == 'refs':
+                            f.refs['refs/heads/new'] = f.middle
+                        elif mutation == 'lease':
+                            f.refs[REF] = f.middle
+                        elif mutation == 'work':
+                            f.add('decision', dict(question='Changed?', answer='Changed',
+                                  date='2026-11-04', decidedBy='manager'))
+                        elif mutation == 'evidence':
+                            f.policy_pass(f.context('check' if operation == 'push' else 'pr').check_command, outcome='fail')
+                        elif mutation == 'config':
+                            path = f.local / 'github-app.json'
+                            data = json.loads(path.read_text())
+                            data['app']['slug'] = 'changed-worker'
+                            jsonio.atomic_replace(path, data)
+                        elif mutation == 'workflow':
+                            git = publish._git
+                            def changed(repo, *args, **options):
+                                if args[0] == 'diff-tree':
+                                    return b'.github/workflows/late.lock\0'
+                                return git(repo, *args, **options)
+                            with patch.object(publish, '_git', side_effect=changed):
+                                result = actual(*a, **kw)
+                            self.assertEqual(result.code, 5)
+                            return result
+                        elif mutation == 'metadata':
+                            if operation == 'pr':
+                                f.text_files[1][1].write_text('Changed body')
+                            else:
+                                kw['invocation'].original.branch = 'changed/topic'
+                        elif mutation == 'head':
+                            f.git('checkout', '--detach', f.middle)
+                        else:
+                            path = f.context(operation).policy
+                            path.write_bytes(path.read_bytes()+b' ')
+                        return actual(*a, **kw)
+                    with patch.object(publish, '_final_gate', side_effect=gate):
+                        self.blocked(f, self.entry(f))
+                    self.assertEqual(reached, [True])
+
+    def test_preintent_pr_constraints_and_original_metadata_files(self):
+        for mutation in ('base', 'title', 'body', 'title-file', 'body-file'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture('public', 'pr')
+                capture = publish._capture_invocation
+                reached = []
+                def changed(args, **kw):
+                    if mutation == 'base':
+                        args.base = 'other'
+                        return capture(args, **kw)
+                    state = capture(args, **kw)
+                    reached.append(True)
+                    label = 'title' if mutation.startswith('title') else 'body'
+                    if mutation.endswith('file'):
+                        original = getattr(args, label+'_file')
+                        alternate = f.temp / ('alternate-'+label)
+                        alternate.write_bytes(original.read_bytes())
+                        setattr(args, label+'_file', alternate)
+                    else:
+                        getattr(args, label+'_file').write_text('Changed public metadata')
+                    return state
+                with patch.object(publish, '_capture_invocation', side_effect=changed):
+                    self.blocked(f, self.entry(f))
+                self.assertEqual(reached, [] if mutation == 'base' else [True])
+
+    def test_unsupported_new_opaque_and_unaccounted_content_never_mint(self):
+        for mutation in ('new-opaque', 'changed-opaque', 'unsupported', 'secret', 'unaccounted'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture('artifact')
+                if mutation == 'new-opaque':
+                    (f.repo / 'new.bin').write_bytes(b'\0new synthetic opaque')
+                elif mutation == 'changed-opaque':
+                    (f.repo / 'asset.bin').write_bytes(b'\0changed synthetic opaque')
+                elif mutation == 'unsupported':
+                    f.git('update-index', '--add', '--cacheinfo', '160000,'+f.head+',submodule')
+                else:
+                    (f.repo / 'file.txt').write_text('SYNTHETIC_PRODUCT unapproved private content\n')
+                if mutation == 'unsupported':
+                    f.git('commit', '-qm', 'Synthetic unsupported candidate')
+                    f.head = f.git('rev-parse', 'HEAD').strip()
+                else:
+                    f.head = f.commit('Synthetic changed candidate')
+                f.args.head = f.head
+                f.cover(f.head)
+                c = f.context('check')
+                command = publish._policy_verify_command(f.local, f.repo, f.base,
+                    f.head, f.args.branch, c.policy)
+                f.policy_requirement(command)
+                out, err = io.StringIO(), io.StringIO()
+                with publish._environment(f.repo), \
+                     redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(command[1:])
+                self.assertNotEqual(code, 0)
+                # Never manufacture a trusted pass for a refused canonical command.
+                self.blocked(f, self.entry(f))
+
+    def test_workflow_root_parent_and_lock_restriction_survives_policy(self):
+        f = self.fixture('artifact')
+        directory = f.repo / '.github/workflows'
+        directory.mkdir(parents=True)
+        (directory / 'build.lock').write_text('Synthetic workflow\n')
+        f.head = f.commit('Synthetic workflow candidate')
+        f.args.head = f.head
+        f.cover(f.head)
+        command = publish._policy_verify_command(f.local, f.repo, f.base,
+            f.head, f.args.branch, f.context('check').policy)
+        out, err = io.StringIO(), io.StringIO()
+        with publish._environment(f.repo), redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(command[1:])
+        self.assertEqual((code, err.getvalue()), (0, ''))
+        f.policy_requirement(command)
+        f.policy_pass(command)
+        result = self.entry(f)
+        self.assertEqual(result[0], 5, result)
+        self.assertFalse(f.launches)
+        self.assertFalse(list(self.private_parents(f).glob('*.json')))
+
+    def test_noop_recovery_and_pr_reuse_do_not_persist_policy_observations(self):
+        import uuid
+        for mode in ('push-noop', 'push-recovery', 'pr-reuse', 'pr-recovery'):
+            with self.subTest(mode=mode):
+                operation = 'push' if mode.startswith('push') else 'pr'
+                f = self.fixture('artifact', operation)
+                f.refs[REF] = f.head
+                if mode.endswith('recovery'):
+                    intent = f.add('op-intent', dict(opId=uuid.uuid4().hex,
+                        operation='push' if operation == 'push' else 'pull-request',
+                        target=URL+'#'+REF if operation == 'push' else
+                               'https://'+REPO+'/pulls#'+f.args.branch,
+                        commit=f.head, expectedPriorHead='absent' if operation == 'push' else None))
+                    path = publish._status_path(f.local, REPO, 'WORK', intent)
+                    jsonio.atomic_replace(path, token_run.RunResult(True, 0, None, 'ok', 0).record())
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    if operation == 'pr':
+                        discover = publish._discover
+                        def discovered(*a):
+                            f.prs = [f.row()]
+                            return discover(*a)
+                        stack.enter_context(patch.object(publish, '_discover', side_effect=discovered))
+                    stack.enter_context(patch.object(publish, '_finalize_policy_gate', side_effect=AssertionError('no mint path')))
+                    result = self.entry(f)
+                self.assertEqual(result[0], 0, result)
+                self.assertFalse(f.launches)
+                self.assertFalse(list(self.private_parents(f).glob('*.json')))
+                self.assertEqual(f.events()[-1]['kind'], 'op-result')
+
+    def test_failed_result_append_is_attempted_once_after_storage_refusal(self):
+        for operation in ('push', 'pr'):
+            with self.subTest(operation=operation):
+                f = self.fixture('artifact', operation)
+                append = publish._append
+                attempts = []
+                def uncertain(local, identity, work, kind, data):
+                    if kind == 'op-result':
+                        attempts.append(data)
+                        raise OSError('synthetic private error')
+                    return append(local, identity, work, kind, data)
+                with patch.object(publish, '_write_policy_observation', side_effect=OSError('synthetic private error')), \
+                     patch.object(publish, '_append', side_effect=uncertain):
+                    code, out, err = self.entry(f)
+                self.assertEqual(code, 2)
+                self.assertEqual(len(attempts), 1)
+                self.assertFalse(f.launches)
+                self.assertEqual(f.events()[-1]['kind'], 'op-intent')
+                self.assertTrue(records.uncertain_items(f.events()))
+                self.assertNotIn('statusSummary', attempts[0])
+                self.assertNotIn('synthetic private error', out+err)
+                self.assertNotIn(str(f.temp), out+err)
+
+    def test_late_check_policy_guard_and_effective_scope(self):
+        for mutation in ('check-policy', 'effective-scope'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture('artifact')
+                if mutation == 'effective-scope':
+                    decision = f.add('decision', dict(question='Scope changed?', answer='New criterion',
+                        date='2026-11-04', decidedBy='manager'))
+                    f.add('scope', dict(decisionRef=decision['seq'],
+                        acceptance=[dict(id='NEW', text='New unresolved criterion')]))
+                    self.blocked(f, self.entry(f))
+                    continue
+                gate = publish._final_gate
+                reached = []
+                def changed(*a, **kw):
+                    reached.append(True)
+                    self.assertEqual(len(list(self.private_parents(f).glob('*.json'))), 2)
+                    path = f.context('check').policy
+                    path.write_bytes(path.read_bytes()+b' ')
+                    return gate(*a, **kw)
+                with patch.object(publish, '_final_gate', side_effect=changed):
+                    self.blocked(f, self.entry(f))
+                self.assertEqual(reached, [True])

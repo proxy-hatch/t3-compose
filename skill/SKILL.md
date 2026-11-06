@@ -414,6 +414,21 @@ starting stage, and escalations recorded before the newest input do not count.
   --range BASE..HEAD --branch NAME --text-file title=F --text-file body=F`,
   which must print `"ok":true` with no findings (a finding's `lines` are lines
   of the private identifier list, not of the checked text); and one SUITE.
+- For explicitly approved policy publication, replace the required raw-check
+  command through the supported [work epoch/scope recipe](https://github.com/proxy-hatch/t3-compose/blob/main/docs/records.md#work-epochs-and-required-checks).
+  Execute the exact canonical `privacy verify` command under the publication
+  locale, then record a fresh trusted applicable pass. Keep failed raw checks;
+  `policySatisfied` can be true with `rawExit: 1`, never a clean claim. Push CHECK
+  covers the work range without PR texts; publication covers the remote-excluded
+  set. Supply `publish push --privacy-policy FILE --privacy-check-policy FILE`
+  when these need distinct policies; check-policy requires publication-policy.
+  PR uses `publish pr --privacy-policy FILE` with its actual ordered title/body
+  files. Absent flags remains strict. Follow the existing
+  [preparation/normalization recipes](https://github.com/proxy-hatch/t3-compose/blob/main/docs/records.md#separate-canonical-range-and-publication-evidence),
+  preserving original approval sources rather than rewriting or reapproving them.
+  Fresh evaluations, both seals, immutable observations and final ordinary gates
+  are mandatory; retained failure evidence is neither overwritten nor cached.
+  See [publisher cutoffs and failures](https://github.com/proxy-hatch/t3-compose/blob/main/docs/cli/publish.md#policy-lifecycle-composition).
 - Every full SUITE run goes through the machine-wide lock, with this command:
   `"$PY" -I -S -c 'import fcntl,subprocess,sys; f=open("/tmp/t3c-suite.lock","a");
   fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.call(sys.argv[1:],timeout=1500))'
