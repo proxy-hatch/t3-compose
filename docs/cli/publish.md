@@ -41,15 +41,15 @@ All advertised refs, including tags and HEAD, exclude reachable objects from
 the publication set. Every advertised object must already exist locally;
 shallow or incomplete history, malformed remote facts and read errors stop.
 The command never fetches or writes tracking refs, so fetch beforehand, outside
-it: an advertised object this checkout lacks stops the push. The publisher calls
+it: an advertised object this checkout lacks stops the push. Strict mode calls
 `privacy.scan_commits` with that exact ordered publication set, the work's
 immutable review-base/head endpoints and the intended branch. The endpoints do
 not replace the push selection with a review range. The shared strict scanner
 screens selected commit messages, full trees, paths, UTF-8 blob contents and
 branch, including intermediate and merge-side history. Its SHA-1-only,
 complete-history, byte bounds, unsupported-entry and binary refusals and `.lock`
-screening exception apply. There is no publisher policy option or policy verdict
-consumption. Raw findings refuse publication.
+screening exception apply. Absent an explicit policy, raw findings refuse publication.
+Explicit policy mode uses the same evaluator and the gates below.
 
 An independent `diff-tree --root -m` walk checks workflow transitions for every
 selected commit against every parent, including roots. It does not exclude
@@ -136,13 +136,13 @@ backend errors are never printed. Relative text paths refer to the starting
 repository root. Relative local-directory and push repository paths also refer to
 the invocation cwd, before helper inspection or temporary HOME/cwd changes.
 
-After exact-head evidence passes, `privacy.scan_commits` screens the entire
+After exact-head evidence passes, strict screening or explicit policy evaluation covers the entire
 immutable work review-base-to-head range and intended branch, with ordered
 labeled texts `[("title", captured_title), ("body", captured_body)]`. PR screening
 uses that review range even when push's advertised exclusions make its set
 empty. The independent workflow walk also applies to this range. This includes already
 published commits after Corrections. A stale review/check stops before intent;
-a published privacy match requires a report to Shawn. Only unpublished history
+an unresolved published privacy match requires a report to Shawn. Only unpublished history
 may receive authorized Corrections. The coordinator fixes its own text/branch.
 The title is captured once and the body is copied into a private mode-0600
 snapshot inside a mode-0700 directory. Creation uses only those captured bytes;
@@ -257,8 +257,9 @@ push lease reread or PR discovery, status-path creation and PR body snapshot
 creation. Existing recovery and verified no-op paths retain their reconciliation
 rules and do not mint a token.
 
-The gate checks watched configuration, reruns the shared strict scan and independent
-workflow walk on the captured selection and texts, checks current exact-head
+The gate checks watched configuration and the independent workflow walk. Strict
+mode reruns the shared scan on the captured selection and texts; policy mode
+uses its completed fresh lifecycle instead. The gate checks current exact-head
 evidence, then reloads the work. Original work, effective work and the complete
 event prefix must agree; only this operation's new intent may have been added.
 This catches changes to requirements, review or assignment even if replacement
@@ -301,15 +302,27 @@ App identity, token lifecycle and revocation rules. These are sequential reads,
 not an atomic transaction across inspection, record writes, mint and publication;
 concurrent changes after the relevant final observation, or changes made and
 undone between observations, are outside this guarantee.
-Policy integration remains a separate follow-up; this foundation grants no policy
-permission and does not change `publish run`.
+Explicit policy publication keeps these gates and terminal-result rules. Both
+policy path values and independent raw-file digests are captured before helper
+inspection or any cwd change, even for equal paths or equal initial bytes.
+Only operational paths are normalized; changing either original input refuses.
+`publish run` has no policy option.
 
-## Dormant canonical verification helpers
+## Canonical verification helpers
 
-Two private helpers provide a directly tested foundation for later integration.
-Neither has a production caller or changes the strict gates above. There is no
-publisher policy flag, permission or saved-report input. Storage is a separate
-dormant helper below.
+`publish push` and `publish pr` accept `--privacy-policy FILE` explicitly.
+Push also accepts `--privacy-check-policy FILE`, requiring `--privacy-policy`;
+omission uses the publication policy independently for CHECK. PR accepts only
+the publication policy. Absent policy flags preserves strict screening, including
+legacy handler Namespaces. There is no configuration default or saved-report input.
+
+For push, the canonical CHECK is the immutable work review range without PR texts;
+the publication evaluation uses the exact ordered set left after ALL advertised
+remote exclusions. Public-text and combined modes generally need separate pinned
+policies for these exact contexts. One artifact policy may cover both when all
+bindings apply. A single public policy with the wrong selection refuses; no
+subset, superset or equal-count waiver applies. PR uses its range and ordered
+captured title/body texts with their actual labeled file paths.
 
 `_policy_verify_command(local, repo, base, head, branch, policy, *, text_files=())`
 returns this exact token array, never a shell command:
@@ -334,16 +347,17 @@ It binds local directory, current effective review base and requested head,
 requires an exact current required-check command and applicable trusted pass
 with concrete evidence, and also requires the complete evidence comparison.
 Malformed inputs or unavailable records raise sanitized `CommandError` (2).
-The future caller must construct the expected command from its actual captured
+The publisher constructs the expected command from its actual captured
 repository, branch, policy and ordered text paths; record labels cannot supply
 those invocation arguments. No detached bundle, check or report is an input.
 
 This is cooperative provenance, not authentication. Review-range verification
-cannot attest the actual remote-excluded push set. The dormant projection below
-adds no activation. Actual selection evaluation, fresh policy/list/authority
-observations and final write gates remain mandatory before policy publication.
+cannot attest the actual remote-excluded push set. The publisher requires BOTH
+current exact trusted applicable canonical check evidence and fresh explicit
+`policy_satisfied is True` results for its actual contexts. Raw nonpass remains
+honest; stored summaries and observations cannot authorize publication.
 
-## Dormant private observation projection
+## Private observation projection
 
 `_policy_observation(result, *, operation, repository, base, head, commits,
 branch, texts, check_command, identifiers, list_observed_at)` returns a fresh
@@ -387,14 +401,14 @@ Only typed selected fields are hashed/exported. Findings, verdicts, proofs,
 quotes and whole facts/coverage are never serialized or hashed. Treat private
 digests as secret-equivalent. The constructible Python type is cooperative
 provenance, not authentication; saved observations grant no permission.
-There is no CLI option, production caller or policy activation. Complete fresh
-evaluator/current list/current authority/pre-mint integration remains mandatory.
+The active lifecycle below consumes this projection after fresh evaluation and
+current list/authority observations, before the final publication gates.
 
 
-## Dormant immutable observation writer
+## Immutable observation writer
 
 `_write_policy_observation(local, identity, work, op_id, observation) -> Path`
-is private and has no production caller. `_encode_policy_observation` independently
+is private and called by policy finalization. `_encode_policy_observation` independently
 validates the exact flat 23-field projection output and encodes canonical UTF-8
 JSON before any filesystem creation, with a separate 16384-byte cap. It accepts
 no evaluation facts, saved report, proof or permission. Exact scalar types,
@@ -431,18 +445,18 @@ close error after completion retains the complete file and still reports failure
 Any retained file blocks reuse. All failures raise constant `CommandError` (2):
 `publication: invalid private policy observation storage`. Paths and payloads are
 never diagnostics or public output. There is no atomic revocation, authentication
-or hostile-same-user guarantee. Later C1b integration must compose current actual
+or hostile-same-user guarantee. Active policy publication composes fresh actual
 evaluation, list/authority reads, check evidence and final publication gates;
 stored observations never act as a cached pass, receipt or token permission.
 
-## Dormant current-policy context seal
+## Current-policy context seal
 
 `_seal_policy_context(result, *, repo, local, policy, operation, repository,
-base, head, commits, branch, texts, check_command)` is a private dormant seam.
+base, head, commits, branch, texts, check_command)` is a private lifecycle seam.
 It accepts an actual explicit satisfied evaluator result and the trusted caller's
 exact context. It returns the existing 23-field minimal observation, never a
-publication permission. No command, flag, production caller or writer activation
-uses it. Strict publication behavior is unchanged.
+publication permission. Explicit policy finalization uses it; absent policy
+publication retains strict screening.
 
 It captures validated patterns, independently rereads identifiers and compares
 all four identifier fields, then uses the existing public evidence loader and
@@ -460,19 +474,19 @@ read; artifact authority is current at its later loader read; the last list read
 precedes projection. Evaluation and authority timestamps remain those of the
 actual evaluation; only `listObservedAt` describes the seal's fresh list read.
 This cooperative sequence gives no atomic revocation or changes-made-and-undone
-protection. Future activation must seal **both** contexts after **all** proofwork,
-and seal both again after persistence, preserving every final publication gate.
-Sealing one context does not seal another. Full activation remains separate.
+protection. Finalization seals **both** contexts after **all** proofwork,
+and seals both again after persistence, preserving every final publication gate.
+Sealing one context does not seal another.
 
-## Dormant policy lifecycle composition
+## Policy lifecycle composition
 
 Private `_prepare_policy_gate(args, repo, identity, loaded, selected, branch, *,
 operation, target, refs=None, texts=(), text_files=())` returns `(state, refusal)`.
 `operation` is `push` or `pr`; target is the canonical HTTPS push ref or PR
 collection for that branch. Push supplies the complete captured advertised refs;
-PR supplies ordered title/body texts and their labeled files. This interface is
-inert: no installed command calls it, no policy flag is registered, and current
-publication remains strict.
+PR supplies ordered title/body texts and their labeled files. Both installed
+public handlers prepare explicit policy mode through this interface. A valid
+prepared state is required; absent policy still runs the actual strict scanner.
 
 Missing optional Namespace policy attributes mean `None`. Absent policy returns
 `(None, None)`, meaning strict mode, never permission. A separate CHECK policy
@@ -517,7 +531,20 @@ artifact authority in the later artifact loader and identifiers at the seal's
 last list read. Both seals after all proofs and both reseals after writes catch
 persistent changes before those reads. Later changes, including during another
 context's seal, remain possible; this is neither atomicity nor detection of
-changes made and undone between reads. A future active caller still owes ALL C0
-workflow/configuration/evidence/work-prefix/ref/selection/lease/metadata and
-HEAD-last gates, honest refusal/unknown result handling, and full integration
-acceptance. Direct lifecycle tests do not establish successful public publishing.
+changes made and undone between reads. After finalization the public caller runs
+ALL C0 workflow/configuration/evidence/work-prefix/ref/selection/lease/metadata
+and HEAD-last gates before entering the token runner. Workflow checks remain
+independent, including roots, every merge parent and `.lock` paths; policy mode
+replaces only raw privacy rejection. No expensive proof is repeated after the
+last seals. No-op and recovery paths persist no new policy observations.
+
+Preparation and finalization never reuse evaluations, including equal paths or
+bytes. Future reuse would require equality of every repo/local/base/head/ordered
+commit/branch/ordered label+text input, current list and locale, and complete
+immutable policy/evidence bindings, retaining independent path-change guards.
+
+A new pretoken refusal after intent records one truthful terminal result, with no
+invented child/status facts. An attempted result append is never retried after
+uncertain persistence. Failure during the second observation write prevents mint,
+retains the first file under the actual opId, and does not invent a second intent.
+Preserve retained files and repair inputs before a fresh attempt.

@@ -636,14 +636,14 @@ The records are cooperative: they bind a decision, evidence and occurrences unde
 workflow, not who spoke or who verified, and they give no atomic revocation. Observation
 is a window; see the policy's [limits](cli/privacy.md#public-text-dispositions-public-textv2).
 
-### Canonical verification-check foundation
+### Canonical verification checks
 
-The dormant [publisher helpers](cli/publish.md#dormant-canonical-verification-helpers)
+The [publisher helpers](cli/publish.md#canonical-verification-helpers)
 use an exact token array for both `requiredChecks.command` and `check.command`,
 including absolute normalized local/repository/policy paths, immutable work
 `reviewBase..head`, intended branch and, for PRs, ordered title/body file labels.
 A shell string, matching check ID, changed label or saved summary cannot replace
-that array. Future callers construct it from captured invocation arguments.
+that array. Publishers construct it from captured invocation arguments.
 
 The join loads actual current validated records and uses `effectiveWork`, scope
 replacement sequence and current assignment provenance. It explicitly rechecks
@@ -655,14 +655,14 @@ Current schema validation already refuses empty or non-string check evidence.
 Use the supported new-work or resolved-decision/scope migration above and record
 a fresh applicable verification check after a changed requirement. Keep failed
 raw checks and older passes unchanged; neither becomes verification evidence
-through relabeling. These helpers are inactive and grant no policy permission;
-the private projection below also remains dormant. Storage and production
-integration remain separate follow-ups.
+through relabeling. Execute that exact command under the controlled publication
+locale (`LC_ALL=C`) before recording a passing check; public-text policy evidence
+must bind the same locale. A check row or private projection alone is no permission.
 
 
 ### Private policy observation boundary
 
-The dormant [observation projection](cli/publish.md#dormant-private-observation-projection)
+The [observation projection](cli/publish.md#private-observation-projection)
 binds a current process-private evaluation to captured selection/metadata and a
 fresh identifier observation. Artifact-only v1, public-only v2 and combined v2
 retain their distinct input shapes. A successful policy verdict preserves raw
@@ -676,7 +676,7 @@ findings, proofs, matched paths or owner quotes. Six-field authority observation
 hashes include their nested times. Stable policy bindings exclude volatile
 observation metadata, so unrelated allowed authority appends do not require a
 new policy binding. The fresh list observation follows the evaluation window.
-The dormant [immutable writer](cli/publish.md#dormant-immutable-observation-writer)
+The [immutable writer](cli/publish.md#immutable-observation-writer)
 independently validates that closed output and its canonical UTF-8 byte bound
 before creating a private observation. Its only storage is the existing work's
 `publication-policy/<op_id>.json`, under an owned 0700 parent with a new exclusive
@@ -687,11 +687,11 @@ directory sync precede success. Failed cleanup can retain partial bytes; late
 close errors can retain complete bytes. Neither retained state is reused.
 Complete fresh evaluation/authority/list and ordinary publication gates remain
 required before any token mint. Cooperative provenance is not authentication;
-this dormant writer grants no policy permission or current revocation verdict.
+the writer alone grants no policy permission or current revocation verdict.
 
 ### Separate canonical range and publication evidence
 
-Preparation for future policy publication must distinguish the canonical CHECK
+Explicit policy publication distinguishes the canonical CHECK
 range (`reviewBase..head`, without PR texts for push) from the actual ordered
 remote-excluded push set. Prepare separate public-text dispositions and pinned
 policies when those contexts differ; exact selection and finding-place equality
@@ -703,14 +703,23 @@ Execute the actual canonical `privacy verify` token array before recording fresh
 applicable check evidence. Synthetic check rows alone do not demonstrate command
 execution. A successful policy command can retain `rawExit: 1`; keep failed raw
 history and use the supported new-work/scope migration above. Independently
-rerun the actual publication-set evaluator. The dormant
-[current-context seal](cli/publish.md#dormant-current-policy-context-seal) prepares
-a future freshness boundary for both contexts; none of these helpers installs
-policy publication or turns a stored observation into permission.
+rerun the actual publication-set evaluator. Push supplies `--privacy-policy FILE`
+and, for a different CHECK context, `--privacy-check-policy FILE`; the latter
+requires the former. PR supplies one policy plus its actual ordered text files.
+Absent flags remains strict. The [current-context seal](cli/publish.md#current-policy-context-seal)
+observes BOTH contexts after ALL proofs, and again after storage. Latest ordinary
+publication gates follow; later changes remain outside this sequential window.
 
-### Dormant lifecycle intent relation
+Reuse the [work epoch recipe](#work-epochs-and-required-checks) and preparation
+recipes above: preserve the original rich inventory and decision source, derive a
+separate closed manifest with independently attested exact tuple equality BOTH
+ways, and cite the original decision in a current normalized owner source. Never
+rewrite, backdate or request the same approval again. Exact public-product scope
+and prior publication remain necessary and insufficient for unrelated secrets.
 
-The private [lifecycle composition](cli/publish.md#dormant-policy-lifecycle-composition)
+### Lifecycle intent relation
+
+The private [lifecycle composition](cli/publish.md#policy-lifecycle-composition)
 requires a current actual intent supplied by its caller after preparation.
 Publication and canonical CHECK observations use that intent's `opId` and
 `opId-review`, respectively; PR has only the former. The suffix denotes storage
@@ -718,4 +727,6 @@ for the same intent/result, never a second event. Helpers append no result and
 invent no child status. A caller must record the actual refused or uncertain
 outcome when safe, retaining partial observations if storage failed. Retry needs
 fresh preparation and a real new intent; old observations are neither overwritten
-nor accepted as evidence of permission. No active publisher uses this interface.
+nor accepted as evidence of permission. Active publication handles these outcomes
+through its single actual terminal-result boundary. An uncertain append is not
+retried; storage failure blocks mint without inventing child/status facts.

@@ -225,6 +225,7 @@ CPython 3.15 interpreter as above. This applies to briefs and skill commands too
 | `t3c quota show`, `record`, `activate` | agy quota state | RT-1b |
 | `t3c route escalate` | record one routing-escalation event | MX-3b |
 | `t3c privacy check` | the identifier list against messages, trees, branch name and pull request text | PV-1b |
+| `t3c privacy verify` | explicit policy evaluation; canonical publisher check preserves raw nonpass | [PV-COMPAT](#pv-compat-explicit-publisher-policy-interface) |
 | `t3c pr verify` | head, base, state and author of a pull request | PV-1b |
 | `t3c publish check` | mint a token, verify its scope, revoke it | GA-1 |
 | `t3c publish run --status-file FILE -- CMD` | run one command with the App token | GA-2, GA-3 |
@@ -3399,6 +3400,26 @@ Shawn added these decisions on 2026-10-28:
     `billing: "per-token"`, and a lead lists its GLM uses in its merge
     line. A credit cap on the GLM key, recommended to the owner, is the
     hard guarantee: at the cap the provider answers 402, a quota refusal.
+
+### PV-COMPAT Explicit publisher policy interface
+
+- **Installed interface.** `publish push` and `publish pr` accept an explicit
+  `--privacy-policy FILE`. Push-only `--privacy-check-policy FILE` requires it;
+  omission uses the publication policy for CHECK. Absent flags stays strict.
+  `privacy verify` is the canonical policy-check command; see the
+  [command and migration recipe](../../records.md#canonical-verification-checks).
+- **Integration.** Preserve actual invocation captures, exact CHECK range versus
+  push publication-set evaluation, PR ordered metadata, current trusted checks,
+  explicit true results and raw nonpass. Finish all proofs before BOTH seals,
+  write actual opId then push opId-review, reseal BOTH, then all C0 final gates.
+  Keep single truthful terminal results, uncertainty and retained evidence.
+- **Acceptance and review.** Actual public-entry artifact/public/combined push/PR
+  successes and negative, mutation, storage and strict/recovery controls remain
+  required. BACKEND_LOGIC/CORE/COMPLEX stage 2 requires independent exact-final-head
+  core review, current required checks and lead-last before own-App publication.
+  No live pass, receipt or owner approval is implied by implementation.
+- **Contract.** [Publisher](../../cli/publish.md#policy-lifecycle-composition);
+  [policy semantics](../../cli/privacy.md#policy-evaluation-and-privacy-verify).
 
 [glossary]: ../../../GLOSSARY.md
 [design]: ../specs/2026-10-27-t3-compose-design.md

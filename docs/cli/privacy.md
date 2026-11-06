@@ -136,7 +136,7 @@ permission and performs no approval or policy evaluation.
 explicitly selects private state. The identifier list is freshly validated on
 every call, including an empty selection. One captured sequence supplies all
 matches. Existing private Git/object/text readers remain available to legacy
-callers; the publisher's strict behavior is unchanged.
+callers; absent an explicit publisher policy, strict behavior is unchanged.
 
 `commits` is an ordered sequence of unique full lowercase 40-hex SHA-1 commit
 object IDs. `base` and `head` must also be full commit IDs. Refs, abbreviations,
@@ -166,7 +166,7 @@ whole tree is screened; inherited binary or oversized blobs still refuse in stri
 ## Internal artifact provenance foundation
 
 The provenance loader supplies inputs for the explicit scanner mode below.
-The publisher continues using strict screening without this opt-in.
+The publisher uses strict screening unless explicitly given a publication policy.
 Actual owner approval of any real inventory remains separate from implementing
 this capability. The following APIs return internal inputs, never a completed
 scan, eligibility, `policySatisfied`, or publication permission.
@@ -380,10 +380,9 @@ treat a redacted binding or editable saved report as verification evidence.
 Coverage is raw evidence, never `policySatisfied` or publication permission.
 The [artifact evaluator](#policy-evaluation-and-privacy-verify) reruns the shared
 core and validates its own approvals; [public-text dispositions](#public-text-dispositions-public-textv2)
-are evaluated separately; publisher C must re-observe current authority and exact publication
-inputs at the gate. Cooperative source provenance is not authentication; the
-observed prefix provides no atomic revocation guarantee after observation. Strict
-publisher behavior remains unchanged until those separate integrations land.
+are evaluated separately. Explicit [publisher policy mode](publish.md#canonical-verification-helpers)
+re-observes authority and exact publication inputs at its gate. Cooperative source
+provenance is not authentication; observations give no atomic revocation guarantee.
 
 ## Policy evaluation and `privacy verify`
 
@@ -400,7 +399,7 @@ disposition, public snapshot, [literal proof](#private-literal-evidence-foundati
 saved report is an input, and none can change the verdict. The literal-proof seam is
 not called. A `public-text/v2` policy uses the separate
 [dispositions](#public-text-dispositions-public-textv2) (`policy-evaluation/v2`);
-publisher integration is another Task (C), neither waived nor satisfied here.
+explicit publisher mode consumes the same evaluator with current check evidence.
 
 ```python
 evaluate_policy(repo, local_dir, commits, *, base, head, branch, texts=(), privacy_policy)
@@ -520,8 +519,8 @@ The summary has no `ok` and makes no claim that all content was screened. It nev
 holds a digest, object ID, commit, path, label, repository, quote, source or
 receipt string, policy path, list value or matched text. Approved opaque bytes
 appear only in the `approvedUnscanned` count. The verdict is read-only policy
-assessment, never permission to publish; the publisher stays strict until a later
-Task integrates this evaluator at its gate.
+assessment, never permission to publish. Explicit publisher mode also requires
+its own fresh context evaluations, seals, persistence and ordinary final gates.
 
 A work adopting an approved inventory requires the exact `privacy verify`
 invocation as its policy check and keeps the raw `privacy check` observation as
@@ -530,7 +529,8 @@ failed evidence; see the [records recipe](../records.md#work-epochs-and-required
 ## Private literal evidence foundation
 
 `_literal_proofs(repo, patterns, text, *, public_commit)` is an internal seam;
-there is no CLI, policy evaluator or publisher integration for this evidence.
+there is no standalone CLI for this evidence. The public-text evaluator uses it
+privately, including when called by explicit publisher policy mode.
 The trusted caller supplies the same captured validated pattern list/tuple as
 its scanner. The helper copies it, uses existing list/text bounds, and never
 reloads private state. `text` is decoded UTF-8 without NUL, at most 1 MiB.
@@ -647,7 +647,7 @@ secret-equivalent private evidence. These unsalted hashes let anyone holding the
 confirm a guess of a private value offline. Never write the result to stdout, to
 public or shared evidence, or to GitHub, even after the matcher-based redaction
 used for coverage, which does not recognize a digest. The public-text evaluator and
-publisher C keep the exact proof facts in private state and emit nonsecret summaries only.
+publisher keep exact proof facts private and emit nonsecret summaries only.
 
 A witness proves only that the exact bytes occur in one supported regular blob,
 possibly as a substring of unrelated longer text. It does not prove identifier
@@ -659,9 +659,10 @@ occurrences, and joins standing owner authority, approved public-product scope,
 independently attested prior publication and current nonrevocation. Local object
 presence or literal proof cannot declassify credentials or unrelated private data.
 The [artifact-only evaluator](#policy-evaluation-and-privacy-verify) never calls this
-seam. C owns publisher integration and publication-gate rechecks. Raw scan results,
-history coverage, defaults and publisher behavior remain unchanged. No real opaque
-approval or receipt is created by this foundation; complete literal proof is never
+seam. Explicit publisher mode performs its own publication-gate rechecks;
+[ordering and read cutoffs](publish.md#policy-lifecycle-composition) apply to both
+CHECK and publication contexts. Raw nonpass, history coverage and strict defaults
+remain unchanged. No real opaque approval or receipt is created; literal proof is never
 policy satisfaction or permission to publish.
 
 The public-text evaluator keeps the candidate bounds and Git-tree-order witness search

@@ -725,13 +725,26 @@ name one. A mismatched head or author means: report to Shawn; not PR-ready.
 This applies to every repository. It links each pull request to its T3 thread
 with `link_pull_request`.
 
-A private-identifier match blocks publication in every repository until
-Corrections or Shawn resolves it. A match in a commit's message or tree returns
+Absent an explicit publisher policy, a private-identifier match blocks
+publication in every repository until Corrections or Shawn resolves it. An unresolved
+match in a commit's message or tree returns
 to the Worker in a Corrections round whose brief permits rewriting only the
 unpublished commits needed to remove it. The publishing coordinator (the
 assigned Feature lead for its Task, or the manager when there is no lead) fixes
 its own branch name, pull request title and body. Shawn decides when an
 identifier seems necessary.
+
+Explicit `publish push`/`publish pr --privacy-policy FILE` uses the same privacy
+evaluator, with current exact canonical check evidence and fresh explicitly
+satisfied policy results. Push may pair `--privacy-check-policy FILE` for its
+canonical review range; its actual remote-excluded publication set is evaluated
+independently. PR binds its range and ordered title/body. Exact selection/place,
+owner scope, prior publication and both authorities remain binding; raw nonpass
+is never relabeled. All proofs precede BOTH current seals, immutable observations
+and BOTH reseals, then all ordinary final gates and HEAD-last. Observations join
+one real intent/result (`opId`, plus push `opId-review`); failure blocks mint and
+retains evidence honestly. There is no cache, atomic revocation or authentication
+claim. See the [installed contract](../../cli/publish.md#policy-lifecycle-composition).
 
 These rules are instructional. Every child inherits full access and the owner's
 local `gh` login, and Codex and agy children run without rapid-ship's hook until
