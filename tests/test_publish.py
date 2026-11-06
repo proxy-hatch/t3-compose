@@ -2980,7 +2980,8 @@ class OfflinePolicyLifecycle(OfflineTestCase):
         self.assertEqual(caught.exception.code, 2)
 
     def test_strict_pairing_context_identity_and_current_check(self):
-        f = self.fixture()
+        # Pairing and record applicability do not depend on public-text proofs.
+        f = self.fixture('artifact')
         saved = f.args.privacy_policy
         del f.args.privacy_policy
         f.args.privacy_check_policy = None
@@ -3026,7 +3027,8 @@ class OfflinePolicyLifecycle(OfflineTestCase):
         self.assertEqual(f.launches, [])
 
     def test_actual_failed_raw_migration_and_changed_requirement(self):
-        f = self.fixture('public')
+        # Raw-check history and requirement boundaries apply to either policy kind.
+        f = self.fixture('artifact')
         canonical = f.context('check').check_command
         f.policy_pass(['raw-check'], outcome='fail')
         self.assertIsNone(self.prepare(f)[1])
@@ -3088,7 +3090,8 @@ class OfflinePolicyLifecycle(OfflineTestCase):
         for operation, mutation in (('push', 'publication'), ('push', 'check'),
                 ('push', 'raw'), ('push', 'head'), ('pr', 'metadata'), ('pr', 'unrelated')):
             with self.subTest(operation=operation, mutation=mutation):
-                f = self.fixture('combined', operation)
+                # Captured paths, metadata and intent identity are policy-kind independent.
+                f = self.fixture('artifact', operation)
                 state, stopped = self.prepare(f)
                 self.assertIsNone(stopped)
                 directory = self.private_parents(f)
@@ -4086,7 +4089,8 @@ class OfflinePolicyPublication(OfflineTestCase):
     def test_actual_current_check_boundaries_keep_failed_history(self):
         for change in ('absent', 'fail', 'head', 'command', 'source', 'scope', 'definition'):
             with self.subTest(change=change):
-                f = self.fixture('public')
+                # Current-check applicability is independent of public-text dispositions.
+                f = self.fixture('artifact')
                 command = f.context('check').check_command
                 history = f.events()
                 f.policy_requirement(['temporary-command'])
@@ -4349,7 +4353,8 @@ class OfflinePolicyPublication(OfflineTestCase):
     def test_preintent_pr_constraints_and_original_metadata_files(self):
         for mutation in ('base', 'title', 'body', 'title-file', 'body-file'):
             with self.subTest(mutation=mutation):
-                f = self.fixture('public', 'pr')
+                # Original metadata capture guards apply to either policy kind.
+                f = self.fixture('artifact', 'pr')
                 capture = publish._capture_invocation
                 reached = []
                 def changed(args, **kw):
